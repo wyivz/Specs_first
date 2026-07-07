@@ -5,7 +5,10 @@ from dataclasses import dataclass, field
 from collectors.base import Collector
 from collectors.extractors import dedupe_evidence
 from collectors.http import HttpClient
+from collectors.browser import PlaywrightCapture
 from collectors.diagnostics import CollectorDiagnostics
+from collectors.http import HttpClient
+from collectors.resilient_fetch import ResilientFetcher
 from collectors.sources import (
     EcommerceSourceCollector,
     ForumSourceCollector,
@@ -23,23 +26,66 @@ class RealCollector(Collector):
     diagnostics: CollectorDiagnostics = field(default_factory=CollectorDiagnostics)
 
     def __post_init__(self) -> None:
-        self.official = OfficialSourceCollector(self.http, self.diagnostics)
-        self.video = VideoSourceCollector(self.http, self.diagnostics)
-        self.forum = ForumSourceCollector(self.http, self.diagnostics)
-        self.ecommerce = EcommerceSourceCollector(self.http, self.diagnostics)
-        self.injected = UrlInjectionCollector(self.http, self.diagnostics)
+        browser = PlaywrightCapture()
+        self.resilient = ResilientFetcher(self.http, browser, self.diagnostics)
+        self.official = OfficialSourceCollector(self.http, self.diagnostics, self.resilient)
+        self.video = VideoSourceCollector(self.http, self.diagnostics, self.resilient)
+        self.forum = ForumSourceCollector(self.http, self.diagnostics, self.resilient)
+        self.ecommerce = EcommerceSourceCollector(self.http, self.diagnostics, browser, self.resilient)
+        self.injected = UrlInjectionCollector(self.http, self.diagnostics, self.resilient)
 
     def discover_candidates(self, query: str, category: str) -> list[ProductCandidate]:
         return self.official.discover_candidates(query, category)
 
-    def collect_official_specs(self, candidate: ProductCandidate) -> tuple[list[OfficialSpec], list[str]]:
-        return self.official.collect_specs(candidate)
+    def collect_official_specs(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> tuple[list[OfficialSpec], list[str]]:
+        return self.official.collect_specs(
+            candidate,
+            task_id=task_id,
+            use_browser=use_browser,
+            storage_state_path=storage_state_path,
+        )
 
-    def collect_real_world_corpus(self, candidate: ProductCandidate) -> list[EvidenceItem]:
+    def collect_real_world_corpus(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> list[EvidenceItem]:
         evidence = []
-        evidence.extend(self.video.collect(candidate))
-        evidence.extend(self.forum.collect(candidate))
-        evidence.extend(self.injected.collect_evidence(self.source_urls))
+        evidence.extend(
+            self.video.collect(
+                candidate,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+            )
+        )
+        evidence.extend(
+            self.forum.collect(
+                candidate,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+            )
+        )
+        evidence.extend(
+            self.injected.collect_evidence(
+                self.source_urls,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+                sku=candidate.sku,
+            )
+        )
         return dedupe_evidence(evidence)
 
     def collect_prices(
@@ -59,7 +105,14 @@ class RealCollector(Collector):
                 storage_state_path=storage_state_path,
             )
         )
-        prices.extend(self.injected.collect_prices(self.source_urls))
+        prices.extend(
+            self.injected.collect_prices(
+                self.source_urls,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+            )
+        )
         return sorted(prices, key=lambda item: item.final_price)[:5]
 
     def diagnostics_report(self) -> list[dict]:

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from collectors.adapters.bilibili import BilibiliAdapter
 from collectors.adapters.jd import JdAdapter
 from collectors.browser import BrowserAuthRequired, PlaywrightCapture
@@ -17,8 +15,14 @@ from collectors.extractors import (
     infer_specs_from_sku,
     platform_from_url,
 )
-from collectors.http import HttpClient, SearchResult, clip, extract_title, html_to_text
+from collectors.http import HttpClient, SearchResult, clip, extract_title
+from collectors.page_sanitize import sanitize_html
+from collectors.resilient_fetch import ResilientFetcher
 from schemas import EvidenceItem, OfficialSpec, PriceFinding, ProductCandidate
+
+
+def _rich_text(markup: str, url: str) -> str:
+    return sanitize_html(url, markup).rich_text
 
 
 class OfficialSourceCollector:
@@ -34,9 +38,15 @@ class OfficialSourceCollector:
         "白皮书",
     ]
 
-    def __init__(self, http: HttpClient, diagnostics: CollectorDiagnostics | None = None) -> None:
+    def __init__(
+        self,
+        http: HttpClient,
+        diagnostics: CollectorDiagnostics | None = None,
+        resilient: ResilientFetcher | None = None,
+    ) -> None:
         self.http = http
         self.diagnostics = diagnostics or CollectorDiagnostics()
+        self.resilient = resilient or ResilientFetcher(http, diagnostics=self.diagnostics)
 
     def discover_candidates(self, query: str, category: str, max_results: int = 10) -> list[ProductCandidate]:
         search_query = f"{query} {category} official specifications"
@@ -57,7 +67,14 @@ class OfficialSourceCollector:
             ]
         return candidates[:max_results]
 
-    def collect_specs(self, candidate: ProductCandidate) -> tuple[list[OfficialSpec], list[str]]:
+    def collect_specs(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> tuple[list[OfficialSpec], list[str]]:
         urls = [candidate.source_url]
         urls.extend(
             result.url
@@ -71,15 +88,27 @@ class OfficialSourceCollector:
         for url in dict.fromkeys(urls):
             if not url.startswith("http"):
                 continue
-            result = self.http.fetch(url)
-            if not result.ok:
-                self.diagnostics.record("official", f"failed to fetch {url}: {result.error}")
-                continue
-            text = html_to_text(result.text)
+            snapshot = self.resilient.fetch(
+                url,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+                sku=candidate.sku,
+            )
+            if not snapshot.ok:
+                self.diagnostics.record(
+                    "official",
+                    f"weak page snapshot for {url}: {snapshot.error or snapshot.page.blockers}",
+                    level="warning",
+                    sku=candidate.sku,
+                )
+                if not snapshot.markup:
+                    continue
+            text = snapshot.text
             page_texts.append(text)
-            for spec in extract_specs_from_text(text, result.url):
+            for spec in extract_specs_from_text(text, snapshot.url):
                 specs_by_name.setdefault(spec.name, spec)
-            title = extract_title(result.text)
+            title = snapshot.page.title or extract_title(snapshot.markup)
             if title and len(highlights) < 3:
                 highlights.append(clip(title, 80))
 
@@ -112,12 +141,25 @@ class OfficialSourceCollector:
 
 
 class VideoSourceCollector:
-    def __init__(self, http: HttpClient, diagnostics: CollectorDiagnostics | None = None) -> None:
+    def __init__(
+        self,
+        http: HttpClient,
+        diagnostics: CollectorDiagnostics | None = None,
+        resilient: ResilientFetcher | None = None,
+    ) -> None:
         self.http = http
         self.diagnostics = diagnostics or CollectorDiagnostics()
+        self.resilient = resilient or ResilientFetcher(http, diagnostics=self.diagnostics)
         self.bilibili = BilibiliAdapter()
 
-    def collect(self, candidate: ProductCandidate) -> list[EvidenceItem]:
+    def collect(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
         for platform, query in [
             ("Bilibili", f"{candidate.sku} site:bilibili.com 评测 紫边 对焦 卡顿"),
@@ -127,29 +169,48 @@ class VideoSourceCollector:
                 search_evidence = evidence_from_search_result(platform, result, confidence=0.52)
                 if search_evidence:
                     evidence.append(search_evidence)
-                page = self.http.fetch(result.url)
-                if page.ok:
+                page = self.resilient.fetch(
+                    result.url,
+                    task_id=task_id,
+                    use_browser=use_browser or platform == "Bilibili",
+                    storage_state_path=storage_state_path,
+                    sku=candidate.sku,
+                )
+                if page.ok or page.markup:
                     if platform == "Bilibili" and self.bilibili.supports(page.url):
                         evidence.extend(
-                            self.bilibili.extract_evidence(page.url, page.text, confidence=0.6)
+                            self.bilibili.extract_evidence(page.url, page.markup, confidence=0.6)
                         )
                     else:
-                        evidence.extend(evidence_from_page(platform, page.url, page.text, confidence=0.58))
+                        evidence.extend(evidence_from_page(platform, page.url, page.markup, confidence=0.58))
                 else:
                     self.diagnostics.record(
                         platform,
-                        f"failed to fetch {result.url}: {page.error}",
+                        f"failed to fetch {result.url}: {page.error or page.page.blockers}",
                         sku=candidate.sku,
                     )
         return dedupe_evidence(evidence)
 
 
 class ForumSourceCollector:
-    def __init__(self, http: HttpClient, diagnostics: CollectorDiagnostics | None = None) -> None:
+    def __init__(
+        self,
+        http: HttpClient,
+        diagnostics: CollectorDiagnostics | None = None,
+        resilient: ResilientFetcher | None = None,
+    ) -> None:
         self.http = http
         self.diagnostics = diagnostics or CollectorDiagnostics()
+        self.resilient = resilient or ResilientFetcher(http, diagnostics=self.diagnostics)
 
-    def collect(self, candidate: ProductCandidate) -> list[EvidenceItem]:
+    def collect(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
         for platform, query in [
             ("Chiphell", f"{candidate.sku} site:chiphell.com 色散 阻尼 品控 翻车"),
@@ -159,13 +220,19 @@ class ForumSourceCollector:
                 search_evidence = evidence_from_search_result(platform, result, confidence=0.57)
                 if search_evidence:
                     evidence.append(search_evidence)
-                page = self.http.fetch(result.url)
-                if page.ok:
-                    evidence.extend(evidence_from_page(platform, page.url, page.text, confidence=0.64))
+                page = self.resilient.fetch(
+                    result.url,
+                    task_id=task_id,
+                    use_browser=use_browser or "chiphell.com" in result.url.lower(),
+                    storage_state_path=storage_state_path,
+                    sku=candidate.sku,
+                )
+                if page.ok or page.markup:
+                    evidence.extend(evidence_from_page(platform, page.url, page.markup, confidence=0.64))
                 else:
                     self.diagnostics.record(
                         platform,
-                        f"failed to fetch {result.url}: {page.error}",
+                        f"failed to fetch {result.url}: {page.error or page.page.blockers}",
                         sku=candidate.sku,
                     )
         return dedupe_evidence(evidence)
@@ -177,10 +244,12 @@ class EcommerceSourceCollector:
         http: HttpClient,
         diagnostics: CollectorDiagnostics | None = None,
         browser: PlaywrightCapture | None = None,
+        resilient: ResilientFetcher | None = None,
     ) -> None:
         self.http = http
         self.diagnostics = diagnostics or CollectorDiagnostics()
         self.browser = browser or PlaywrightCapture()
+        self.resilient = resilient or ResilientFetcher(http, self.browser, self.diagnostics)
         self.jd = JdAdapter()
 
     def collect(
@@ -199,48 +268,40 @@ class EcommerceSourceCollector:
             for result in self.http.search(query, max_results=5):
                 target_url = self.jd.normalize_url(result.url) if platform == "JD" else result.url
                 combined_text = f"{result.title}. {result.snippet}"
-                screenshot_paths: list[str] = []
-                if use_browser and target_url.startswith("http"):
-                    try:
-                        capture = self.browser.capture_page_slices(
-                            target_url,
-                            task_id=task_id or "manual",
-                            storage_state_path=Path(storage_state_path) if storage_state_path else None,
-                        )
-                        combined_text = f"{combined_text} {capture.page_text}"
-                        screenshot_paths = [str(path) for path in capture.screenshot_paths]
-                    except BrowserAuthRequired:
-                        raise
-                    except Exception as exc:
-                        self.diagnostics.record(
-                            platform,
-                            f"browser capture failed for {target_url}: {exc}",
-                            sku=candidate.sku,
-                        )
-                page = self.http.fetch(target_url)
-                if page.ok:
-                    combined_text = f"{combined_text} {html_to_text(page.text)}"
-                    if platform == "JD":
-                        jd_finding = self.jd.build_price_finding(page.url, page.text, platform="JD")
-                        if jd_finding:
-                            findings.append(
-                                PriceFinding(
-                                    platform=jd_finding.platform,
-                                    list_price=jd_finding.list_price,
-                                    coupon_discount=jd_finding.coupon_discount,
-                                    subsidy_discount=jd_finding.subsidy_discount,
-                                    cross_store_discount=jd_finding.cross_store_discount,
-                                    final_price=jd_finding.final_price,
-                                    screenshot_path=",".join(screenshot_paths),
-                                    captured_at=jd_finding.captured_at,
-                                    evidence=jd_finding.evidence,
-                                )
+                try:
+                    snapshot = self.resilient.fetch(
+                        target_url,
+                        task_id=task_id,
+                        use_browser=use_browser or platform in {"JD", "Taobao/Tmall"},
+                        storage_state_path=storage_state_path,
+                        sku=candidate.sku,
+                    )
+                except BrowserAuthRequired:
+                    raise
+                screenshot_paths = list(snapshot.screenshot_paths)
+                combined_text = f"{combined_text} {snapshot.text}"
+                if platform == "JD" and snapshot.markup:
+                    jd_finding = self.jd.build_price_finding(snapshot.url, snapshot.markup, platform="JD")
+                    if jd_finding:
+                        findings.append(
+                            PriceFinding(
+                                platform=jd_finding.platform,
+                                list_price=jd_finding.list_price,
+                                coupon_discount=jd_finding.coupon_discount,
+                                subsidy_discount=jd_finding.subsidy_discount,
+                                cross_store_discount=jd_finding.cross_store_discount,
+                                final_price=jd_finding.final_price,
+                                screenshot_path=",".join(screenshot_paths),
+                                captured_at=jd_finding.captured_at,
+                                evidence=jd_finding.evidence,
                             )
-                            continue
-                elif page.error:
+                        )
+                        continue
+                if not snapshot.ok:
                     self.diagnostics.record(
                         platform,
-                        f"failed to fetch {target_url}: {page.error}",
+                        f"weak ecommerce snapshot for {target_url}: {snapshot.error or snapshot.page.blockers}",
+                        level="warning",
                         sku=candidate.sku,
                     )
                 parsed = extract_price(combined_text)
@@ -254,11 +315,11 @@ class EcommerceSourceCollector:
                     continue
                 evidence = build_evidence(
                     platform=platform_from_url(target_url) or platform,
-                    url=target_url,
+                    url=snapshot.url,
                     author=platform,
-                    locator="price-text",
+                    locator=f"price-text-{snapshot.method}",
                     excerpt=clip(combined_text, 360),
-                    confidence=0.55 if page.ok else 0.42,
+                    confidence=0.68 if snapshot.method == "browser" else 0.55,
                 )
                 findings.append(
                     PriceFinding(
@@ -277,35 +338,67 @@ class EcommerceSourceCollector:
 
 
 class UrlInjectionCollector:
-    def __init__(self, http: HttpClient, diagnostics: CollectorDiagnostics | None = None) -> None:
+    def __init__(
+        self,
+        http: HttpClient,
+        diagnostics: CollectorDiagnostics | None = None,
+        resilient: ResilientFetcher | None = None,
+    ) -> None:
         self.http = http
         self.diagnostics = diagnostics or CollectorDiagnostics()
+        self.resilient = resilient or ResilientFetcher(http, diagnostics=self.diagnostics)
 
-    def collect_evidence(self, urls: list[str]) -> list[EvidenceItem]:
+    def collect_evidence(
+        self,
+        urls: list[str],
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+        sku: str = "",
+    ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
         for url in urls:
-            page = self.http.fetch(url)
-            if not page.ok:
-                self.diagnostics.record("url", f"failed to fetch {url}: {page.error}")
+            page = self.resilient.fetch(
+                url,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+                sku=sku,
+            )
+            if not page.ok and not page.markup:
+                self.diagnostics.record("url", f"failed to fetch {url}: {page.error}", sku=sku)
                 continue
-            evidence.extend(evidence_from_page(platform_from_url(page.url), page.url, page.text, confidence=0.68))
+            evidence.extend(evidence_from_page(platform_from_url(page.url), page.url, page.markup, confidence=0.68))
         return dedupe_evidence(evidence)
 
-    def collect_prices(self, urls: list[str]) -> list[PriceFinding]:
+    def collect_prices(
+        self,
+        urls: list[str],
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> list[PriceFinding]:
         prices: list[PriceFinding] = []
         for url in urls:
-            page = self.http.fetch(url)
-            if not page.ok:
+            page = self.resilient.fetch(
+                url,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+            )
+            if not page.ok and not page.markup:
                 continue
-            parsed = extract_price(html_to_text(page.text))
+            parsed = extract_price(page.text)
             if not parsed:
                 continue
             evidence = build_evidence(
                 platform=platform_from_url(page.url),
                 url=page.url,
                 author=platform_from_url(page.url),
-                locator="injected-url-price",
-                excerpt=clip(html_to_text(page.text), 360),
+                locator=f"injected-url-price-{page.method}",
+                excerpt=clip(page.text, 360),
                 confidence=0.68,
             )
             prices.append(

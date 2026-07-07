@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
-from collectors.http import SearchResult, clip, html_to_text
+from collectors.page_sanitize import sanitize_html
+from collectors.http import SearchResult, clip
 from schemas import EvidenceItem, OfficialSpec, ProductCandidate
 
 
@@ -157,7 +158,7 @@ def build_evidence(platform: str, url: str, author: str, locator: str, excerpt: 
 
 
 def evidence_from_page(platform: str, url: str, markup: str, confidence: float = 0.62) -> list[EvidenceItem]:
-    text = html_to_text(markup)
+    text = sanitize_html(url, markup).rich_text
     evidence: list[EvidenceItem] = []
     for index, pattern in enumerate(NEGATIVE_PATTERNS):
         match = re.search(pattern, text, re.I)

@@ -11,11 +11,25 @@ class Collector(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def collect_official_specs(self, candidate: ProductCandidate) -> tuple[list[OfficialSpec], list[str]]:
+    def collect_official_specs(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> tuple[list[OfficialSpec], list[str]]:
         raise NotImplementedError
 
     @abstractmethod
-    def collect_real_world_corpus(self, candidate: ProductCandidate) -> list[EvidenceItem]:
+    def collect_real_world_corpus(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> list[EvidenceItem]:
         raise NotImplementedError
 
     @abstractmethod

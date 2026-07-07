@@ -35,7 +35,14 @@ class MockCollector(Collector):
             ),
         ]
 
-    def collect_official_specs(self, candidate: ProductCandidate) -> tuple[list[OfficialSpec], list[str]]:
+    def collect_official_specs(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> tuple[list[OfficialSpec], list[str]]:
         by_brand = {
             "Zeiss": {
                 "focal_length": "50mm",
@@ -74,7 +81,14 @@ class MockCollector(Collector):
         }
         return specs, highlights[candidate.brand]
 
-    def collect_real_world_corpus(self, candidate: ProductCandidate) -> list[EvidenceItem]:
+    def collect_real_world_corpus(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> list[EvidenceItem]:
         if candidate.brand == "Zeiss":
             return [
                 EvidenceItem(

@@ -274,7 +274,12 @@ class SpecsFirstPipeline:
                 {"sku": candidate.sku, "phase": 1},
                 on_event,
             )
-            official_specs, highlights = self.collector.collect_official_specs(candidate)
+            official_specs, highlights = self.collector.collect_official_specs(
+                candidate,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+            )
             self._emit(
                 task_id,
                 "specs_collected",
@@ -296,7 +301,12 @@ class SpecsFirstPipeline:
                 {"sku": candidate.sku, "phase": 2},
                 on_event,
             )
-            corpus = self.collector.collect_real_world_corpus(candidate)
+            corpus = self.collector.collect_real_world_corpus(
+                candidate,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+            )
             findings = self.router.extract_real_world_findings(candidate.sku, corpus)
             self._emit(
                 task_id,

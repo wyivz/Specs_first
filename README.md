@@ -64,7 +64,7 @@ FastAPI 事件总线
 |------|------|------|
 | 前端 | Streamlit + SSE | 流式对比表、翻车角标、证据卡片 |
 | 后端 | FastAPI + 后台线程 | 任务调度、SSE 事件推送 |
-| 采集 | HTTP + DuckDuckGo 搜索 + URL 注入 | 官网 / 视频 / 论坛 / 电商 best-effort 抓取 |
+| 采集 | HTTP + Playwright 降级 + 页面净化 | 官网 / 视频 / 论坛 / 电商；自动跳过 CSS/验证码页并触发 HITL |
 | 浏览器 | Playwright（骨架已备） | 电商长图截图、验证码 HITL 挂起 |
 | 输出 | Obsidian Markdown + Dataview | 本地永久资产，脱离 Web 仍可查看 |
 
@@ -97,6 +97,7 @@ FastAPI 事件总线
 - [x] **Gemini 多切片 OCR 骨架**：`enrich_prices_with_ocr` 支持逗号分隔截图批量 OCR
 - [x] **采集降级与诊断面板**：`diagnostics_updated` 事件、API `/diagnostics`、Streamlit 诊断区
 - [x] **单 SKU 故障隔离**：某个 SKU 失败不阻断其余对比
+- [x] **抗干扰页面抓取**：HTML 净化（去 CSS/导航/广告）、验证码检测、HTTP→Playwright 自动降级
 - [~] **Gemini OCR 实调**：需 API Key + Playwright 截图
 
 ---
@@ -119,7 +120,8 @@ FastAPI 事件总线
 1. ✅ B 站 / 京东专用 Adapter
 2. ✅ Gemini 多切片 OCR + 模型调用重试/容错 JSON 解析
 3. ✅ 采集失败降级、单 SKU 隔离、诊断面板
-4. ⬜ YouTube 字幕解析、Context Caching、多品类 Schema
+4. ✅ 复杂网页抗干扰抓取（`page_sanitize` + `resilient_fetch` + 浏览器内容区定位）
+5. ⬜ YouTube 字幕解析、Context Caching、多品类 Schema
 
 ### Milestone 4 · 知识库增强
 
