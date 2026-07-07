@@ -148,14 +148,19 @@ def run_streaming_pipeline(
                 st.subheader("Progressive comparison matrix")
                 render_matrix_table(matrix_rows)
                 render_evidence_cards(matrix_rows)
+        if event.event_type == "diagnostics_updated":
+            st.session_state["diagnostics"] = payload.get("records", [])
         if event.event_type == "auth_required":
             progress.progress(completed_rows / total_steps, text="等待人工验证...")
             st.warning(
                 f"检测到验证码/安全检测，任务已挂起。请先在浏览器完成验证，然后点击侧边栏「续传任务」。"
                 f"\n\n目标页面：`{payload.get('pause_url', '')}`"
             )
+        if event.event_type == "sku_failed":
+            st.error(event.message)
         if event.event_type == "task_done":
             progress.progress(1.0, text="Done")
+            st.session_state["diagnostics"] = payload.get("diagnostics", st.session_state.get("diagnostics", []))
             output_box.success("Obsidian assets written.")
             for path in payload.get("output_paths", []):
                 output_box.code(path)
@@ -253,6 +258,12 @@ if run_clicked:
         )
 
 result = st.session_state.get("result")
+diagnostics = st.session_state.get("diagnostics", [])
+if diagnostics:
+    with st.expander("采集诊断 / 降级日志", expanded=any(item.get("level") == "error" for item in diagnostics)):
+        for item in diagnostics[-40:]:
+            st.markdown(f"- `{item.get('level', 'info')}` **{item.get('source')}** ({item.get('sku', 'all')}): {item.get('message')}")
+
 if result and not run_clicked:
     st.subheader("Saved result snapshot")
     render_matrix_table([to_dict(row) for row in result.matrix.rows])

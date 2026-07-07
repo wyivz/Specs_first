@@ -90,7 +90,18 @@ def get_result(task_id: str) -> dict:
             "rows": [to_dict(row) for row in result.matrix.rows],
         },
         "output_paths": [str(path) for path in result.output_paths],
+        "diagnostics": result.diagnostics,
     }
+
+
+@app.get("/tasks/{task_id}/diagnostics")
+def get_diagnostics(task_id: str) -> dict:
+    record = task_manager.get(task_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if record.result and record.result.diagnostics:
+        return {"task_id": task_id, "records": record.result.diagnostics}
+    return {"task_id": task_id, "records": []}
 
 
 @app.post("/tasks/{task_id}/resume-auth")

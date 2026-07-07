@@ -9,6 +9,7 @@ class BrowserAuthRequired(RuntimeError):
         super().__init__(message)
         self.url = url
         self.storage_state_path = storage_state_path
+        self.in_progress_payload: dict | None = None
 
 
 @dataclass(frozen=True)

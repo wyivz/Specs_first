@@ -36,6 +36,7 @@ class TaskResult:
     output_paths: list[Path]
     events: list[TaskEvent]
     state: TaskState
+    diagnostics: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -88,7 +89,7 @@ class SpecsFirstPipeline:
             )
             events = list(self.event_bus.stream(task_id))
             empty_matrix = build_comparison_matrix([])
-            return TaskResult(task_id, candidates, selected, [], empty_matrix, [], events, TaskState.DONE)
+            return TaskResult(task_id, candidates, selected, [], empty_matrix, [], events, TaskState.DONE, [])
 
         return self._process_candidates(
             task_id=task_id,
@@ -162,135 +163,40 @@ class SpecsFirstPipeline:
 
         for index in range(start_index, len(selected)):
             candidate = selected[index]
-            progress = in_progress_payload if index == start_index and in_progress_payload else None
-
-            if progress:
-                official_specs = [official_spec_from_dict(item) for item in progress["official_specs"]]
-                highlights = progress["highlights"]
-                findings = [finding_from_dict(item) for item in progress["findings"]]
-            else:
-                self._emit(
-                    task_id,
-                    "phase_started",
-                    f"Phase 1: collecting official specs for {candidate.sku}",
-                    TaskState.RUNNING,
-                    {"sku": candidate.sku, "phase": 1},
-                    on_event,
-                )
-                official_specs, highlights = self.collector.collect_official_specs(candidate)
-                self._emit(
-                    task_id,
-                    "specs_collected",
-                    f"Official specs collected for {candidate.sku}",
-                    TaskState.RUNNING,
-                    {
-                        "sku": candidate.sku,
-                        "official_specs": [to_dict(spec) for spec in official_specs],
-                        "spec_highlights": highlights,
-                    },
-                    on_event,
-                )
-
-                self._emit(
-                    task_id,
-                    "phase_started",
-                    f"Phase 2: dehydrating field evidence for {candidate.sku}",
-                    TaskState.RUNNING,
-                    {"sku": candidate.sku, "phase": 2},
-                    on_event,
-                )
-                corpus = self.collector.collect_real_world_corpus(candidate)
-                findings = self.router.extract_real_world_findings(candidate.sku, corpus)
-                self._emit(
-                    task_id,
-                    "findings_extracted",
-                    f"Extracted {len(findings)} real-world findings for {candidate.sku}",
-                    TaskState.RUNNING,
-                    {
-                        "sku": candidate.sku,
-                        "findings": [to_dict(finding) for finding in findings],
-                        "corpus_size": len(corpus),
-                    },
-                    on_event,
-                )
-
-            self._emit(
-                task_id,
-                "phase_started",
-                f"Phase 3: normalizing price evidence for {candidate.sku}",
-                TaskState.RUNNING,
-                {"sku": candidate.sku, "phase": 3},
-                on_event,
-            )
             try:
-                prices = self.collector.collect_prices(
-                    candidate,
+                asset = self._process_single_candidate(
                     task_id=task_id,
+                    candidate=candidate,
+                    index=index,
+                    in_progress_payload=in_progress_payload if index == start_index else None,
                     use_browser=use_browser,
                     storage_state_path=storage_state_path,
+                    on_event=on_event,
                 )
-                prices = self.router.enrich_prices_with_ocr(candidate.sku, prices)
             except BrowserAuthRequired as exc:
-                checkpoint = TaskCheckpoint(
+                return self._pause_for_auth(
                     task_id=task_id,
                     query=query,
                     category=category,
                     mode=mode,
-                    vault_path=str(self.vault_path),
                     source_urls=source_urls,
                     selected_skus=selected_skus,
-                    candidate_payloads=[to_dict(item) for item in candidates],
-                    asset_payloads=[to_dict(item) for item in assets],
-                    next_candidate_index=index,
-                    pause_reason=str(exc),
-                    pause_url=exc.url,
-                    storage_state_path=str(exc.storage_state_path or storage_state_path or ""),
-                    state=TaskState.PAUSED_NEED_AUTH,
+                    candidates=candidates,
+                    selected=selected,
+                    assets=assets,
+                    index=index,
+                    candidate=candidate,
+                    exc=exc,
+                    storage_state_path=storage_state_path,
+                    on_event=on_event,
+                    in_progress_payload=in_progress_payload if index == start_index else None,
                 )
-                checkpoint.in_progress_payload = {
-                    "official_specs": [to_dict(spec) for spec in official_specs],
-                    "highlights": highlights,
-                    "findings": [to_dict(finding) for finding in findings],
-                }
-                self.checkpoint_store.save(checkpoint)
-                self._emit(
-                    task_id,
-                    "auth_required",
-                    f"Authentication required before continuing price capture for {candidate.sku}",
-                    TaskState.PAUSED_NEED_AUTH,
-                    {
-                        "sku": candidate.sku,
-                        "pause_url": exc.url,
-                        "storage_state_path": checkpoint.storage_state_path,
-                    },
-                    on_event,
-                )
-                events = list(self.event_bus.stream(task_id))
-                matrix = build_comparison_matrix(assets)
-                return TaskResult(task_id, candidates, selected, assets, matrix, [], events, TaskState.PAUSED_NEED_AUTH)
+            except Exception as exc:
+                self._record_sku_failure(task_id, candidate.sku, exc, on_event)
+                continue
 
-            self._emit(
-                task_id,
-                "phase_started",
-                f"Phase 4: arbitrating conflicts for {candidate.sku}",
-                TaskState.RUNNING,
-                {"sku": candidate.sku, "phase": 4},
-                on_event,
-            )
-            warnings = self.router.arbitrate_conflicts(findings, official_specs)
-            summary = self.router.summarize(warnings, findings)
-
-            asset = ProductAsset(
-                sku=candidate.sku,
-                brand=candidate.brand,
-                category=candidate.category,
-                official_specs=official_specs,
-                spec_highlights=highlights,
-                real_world_findings=findings,
-                prices=prices,
-                conflict_warnings=warnings,
-                arbitration_summary=summary,
-            )
+            if asset is None:
+                continue
             assets.append(asset)
             partial_rows.append(build_partial_row(asset))
             self._emit(
@@ -301,11 +207,20 @@ class SpecsFirstPipeline:
                 {"matrix_rows": partial_rows, "sku": candidate.sku},
                 on_event,
             )
+            self._emit(
+                task_id,
+                "diagnostics_updated",
+                f"Collector diagnostics updated for {candidate.sku}",
+                TaskState.RUNNING,
+                {"records": self._collector_diagnostics()},
+                on_event,
+            )
 
         matrix = build_comparison_matrix(assets)
         self._emit(task_id, "phase_started", "Writing Obsidian assets", TaskState.RUNNING, on_event=on_event)
         output_paths = ObsidianWriter(self.vault_path).write(category, assets, matrix)
         self.checkpoint_store.delete(task_id)
+        diagnostics = self._collector_diagnostics()
         self._emit(
             task_id,
             "task_done",
@@ -317,11 +232,223 @@ class SpecsFirstPipeline:
                     "columns": [to_dict(column) for column in matrix.columns],
                     "rows": [to_dict(row) for row in matrix.rows],
                 },
+                "diagnostics": diagnostics,
             },
             on_event,
         )
         events = list(self.event_bus.stream(task_id))
-        return TaskResult(task_id, candidates, selected, assets, matrix, output_paths, events, TaskState.DONE)
+        return TaskResult(
+            task_id,
+            candidates,
+            selected,
+            assets,
+            matrix,
+            output_paths,
+            events,
+            TaskState.DONE,
+            diagnostics,
+        )
+
+    def _process_single_candidate(
+        self,
+        *,
+        task_id: str,
+        candidate: ProductCandidate,
+        index: int,
+        in_progress_payload: dict[str, Any] | None,
+        use_browser: bool,
+        storage_state_path: str,
+        on_event: Callable[[TaskEvent], None] | None,
+    ) -> ProductAsset | None:
+        progress = in_progress_payload
+        if progress:
+            official_specs = [official_spec_from_dict(item) for item in progress["official_specs"]]
+            highlights = progress["highlights"]
+            findings = [finding_from_dict(item) for item in progress["findings"]]
+        else:
+            self._emit(
+                task_id,
+                "phase_started",
+                f"Phase 1: collecting official specs for {candidate.sku}",
+                TaskState.RUNNING,
+                {"sku": candidate.sku, "phase": 1},
+                on_event,
+            )
+            official_specs, highlights = self.collector.collect_official_specs(candidate)
+            self._emit(
+                task_id,
+                "specs_collected",
+                f"Official specs collected for {candidate.sku}",
+                TaskState.RUNNING,
+                {
+                    "sku": candidate.sku,
+                    "official_specs": [to_dict(spec) for spec in official_specs],
+                    "spec_highlights": highlights,
+                },
+                on_event,
+            )
+
+            self._emit(
+                task_id,
+                "phase_started",
+                f"Phase 2: dehydrating field evidence for {candidate.sku}",
+                TaskState.RUNNING,
+                {"sku": candidate.sku, "phase": 2},
+                on_event,
+            )
+            corpus = self.collector.collect_real_world_corpus(candidate)
+            findings = self.router.extract_real_world_findings(candidate.sku, corpus)
+            self._emit(
+                task_id,
+                "findings_extracted",
+                f"Extracted {len(findings)} real-world findings for {candidate.sku}",
+                TaskState.RUNNING,
+                {
+                    "sku": candidate.sku,
+                    "findings": [to_dict(finding) for finding in findings],
+                    "corpus_size": len(corpus),
+                },
+                on_event,
+            )
+
+        self._emit(
+            task_id,
+            "phase_started",
+            f"Phase 3: normalizing price evidence for {candidate.sku}",
+            TaskState.RUNNING,
+            {"sku": candidate.sku, "phase": 3},
+            on_event,
+        )
+        try:
+            prices = self.collector.collect_prices(
+                candidate,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+            )
+            prices = self.router.enrich_prices_with_ocr(candidate.sku, prices)
+        except BrowserAuthRequired as exc:
+            exc.in_progress_payload = {
+                "official_specs": [to_dict(spec) for spec in official_specs],
+                "highlights": highlights,
+                "findings": [to_dict(finding) for finding in findings],
+            }
+            raise
+
+        self._emit(
+            task_id,
+            "phase_started",
+            f"Phase 4: arbitrating conflicts for {candidate.sku}",
+            TaskState.RUNNING,
+            {"sku": candidate.sku, "phase": 4},
+            on_event,
+        )
+        warnings = self.router.arbitrate_conflicts(findings, official_specs)
+        summary = self.router.summarize(warnings, findings)
+
+        return ProductAsset(
+            sku=candidate.sku,
+            brand=candidate.brand,
+            category=candidate.category,
+            official_specs=official_specs,
+            spec_highlights=highlights,
+            real_world_findings=findings,
+            prices=prices,
+            conflict_warnings=warnings,
+            arbitration_summary=summary,
+        )
+
+    def _pause_for_auth(
+        self,
+        *,
+        task_id: str,
+        query: str,
+        category: str,
+        mode: str,
+        source_urls: list[str],
+        selected_skus: list[str],
+        candidates: list[ProductCandidate],
+        selected: list[ProductCandidate],
+        assets: list[ProductAsset],
+        index: int,
+        candidate: ProductCandidate,
+        exc: BrowserAuthRequired,
+        storage_state_path: str,
+        on_event: Callable[[TaskEvent], None] | None,
+        in_progress_payload: dict[str, Any] | None,
+    ) -> TaskResult:
+        checkpoint = TaskCheckpoint(
+            task_id=task_id,
+            query=query,
+            category=category,
+            mode=mode,
+            vault_path=str(self.vault_path),
+            source_urls=source_urls,
+            selected_skus=selected_skus,
+            candidate_payloads=[to_dict(item) for item in candidates],
+            asset_payloads=[to_dict(item) for item in assets],
+            next_candidate_index=index,
+            pause_reason=str(exc),
+            pause_url=exc.url,
+            storage_state_path=str(exc.storage_state_path or storage_state_path or ""),
+            state=TaskState.PAUSED_NEED_AUTH,
+        )
+        if getattr(exc, "in_progress_payload", None):
+            checkpoint.in_progress_payload = exc.in_progress_payload
+        elif in_progress_payload:
+            checkpoint.in_progress_payload = in_progress_payload
+        self.checkpoint_store.save(checkpoint)
+        self._emit(
+            task_id,
+            "auth_required",
+            f"Authentication required before continuing price capture for {candidate.sku}",
+            TaskState.PAUSED_NEED_AUTH,
+            {
+                "sku": candidate.sku,
+                "pause_url": exc.url,
+                "storage_state_path": checkpoint.storage_state_path,
+            },
+            on_event,
+        )
+        events = list(self.event_bus.stream(task_id))
+        matrix = build_comparison_matrix(assets)
+        return TaskResult(
+            task_id,
+            candidates,
+            selected,
+            assets,
+            matrix,
+            [],
+            events,
+            TaskState.PAUSED_NEED_AUTH,
+            self._collector_diagnostics(),
+        )
+
+    def _record_sku_failure(
+        self,
+        task_id: str,
+        sku: str,
+        exc: Exception,
+        on_event: Callable[[TaskEvent], None] | None,
+    ) -> None:
+        message = f"{sku} failed: {exc}"
+        if hasattr(self.collector, "diagnostics"):
+            self.collector.diagnostics.record("pipeline", message, level="error", sku=sku)
+        self._emit(
+            task_id,
+            "sku_failed",
+            message,
+            TaskState.RUNNING,
+            {"sku": sku, "error": str(exc), "records": self._collector_diagnostics()},
+            on_event,
+        )
+
+    def _collector_diagnostics(self) -> list[dict]:
+        if hasattr(self.collector, "diagnostics_report"):
+            return self.collector.diagnostics_report()
+        if hasattr(self.collector, "diagnostics"):
+            return self.collector.diagnostics.to_dicts()
+        return []
 
     def _select_candidates(
         self,

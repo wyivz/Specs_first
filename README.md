@@ -88,15 +88,16 @@ FastAPI 事件总线
 - [~] **Gemini / OpenAI 实调**：接口已接，需配置 `.env` 中的 API Key 方可启用
 - [x] **任务断点续传（Milestone 2 骨架）**：内存/Redis Checkpoint、`PAUSED_NEED_AUTH` 挂起、`POST /tasks/{id}/resume-auth` 续传
 - [x] **Playwright 浏览器采集骨架**：电商页截图切片、验证码检测、Session 状态文件恢复
-- [~] **Streamlit HITL 续传 UI**：侧边栏「续传任务」已接，完整浏览器弹窗待完善
+- [x] **Streamlit HITL 续传 UI**：侧边栏「续传任务」
+- [~] **前端嵌入式浏览器窗口**：待 Milestone 2 收尾
 
-### 尚未开始
+### 尚未开始 / Milestone 3 进行中
 
-- [ ] 电商页 Gemini 多模态 OCR 真实到手价（已接 `enrich_prices_with_ocr` 骨架）
-- [ ] 验证码 HITL：任务 `PAUSED_NEED_AUTH` → 前端弹窗 → Session 续传
-- [ ] B 站/YouTube 字幕与弹幕专用解析器
-- [ ] Context Caching 降低 Gemini 长文成本
-- [ ] 多品类 JIT Schema（相机机身、耳机等）
+- [x] **B 站 / 京东平台 Adapter**：评论片段提取、JD script 价格解析
+- [x] **Gemini 多切片 OCR 骨架**：`enrich_prices_with_ocr` 支持逗号分隔截图批量 OCR
+- [x] **采集降级与诊断面板**：`diagnostics_updated` 事件、API `/diagnostics`、Streamlit 诊断区
+- [x] **单 SKU 故障隔离**：某个 SKU 失败不阻断其余对比
+- [~] **Gemini OCR 实调**：需 API Key + Playwright 截图
 
 ---
 
@@ -106,18 +107,19 @@ FastAPI 事件总线
 
 跑通 FastAPI 任务管道；Gemini 吞大文本并 OCR 截图；OpenAI Strict JSON 锁死输出格式。
 
-### Milestone 2 · 人机协同断点续传（进行中）
+### Milestone 2 · 人机协同断点续传（基本完成）
 
 1. ✅ Playwright Session 状态文件保存/恢复
 2. ✅ 遇滑块时任务挂起 + Checkpoint 持久化（内存/Redis）
 3. ✅ API / Streamlit 续传入口
-4. ⬜ 前端嵌入式浏览器窗口与 Worker 队列
+4. ⬜ 前端嵌入式浏览器窗口
 
-### Milestone 3 · 生产级采集
+### Milestone 3 · 生产级采集（进行中）
 
-1. 各平台专用 Adapter（B 站 API/页面、京东 Mobile 页）
-2. 价格截图 + Gemini Vision 切片 OCR
-3. 采集失败降级策略与诊断面板
+1. ✅ B 站 / 京东专用 Adapter
+2. ✅ Gemini 多切片 OCR + 模型调用重试/容错 JSON 解析
+3. ✅ 采集失败降级、单 SKU 隔离、诊断面板
+4. ⬜ YouTube 字幕解析、Context Caching、多品类 Schema
 
 ### Milestone 4 · 知识库增强
 
@@ -169,6 +171,7 @@ uvicorn backend.api:app --reload
 | `GET /tasks/{id}/result` | 最终矩阵与 Vault 路径 |
 | `POST /tasks/{id}/resume-auth` | 验证码通过后续传任务 |
 | `GET /tasks/{id}/checkpoint` | 查看挂起任务断点 |
+| `GET /tasks/{id}/diagnostics` | 采集降级/错误诊断 |
 
 ### 配置真实模型
 

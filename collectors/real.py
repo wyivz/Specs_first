@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from collectors.base import Collector
 from collectors.extractors import dedupe_evidence
 from collectors.http import HttpClient
+from collectors.diagnostics import CollectorDiagnostics
 from collectors.sources import (
-    CollectorDiagnostics,
     EcommerceSourceCollector,
     ForumSourceCollector,
     OfficialSourceCollector,
@@ -61,3 +61,6 @@ class RealCollector(Collector):
         )
         prices.extend(self.injected.collect_prices(self.source_urls))
         return sorted(prices, key=lambda item: item.final_price)[:5]
+
+    def diagnostics_report(self) -> list[dict]:
+        return self.diagnostics.to_dicts()

@@ -87,16 +87,17 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 
 - [~] **Live Gemini / OpenAI calls**: wired but require `.env` API keys
 - [x] **Task checkpoint resume (Milestone 2 skeleton)**: memory/Redis checkpoints, `PAUSED_NEED_AUTH`, `POST /tasks/{id}/resume-auth`
-- [x] **Playwright browser capture skeleton**: e-commerce slice screenshots, captcha detection, session state restore
-- [~] **Streamlit HITL resume UI**: sidebar resume button wired; embedded browser window TBD
+- [x] **Playwright browser capture skeleton**: slice screenshots, captcha detection, session restore
+- [x] **Streamlit HITL resume UI**: sidebar resume button
+- [~] **Embedded browser window**: Milestone 2 tail item
 
-### Not started
+### Not started / Milestone 3 in progress
 
-- [ ] E-commerce Gemini multimodal OCR for checkout prices (`enrich_prices_with_ocr` skeleton wired)
-- [ ] Captcha HITL: `PAUSED_NEED_AUTH` → UI modal → session resume
-- [ ] Bilibili/YouTube subtitle and danmaku parsers
-- [ ] Gemini context caching for long forum threads
-- [ ] Multi-category JIT schemas (camera bodies, headphones, etc.)
+- [x] **Bilibili / JD platform adapters**: comment snippets, JD script price parsing
+- [x] **Gemini multi-slice OCR skeleton**: batch OCR via comma-separated screenshot paths
+- [x] **Graceful degradation + diagnostics panel**: events, API `/diagnostics`, Streamlit panel
+- [x] **Per-SKU fault isolation**: one failed SKU does not block the rest
+- [~] **Live Gemini OCR**: requires API key + Playwright captures
 
 ---
 
@@ -106,18 +107,19 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 
 Run the FastAPI task pipeline; Gemini ingests large corpora and OCR screenshots; OpenAI Strict JSON locks output format.
 
-### Milestone 2 · HITL checkpoint resume (in progress)
+### Milestone 2 · HITL checkpoint resume (largely complete)
 
 1. ✅ Playwright session state save/restore
 2. ✅ Pause on slider captcha + checkpoint persistence (memory/Redis)
 3. ✅ API / Streamlit resume entrypoints
-4. ⬜ Embedded browser window and worker queue
+4. ⬜ Embedded browser window
 
-### Milestone 3 · Production-grade collection
+### Milestone 3 · Production-grade collection (in progress)
 
-1. Platform-specific adapters (Bilibili pages, JD mobile)
-2. Price screenshots + Gemini Vision slice OCR
-3. Graceful degradation and diagnostics panel
+1. ✅ Bilibili / JD adapters
+2. ✅ Gemini multi-slice OCR + retry / tolerant JSON parsing
+3. ✅ Graceful degradation, per-SKU isolation, diagnostics panel
+4. ⬜ YouTube subtitles, context caching, multi-category schemas
 
 ### Milestone 4 · Knowledge-base enhancements
 
@@ -169,6 +171,7 @@ uvicorn backend.api:app --reload
 | `GET /tasks/{id}/result` | Final matrix and vault paths |
 | `POST /tasks/{id}/resume-auth` | Resume after manual auth |
 | `GET /tasks/{id}/checkpoint` | Inspect paused checkpoint |
+| `GET /tasks/{id}/diagnostics` | Collector degradation/error diagnostics |
 
 ### Enable real models
 

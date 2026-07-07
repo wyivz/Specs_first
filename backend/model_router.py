@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.config import settings
+from backend.retry import retry_call
 from collectors.extractors import ParsedPrice
 from schemas import ConflictLevel, ConflictWarning, EvidenceItem, OfficialSpec, PriceFinding, RealWorldFinding
 
@@ -205,7 +206,10 @@ class HybridModelRouter(KeywordModelRouter):
     ) -> tuple[list[OfficialSpec], list[str]]:
         if settings.has_gemini and text.strip():
             try:
-                specs, highlights = self._gemini_extract_official_specs(sku, text, source_url)
+                specs, highlights = retry_call(
+                    lambda: self._gemini_extract_official_specs(sku, text, source_url),
+                    attempts=2,
+                )
                 if specs:
                     return specs, highlights
             except Exception:
@@ -217,7 +221,7 @@ class HybridModelRouter(KeywordModelRouter):
             return []
         if settings.has_gemini:
             try:
-                findings = self._gemini_extract_findings(sku, corpus)
+                findings = retry_call(lambda: self._gemini_extract_findings(sku, corpus), attempts=2)
                 if findings:
                     return findings
             except Exception:
@@ -229,35 +233,55 @@ class HybridModelRouter(KeywordModelRouter):
             return prices
         enriched: list[PriceFinding] = []
         for price in prices:
-            if not price.screenshot_path:
+            screenshot_paths = self._resolve_screenshot_paths(price.screenshot_path)
+            if not screenshot_paths:
                 enriched.append(price)
                 continue
-            screenshot = Path(price.screenshot_path)
-            if not screenshot.exists():
+            parsed_candidates: list[ParsedPrice] = []
+            for screenshot in screenshot_paths:
+                if not screenshot.exists():
+                    continue
+                try:
+                    parsed = retry_call(
+                        lambda shot=screenshot: self._gemini_ocr_price(sku, shot, price.evidence.url),
+                        attempts=2,
+                    )
+                except Exception:
+                    continue
+                if parsed:
+                    parsed_candidates.append(parsed)
+            if not parsed_candidates:
                 enriched.append(price)
                 continue
-            try:
-                parsed = self._gemini_ocr_price(sku, screenshot, price.evidence.url)
-            except Exception:
-                enriched.append(price)
-                continue
-            if not parsed:
-                enriched.append(price)
-                continue
+            best = min(parsed_candidates, key=lambda item: item.final_price)
             enriched.append(
                 PriceFinding(
                     platform=price.platform,
-                    list_price=parsed.list_price,
-                    coupon_discount=parsed.coupon_discount,
-                    subsidy_discount=parsed.subsidy_discount,
-                    cross_store_discount=parsed.cross_store_discount,
-                    final_price=parsed.final_price,
+                    list_price=best.list_price,
+                    coupon_discount=best.coupon_discount,
+                    subsidy_discount=best.subsidy_discount,
+                    cross_store_discount=best.cross_store_discount,
+                    final_price=best.final_price,
                     screenshot_path=price.screenshot_path,
                     captured_at=price.captured_at,
                     evidence=price.evidence,
                 )
             )
         return enriched or prices
+
+    @staticmethod
+    def _resolve_screenshot_paths(raw: str) -> list[Path]:
+        if not raw:
+            return []
+        paths = [Path(part.strip()) for part in raw.split(",") if part.strip()]
+        if paths:
+            return paths
+        single = Path(raw)
+        if single.exists():
+            return [single]
+        if single.parent.exists():
+            return sorted(single.parent.glob(f"{single.stem}*.png"))
+        return []
 
     def arbitrate_conflicts(
         self,
@@ -267,7 +291,10 @@ class HybridModelRouter(KeywordModelRouter):
         self._last_summary = ""
         if settings.has_openai and findings:
             try:
-                warnings = self._openai_arbitrate_structured(findings, official_specs or [])
+                warnings = retry_call(
+                    lambda: self._openai_arbitrate_structured(findings, official_specs or []),
+                    attempts=2,
+                )
                 if warnings is not None:
                     return warnings
             except Exception:
@@ -300,7 +327,7 @@ class HybridModelRouter(KeywordModelRouter):
             f"{text[:120000]}"
         )
         response = self._gemini_model().generate_content(prompt)
-        payload = _parse_json_payload(response.text or "")
+        payload = _parse_json_payload(response.text or "", default={"specs": [], "highlights": []})
         specs = [
             OfficialSpec(
                 name=str(item.get("name", "")).strip(),
@@ -329,7 +356,7 @@ class HybridModelRouter(KeywordModelRouter):
             f"{corpus_text}"
         )
         response = self._gemini_model().generate_content(prompt)
-        payload = _parse_json_payload(response.text or "")
+        payload = _parse_json_payload(response.text or "", default={"findings": []})
         findings: list[RealWorldFinding] = []
         for item in payload.get("findings", []):
             index = int(item.get("evidence_index", -1))
@@ -361,8 +388,8 @@ class HybridModelRouter(KeywordModelRouter):
                 {"mime_type": "image/png", "data": screenshot.read_bytes()},
             ]
         )
-        payload = _parse_json_payload(response.text or "")
-        final_price = float(payload.get("final_price", 0))
+        payload = _parse_json_payload(response.text or "", default={})
+        final_price = float(payload.get("final_price", 0) or 0)
         if final_price <= 0:
             return None
         return ParsedPrice(
@@ -434,12 +461,24 @@ class HybridModelRouter(KeywordModelRouter):
         return warnings
 
 
-def _parse_json_payload(text: str) -> dict[str, Any]:
-    text = text.strip()
+def _parse_json_payload(text: str, default: dict[str, Any] | None = None) -> dict[str, Any]:
+    fallback = default if default is not None else {}
+    text = (text or "").strip()
+    if not text:
+        return fallback
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            return fallback
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return fallback
 
 
 def create_model_router(mode: str | None = None) -> KeywordModelRouter:

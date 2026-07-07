@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from pathlib import Path
 
+from collectors.adapters.bilibili import BilibiliAdapter
+from collectors.adapters.jd import JdAdapter
+from collectors.browser import BrowserAuthRequired, PlaywrightCapture
+from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import (
     build_evidence,
     candidate_from_search_result,
@@ -13,17 +17,8 @@ from collectors.extractors import (
     infer_specs_from_sku,
     platform_from_url,
 )
-from collectors.browser import BrowserAuthRequired, PlaywrightCapture
 from collectors.http import HttpClient, SearchResult, clip, extract_title, html_to_text
 from schemas import EvidenceItem, OfficialSpec, PriceFinding, ProductCandidate
-
-
-@dataclass
-class CollectorDiagnostics:
-    errors: list[str] = field(default_factory=list)
-
-    def record(self, source: str, message: str) -> None:
-        self.errors.append(f"{source}: {message}")
 
 
 class OfficialSourceCollector:
@@ -120,6 +115,7 @@ class VideoSourceCollector:
     def __init__(self, http: HttpClient, diagnostics: CollectorDiagnostics | None = None) -> None:
         self.http = http
         self.diagnostics = diagnostics or CollectorDiagnostics()
+        self.bilibili = BilibiliAdapter()
 
     def collect(self, candidate: ProductCandidate) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
@@ -133,9 +129,18 @@ class VideoSourceCollector:
                     evidence.append(search_evidence)
                 page = self.http.fetch(result.url)
                 if page.ok:
-                    evidence.extend(evidence_from_page(platform, page.url, page.text, confidence=0.58))
+                    if platform == "Bilibili" and self.bilibili.supports(page.url):
+                        evidence.extend(
+                            self.bilibili.extract_evidence(page.url, page.text, confidence=0.6)
+                        )
+                    else:
+                        evidence.extend(evidence_from_page(platform, page.url, page.text, confidence=0.58))
                 else:
-                    self.diagnostics.record(platform, f"failed to fetch {result.url}: {page.error}")
+                    self.diagnostics.record(
+                        platform,
+                        f"failed to fetch {result.url}: {page.error}",
+                        sku=candidate.sku,
+                    )
         return dedupe_evidence(evidence)
 
 
@@ -158,7 +163,11 @@ class ForumSourceCollector:
                 if page.ok:
                     evidence.extend(evidence_from_page(platform, page.url, page.text, confidence=0.64))
                 else:
-                    self.diagnostics.record(platform, f"failed to fetch {result.url}: {page.error}")
+                    self.diagnostics.record(
+                        platform,
+                        f"failed to fetch {result.url}: {page.error}",
+                        sku=candidate.sku,
+                    )
         return dedupe_evidence(evidence)
 
 
@@ -172,6 +181,7 @@ class EcommerceSourceCollector:
         self.http = http
         self.diagnostics = diagnostics or CollectorDiagnostics()
         self.browser = browser or PlaywrightCapture()
+        self.jd = JdAdapter()
 
     def collect(
         self,
@@ -187,37 +197,64 @@ class EcommerceSourceCollector:
             ("Taobao/Tmall", f"{candidate.sku} site:taobao.com OR site:tmall.com 到手价 券后"),
         ]:
             for result in self.http.search(query, max_results=5):
+                target_url = self.jd.normalize_url(result.url) if platform == "JD" else result.url
                 combined_text = f"{result.title}. {result.snippet}"
-                screenshot_path = ""
-                page_ok = False
-                if use_browser and result.url.startswith("http"):
+                screenshot_paths: list[str] = []
+                if use_browser and target_url.startswith("http"):
                     try:
-                        from pathlib import Path
-
                         capture = self.browser.capture_page_slices(
-                            result.url,
+                            target_url,
                             task_id=task_id or "manual",
                             storage_state_path=Path(storage_state_path) if storage_state_path else None,
                         )
                         combined_text = f"{combined_text} {capture.page_text}"
-                        screenshot_path = str(capture.screenshot_paths[0]) if capture.screenshot_paths else ""
-                        page_ok = True
+                        screenshot_paths = [str(path) for path in capture.screenshot_paths]
                     except BrowserAuthRequired:
                         raise
                     except Exception as exc:
-                        self.diagnostics.record(platform, f"browser capture failed for {result.url}: {exc}")
-                page = self.http.fetch(result.url)
+                        self.diagnostics.record(
+                            platform,
+                            f"browser capture failed for {target_url}: {exc}",
+                            sku=candidate.sku,
+                        )
+                page = self.http.fetch(target_url)
                 if page.ok:
                     combined_text = f"{combined_text} {html_to_text(page.text)}"
-                    page_ok = True
+                    if platform == "JD":
+                        jd_finding = self.jd.build_price_finding(page.url, page.text, platform="JD")
+                        if jd_finding:
+                            findings.append(
+                                PriceFinding(
+                                    platform=jd_finding.platform,
+                                    list_price=jd_finding.list_price,
+                                    coupon_discount=jd_finding.coupon_discount,
+                                    subsidy_discount=jd_finding.subsidy_discount,
+                                    cross_store_discount=jd_finding.cross_store_discount,
+                                    final_price=jd_finding.final_price,
+                                    screenshot_path=",".join(screenshot_paths),
+                                    captured_at=jd_finding.captured_at,
+                                    evidence=jd_finding.evidence,
+                                )
+                            )
+                            continue
                 elif page.error:
-                    self.diagnostics.record(platform, f"failed to fetch {result.url}: {page.error}")
+                    self.diagnostics.record(
+                        platform,
+                        f"failed to fetch {target_url}: {page.error}",
+                        sku=candidate.sku,
+                    )
                 parsed = extract_price(combined_text)
                 if not parsed:
+                    self.diagnostics.record(
+                        platform,
+                        f"no price parsed for {target_url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
                     continue
                 evidence = build_evidence(
-                    platform=platform_from_url(result.url) or platform,
-                    url=result.url,
+                    platform=platform_from_url(target_url) or platform,
+                    url=target_url,
                     author=platform,
                     locator="price-text",
                     excerpt=clip(combined_text, 360),
@@ -231,7 +268,7 @@ class EcommerceSourceCollector:
                         subsidy_discount=parsed.subsidy_discount,
                         cross_store_discount=parsed.cross_store_discount,
                         final_price=parsed.final_price,
-                        screenshot_path=screenshot_path,
+                        screenshot_path=",".join(screenshot_paths),
                         captured_at=evidence.captured_at,
                         evidence=evidence,
                     )
