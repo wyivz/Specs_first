@@ -191,8 +191,8 @@ with st.sidebar:
     source_urls_text = st.text_area("Source URLs (optional)", "", placeholder="每行一个 URL，用于定点注入证据/价格")
     st.markdown("---")
     st.markdown("**双脑模式**")
-    st.markdown("- Gemini：Phase 2 民间脱水")
-    st.markdown("- OpenAI：Phase 4 冲突仲裁")
+    st.markdown("- **Gemini**：Phase 1/2/3 文本吞噬 + OCR")
+    st.markdown("- **OpenAI**：Phase 4 Structured Output 锁格式")
     st.caption("未配置 API Key 时自动降级为关键词规则引擎。")
     paused_task_id = st.session_state.get("paused_task_id")
     if paused_task_id:

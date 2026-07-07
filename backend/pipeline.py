@@ -229,6 +229,7 @@ class SpecsFirstPipeline:
                     use_browser=use_browser,
                     storage_state_path=storage_state_path,
                 )
+                prices = self.router.enrich_prices_with_ocr(candidate.sku, prices)
             except BrowserAuthRequired as exc:
                 checkpoint = TaskCheckpoint(
                     task_id=task_id,
@@ -276,7 +277,7 @@ class SpecsFirstPipeline:
                 {"sku": candidate.sku, "phase": 4},
                 on_event,
             )
-            warnings = self.router.arbitrate_conflicts(findings)
+            warnings = self.router.arbitrate_conflicts(findings, official_specs)
             summary = self.router.summarize(warnings, findings)
 
             asset = ProductAsset(

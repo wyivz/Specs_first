@@ -38,20 +38,20 @@ Targeted retrieval from brand sites, manuals, and whitepapers for focal length, 
 
 Concurrent fetch from Bilibili comments/danmaku, YouTube, Chiphell, Reddit, etc. **Gemini Flash** strips phrases like “legendary bokeh” and keeps only evidence-backed flaws.
 
-### Phase 3 · Price normalization
+### Phase 3 · Price OCR (Gemini multimodal)
 
-Parse list price, coupons, subsidies, and cross-store discounts from JD/Taobao pages to compute **real checkout price** (Playwright screenshot + Vision OCR planned).
+Playwright captures e-commerce pages; **Gemini Flash multimodal OCR** reads subsidies and checkout prices—not GPT.
 
-### Phase 4 · Conflict arbitration & vault export
+### Phase 4 · Structured arbitration & export (OpenAI Structured Output)
 
-**OpenAI** aligns official data with field reports via Strict JSON and writes Obsidian vault files (one SKU per note + Dataview master matrix).
+**OpenAI** is used **only** for Strict JSON Schema output: conflict arbitration and Obsidian frontmatter alignment. It does **not** perform text reading or OCR.
 
-### Dual-brain split
+### Dual-brain split (mandatory)
 
 ```
 FastAPI event bus
-    ├── Gemini 1.5 Flash   → Phase 1/2 high-throughput text cleaning
-    └── OpenAI gpt-4o(-mini) → Phase 3/4 vision extraction & structured final review
+    ├── Gemini 1.5 Flash   → Phase 1/2/3 massive text ingestion + screenshot OCR
+    └── OpenAI gpt-4o(-mini) → Phase 4 Structured Output only (strict JSON / YAML)
 ```
 
 Without API keys, the system falls back to a **keyword rules engine** so the mock flow still runs end-to-end.
@@ -76,7 +76,7 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 
 - [x] **End-to-end mock pipeline** for Zeiss / Sony / Sigma 50mm lenses
 - [x] **Four-phase pipeline + event bus** with `matrix_row_updated` for progressive UI refresh
-- [x] **Hybrid ModelRouter skeleton**: Gemini dehydration + OpenAI Strict JSON arbitration + keyword fallback
+- [x] **Hybrid ModelRouter**: Gemini for text detox/official specs/OCR; OpenAI **only** for Structured Output arbitration
 - [x] **Real collector adapters**: search discovery, URL injection, HTML extraction, price parsing
 - [x] **FastAPI**: `POST /tasks`, `GET /tasks/{id}/events` (SSE), `GET /result`
 - [x] **Streamlit UI**: Phase 0 SKU picker, progressive table, 🟡/🔴 conflict badges, evidence links
@@ -92,7 +92,7 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 
 ### Not started
 
-- [ ] E-commerce Vision OCR for checkout prices (gpt-4o multimodal)
+- [ ] E-commerce Gemini multimodal OCR for checkout prices (`enrich_prices_with_ocr` skeleton wired)
 - [ ] Captcha HITL: `PAUSED_NEED_AUTH` → UI modal → session resume
 - [ ] Bilibili/YouTube subtitle and danmaku parsers
 - [ ] Gemini context caching for long forum threads
@@ -104,7 +104,7 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 
 ### Milestone 1 · Hybrid model routing (largely complete)
 
-Run the FastAPI task pipeline; Gemini ingests large corpora; OpenAI Strict JSON writes stable SKU Markdown files.
+Run the FastAPI task pipeline; Gemini ingests large corpora and OCR screenshots; OpenAI Strict JSON locks output format.
 
 ### Milestone 2 · HITL checkpoint resume (in progress)
 
@@ -116,7 +116,7 @@ Run the FastAPI task pipeline; Gemini ingests large corpora; OpenAI Strict JSON 
 ### Milestone 3 · Production-grade collection
 
 1. Platform-specific adapters (Bilibili pages, JD mobile)
-2. Price screenshot + Vision slice OCR
+2. Price screenshots + Gemini Vision slice OCR
 3. Graceful degradation and diagnostics panel
 
 ### Milestone 4 · Knowledge-base enhancements
@@ -177,8 +177,8 @@ Copy `.env.example` to `.env`:
 ```env
 OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...
-DEFAULT_OPENAI_MODEL=gpt-4o-mini
-DEFAULT_GEMINI_MODEL=gemini-1.5-flash
+DEFAULT_OPENAI_MODEL=gpt-4o-mini   # Structured Output only
+DEFAULT_GEMINI_MODEL=gemini-1.5-flash  # text ingestion + OCR
 OBSIDIAN_VAULT_PATH=./vault_output
 SPECS_FIRST_MODE=mock
 ```
@@ -226,7 +226,7 @@ Enable the **Dataview** plugin in Obsidian and open the matrix file to render th
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+This project is licensed under the **GNU General Public License v3.0** — see [LICENSE](LICENSE)
 
 ## Related Docs
 

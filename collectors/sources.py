@@ -72,6 +72,7 @@ class OfficialSourceCollector:
 
         specs_by_name: dict[str, OfficialSpec] = {}
         highlights: list[str] = []
+        page_texts: list[str] = []
         for url in dict.fromkeys(urls):
             if not url.startswith("http"):
                 continue
@@ -80,11 +81,31 @@ class OfficialSourceCollector:
                 self.diagnostics.record("official", f"failed to fetch {url}: {result.error}")
                 continue
             text = html_to_text(result.text)
+            page_texts.append(text)
             for spec in extract_specs_from_text(text, result.url):
                 specs_by_name.setdefault(spec.name, spec)
             title = extract_title(result.text)
             if title and len(highlights) < 3:
                 highlights.append(clip(title, 80))
+
+        combined_text = "\n\n".join(page_texts)
+        if combined_text.strip():
+            try:
+                from backend.model_router import create_model_router
+
+                router = create_model_router()
+                gemini_specs, gemini_highlights = router.extract_official_specs_from_text(
+                    candidate.sku,
+                    combined_text,
+                    candidate.source_url,
+                )
+                for spec in gemini_specs:
+                    specs_by_name.setdefault(spec.name, spec)
+                for item in gemini_highlights:
+                    if item not in highlights and len(highlights) < 5:
+                        highlights.append(item)
+            except Exception:
+                pass
 
         for spec in infer_specs_from_sku(candidate):
             specs_by_name.setdefault(spec.name, spec)

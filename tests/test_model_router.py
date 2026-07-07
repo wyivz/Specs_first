@@ -47,7 +47,7 @@ class ModelRouterTest(unittest.TestCase):
             severity=ConflictLevel.MAJOR,
             evidence=[evidence],
         )
-        warnings = router.arbitrate_conflicts([finding])
+        warnings = router.arbitrate_conflicts([finding], official_specs=[])
         self.assertEqual(warnings[0].level, ConflictLevel.MAJOR)
 
 

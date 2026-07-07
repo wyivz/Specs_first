@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from backend.config import settings
-from schemas import ConflictLevel, ConflictWarning, EvidenceItem, RealWorldFinding
+from collectors.extractors import ParsedPrice
+from schemas import ConflictLevel, ConflictWarning, EvidenceItem, OfficialSpec, PriceFinding, RealWorldFinding
 
 
 FINDINGS_SCHEMA: dict[str, Any] = {
@@ -68,6 +70,16 @@ ARBITRATION_SCHEMA: dict[str, Any] = {
 class KeywordModelRouter:
     """Deterministic fallback when API keys are absent."""
 
+    def extract_official_specs_from_text(
+        self,
+        sku: str,
+        text: str,
+        source_url: str,
+    ) -> tuple[list[OfficialSpec], list[str]]:
+        from collectors.extractors import extract_specs_from_text
+
+        return extract_specs_from_text(text, source_url), []
+
     def extract_real_world_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
         findings: list[RealWorldFinding] = []
         seen_titles: set[str] = set()
@@ -124,7 +136,14 @@ class KeywordModelRouter:
                 findings.append(finding)
         return findings
 
-    def arbitrate_conflicts(self, findings: list[RealWorldFinding]) -> list[ConflictWarning]:
+    def enrich_prices_with_ocr(self, sku: str, prices: list[PriceFinding]) -> list[PriceFinding]:
+        return prices
+
+    def arbitrate_conflicts(
+        self,
+        findings: list[RealWorldFinding],
+        official_specs: list[OfficialSpec] | None = None,
+    ) -> list[ConflictWarning]:
         warnings: list[ConflictWarning] = []
         for finding in findings:
             if finding.title == "Uneven focus ring damping":
@@ -171,49 +190,131 @@ class KeywordModelRouter:
 
 
 class HybridModelRouter(KeywordModelRouter):
-    """Gemini dehydrates noisy corpus; OpenAI performs strict arbitration."""
+    """Gemini: massive text ingestion + multimodal OCR. OpenAI: structured output only."""
 
     def __init__(self, mode: str | None = None) -> None:
         self.mode = mode or settings.model_mode
         self._keyword = KeywordModelRouter()
+        self._last_summary = ""
+
+    def extract_official_specs_from_text(
+        self,
+        sku: str,
+        text: str,
+        source_url: str,
+    ) -> tuple[list[OfficialSpec], list[str]]:
+        if settings.has_gemini and text.strip():
+            try:
+                specs, highlights = self._gemini_extract_official_specs(sku, text, source_url)
+                if specs:
+                    return specs, highlights
+            except Exception:
+                pass
+        return self._keyword.extract_official_specs_from_text(sku, text, source_url)
 
     def extract_real_world_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
         if not corpus:
             return []
         if settings.has_gemini:
             try:
-                findings = self._gemini_extract(sku, corpus)
+                findings = self._gemini_extract_findings(sku, corpus)
                 if findings:
                     return findings
             except Exception:
                 pass
         return self._keyword.extract_real_world_findings(sku, corpus)
 
-    def arbitrate_conflicts(self, findings: list[RealWorldFinding]) -> list[ConflictWarning]:
+    def enrich_prices_with_ocr(self, sku: str, prices: list[PriceFinding]) -> list[PriceFinding]:
+        if not settings.has_gemini:
+            return prices
+        enriched: list[PriceFinding] = []
+        for price in prices:
+            if not price.screenshot_path:
+                enriched.append(price)
+                continue
+            screenshot = Path(price.screenshot_path)
+            if not screenshot.exists():
+                enriched.append(price)
+                continue
+            try:
+                parsed = self._gemini_ocr_price(sku, screenshot, price.evidence.url)
+            except Exception:
+                enriched.append(price)
+                continue
+            if not parsed:
+                enriched.append(price)
+                continue
+            enriched.append(
+                PriceFinding(
+                    platform=price.platform,
+                    list_price=parsed.list_price,
+                    coupon_discount=parsed.coupon_discount,
+                    subsidy_discount=parsed.subsidy_discount,
+                    cross_store_discount=parsed.cross_store_discount,
+                    final_price=parsed.final_price,
+                    screenshot_path=price.screenshot_path,
+                    captured_at=price.captured_at,
+                    evidence=price.evidence,
+                )
+            )
+        return enriched or prices
+
+    def arbitrate_conflicts(
+        self,
+        findings: list[RealWorldFinding],
+        official_specs: list[OfficialSpec] | None = None,
+    ) -> list[ConflictWarning]:
+        self._last_summary = ""
         if settings.has_openai and findings:
             try:
-                warnings = self._openai_arbitrate(findings)
+                warnings = self._openai_arbitrate_structured(findings, official_specs or [])
                 if warnings is not None:
                     return warnings
             except Exception:
                 pass
-        return self._keyword.arbitrate_conflicts(findings)
+        return self._keyword.arbitrate_conflicts(findings, official_specs)
 
     def summarize(self, warnings: list[ConflictWarning], findings: list[RealWorldFinding]) -> str:
-        if settings.has_openai and (warnings or findings):
-            try:
-                summary = self._openai_summarize(warnings, findings)
-                if summary:
-                    return summary
-            except Exception:
-                pass
+        if self._last_summary:
+            return self._last_summary
         return self._keyword.summarize(warnings, findings)
 
-    def _gemini_extract(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
+    def _gemini_model(self):
         import google.generativeai as genai
 
         genai.configure(api_key=settings.gemini_api_key)
-        model = genai.GenerativeModel(settings.gemini_model)
+        return genai.GenerativeModel(settings.gemini_model)
+
+    def _gemini_extract_official_specs(
+        self,
+        sku: str,
+        text: str,
+        source_url: str,
+    ) -> tuple[list[OfficialSpec], list[str]]:
+        prompt = (
+            f"Extract official product specifications for {sku} from the source text below. "
+            "Return JSON only: "
+            '{"specs":[{"name":"focal_length|max_aperture|weight|optical_structure|minimum_focus_distance|filter_thread","value":"","unit":""}],'
+            '"highlights":["unique feature"]}. '
+            "Use only factual values present in the text.\n\n"
+            f"{text[:120000]}"
+        )
+        response = self._gemini_model().generate_content(prompt)
+        payload = _parse_json_payload(response.text or "")
+        specs = [
+            OfficialSpec(
+                name=str(item.get("name", "")).strip(),
+                value=str(item.get("value", "")).strip(),
+                unit=str(item.get("unit", "")).strip(),
+                source_url=source_url,
+            )
+            for item in payload.get("specs", [])
+            if item.get("name") and item.get("value")
+        ]
+        highlights = [str(item).strip() for item in payload.get("highlights", []) if str(item).strip()]
+        return specs, highlights[:5]
+
+    def _gemini_extract_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
         corpus_text = "\n\n".join(
             f"[{index}] platform={item.platform} author={item.author} url={item.url}\n{item.excerpt}"
             for index, item in enumerate(corpus)
@@ -227,7 +328,7 @@ class HybridModelRouter(KeywordModelRouter):
             "Each finding must reference one evidence_index from the corpus.\n\n"
             f"{corpus_text}"
         )
-        response = model.generate_content(prompt)
+        response = self._gemini_model().generate_content(prompt)
         payload = _parse_json_payload(response.text or "")
         findings: list[RealWorldFinding] = []
         for item in payload.get("findings", []):
@@ -246,42 +347,75 @@ class HybridModelRouter(KeywordModelRouter):
             )
         return findings
 
-    def _openai_arbitrate(self, findings: list[RealWorldFinding]) -> list[ConflictWarning] | None:
+    def _gemini_ocr_price(self, sku: str, screenshot: Path, source_url: str) -> ParsedPrice | None:
+        prompt = (
+            f"Read this e-commerce product page screenshot for {sku}. "
+            "Extract list price, coupon discount, subsidy discount, cross-store discount, and final checkout price in CNY. "
+            "Return JSON only: "
+            '{"list_price":0,"coupon_discount":0,"subsidy_discount":0,"cross_store_discount":0,"final_price":0}. '
+            f"Source URL for context: {source_url}"
+        )
+        response = self._gemini_model().generate_content(
+            [
+                prompt,
+                {"mime_type": "image/png", "data": screenshot.read_bytes()},
+            ]
+        )
+        payload = _parse_json_payload(response.text or "")
+        final_price = float(payload.get("final_price", 0))
+        if final_price <= 0:
+            return None
+        return ParsedPrice(
+            list_price=float(payload.get("list_price", final_price)),
+            coupon_discount=float(payload.get("coupon_discount", 0)),
+            subsidy_discount=float(payload.get("subsidy_discount", 0)),
+            cross_store_discount=float(payload.get("cross_store_discount", 0)),
+            final_price=final_price,
+        )
+
+    def _openai_arbitrate_structured(
+        self,
+        findings: list[RealWorldFinding],
+        official_specs: list[OfficialSpec],
+    ) -> list[ConflictWarning] | None:
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.openai_api_key)
-        findings_payload = [
-            {
-                "title": finding.title,
-                "detail": finding.detail,
-                "severity": finding.severity.value,
-                "evidence_urls": [item.url for item in finding.evidence],
-            }
-            for finding in findings
-        ]
+        payload = {
+            "findings": [
+                {
+                    "title": finding.title,
+                    "detail": finding.detail,
+                    "severity": finding.severity.value,
+                    "evidence_urls": [item.url for item in finding.evidence],
+                }
+                for finding in findings
+            ],
+            "official_specs": [
+                {"name": spec.name, "value": spec.value, "source_url": spec.source_url}
+                for spec in official_specs
+            ],
+        }
         response = client.chat.completions.create(
             model=settings.openai_model,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You arbitrate conflicts between official specs and real-world product reports. "
-                        "Return strict JSON only."
+                        "Arbitrate conflicts between official specs and real-world reports. "
+                        "Use OpenAI structured output only; do not add prose outside JSON."
                     ),
                 },
-                {
-                    "role": "user",
-                    "content": json.dumps({"findings": findings_payload}, ensure_ascii=False),
-                },
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
             response_format={
                 "type": "json_schema",
                 "json_schema": {"name": "arbitration", "strict": True, "schema": ARBITRATION_SCHEMA},
             },
         )
-        payload = json.loads(response.choices[0].message.content or "{}")
+        parsed = json.loads(response.choices[0].message.content or "{}")
         warnings: list[ConflictWarning] = []
-        for item in payload.get("warnings", []):
+        for item in parsed.get("warnings", []):
             index = int(item.get("finding_index", -1))
             if index < 0 or index >= len(findings):
                 continue
@@ -296,36 +430,8 @@ class HybridModelRouter(KeywordModelRouter):
                     evidence=finding.evidence,
                 )
             )
-        self._last_summary = str(payload.get("summary", ""))
+        self._last_summary = str(parsed.get("summary", ""))
         return warnings
-
-    def _openai_summarize(self, warnings: list[ConflictWarning], findings: list[RealWorldFinding]) -> str:
-        cached = getattr(self, "_last_summary", "")
-        if cached:
-            return cached
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.openai_api_key)
-        response = client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Write one concise arbitration summary sentence in Chinese or English matching the input language.",
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "warnings": [warning.arbitration_summary for warning in warnings],
-                            "findings": [finding.title for finding in findings],
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
-        )
-        return (response.choices[0].message.content or "").strip()
 
 
 def _parse_json_payload(text: str) -> dict[str, Any]:
