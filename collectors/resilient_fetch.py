@@ -43,6 +43,8 @@ class ResilientFetcher:
         "taobao.com",
         "tmall.com",
         "bilibili.com",
+        "youtube.com",
+        "youtu.be",
         "chiphell.com",
     )
 

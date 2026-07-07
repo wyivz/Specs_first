@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collectors.adapters.bilibili import BilibiliAdapter
+from collectors.adapters.youtube import YouTubeAdapter
 from collectors.adapters.jd import JdAdapter
 from collectors.browser import BrowserAuthRequired, PlaywrightCapture
 from collectors.diagnostics import CollectorDiagnostics
@@ -151,6 +152,7 @@ class VideoSourceCollector:
         self.diagnostics = diagnostics or CollectorDiagnostics()
         self.resilient = resilient or ResilientFetcher(http, diagnostics=self.diagnostics)
         self.bilibili = BilibiliAdapter()
+        self.youtube = YouTubeAdapter(http)
 
     def collect(
         self,
@@ -172,7 +174,7 @@ class VideoSourceCollector:
                 page = self.resilient.fetch(
                     result.url,
                     task_id=task_id,
-                    use_browser=use_browser or platform == "Bilibili",
+                    use_browser=use_browser or platform in {"Bilibili", "YouTube"},
                     storage_state_path=storage_state_path,
                     sku=candidate.sku,
                 )
@@ -180,6 +182,10 @@ class VideoSourceCollector:
                     if platform == "Bilibili" and self.bilibili.supports(page.url):
                         evidence.extend(
                             self.bilibili.extract_evidence(page.url, page.markup, confidence=0.6)
+                        )
+                    elif platform == "YouTube" and self.youtube.supports(page.url):
+                        evidence.extend(
+                            self.youtube.extract_evidence(page.url, page.markup, confidence=0.62)
                         )
                     else:
                         evidence.extend(evidence_from_page(platform, page.url, page.markup, confidence=0.58))

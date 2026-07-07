@@ -97,7 +97,7 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 - [x] **Gemini multi-slice OCR skeleton**: batch OCR via comma-separated screenshot paths
 - [x] **Graceful degradation + diagnostics panel**: events, API `/diagnostics`, Streamlit panel
 - [x] **Per-SKU fault isolation**: one failed SKU does not block the rest
-- [x] **Interference-resistant page fetch**: HTML sanitization, captcha detection, HTTP→Playwright fallback
+- [x] **YouTube subtitle adapter**: caption tracks from `ytInitialPlayerResponse`, review-oriented transcript snippets
 - [~] **Live Gemini OCR**: requires API key + Playwright captures
 
 ---
@@ -121,7 +121,8 @@ Run the FastAPI task pipeline; Gemini ingests large corpora and OCR screenshots;
 2. ✅ Gemini multi-slice OCR + retry / tolerant JSON parsing
 3. ✅ Graceful degradation, per-SKU isolation, diagnostics panel
 4. ✅ Interference-resistant fetch (`page_sanitize` + `resilient_fetch` + browser main-content targeting)
-5. ⬜ YouTube subtitles, context caching, multi-category schemas
+5. ✅ YouTube subtitle adapter (`captionTracks` → transcript snippets)
+6. ⬜ YouTube comments / Bilibili danmaku API, context caching, multi-category schemas
 
 ### Milestone 4 · Knowledge-base enhancements
 

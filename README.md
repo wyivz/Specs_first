@@ -97,7 +97,7 @@ FastAPI 事件总线
 - [x] **Gemini 多切片 OCR 骨架**：`enrich_prices_with_ocr` 支持逗号分隔截图批量 OCR
 - [x] **采集降级与诊断面板**：`diagnostics_updated` 事件、API `/diagnostics`、Streamlit 诊断区
 - [x] **单 SKU 故障隔离**：某个 SKU 失败不阻断其余对比
-- [x] **抗干扰页面抓取**：HTML 净化（去 CSS/导航/广告）、验证码检测、HTTP→Playwright 自动降级
+- [x] **YouTube 字幕抓取 Adapter**：从 `ytInitialPlayerResponse` 解析 caption track，提取评测相关 transcript 片段
 - [~] **Gemini OCR 实调**：需 API Key + Playwright 截图
 
 ---
@@ -121,7 +121,8 @@ FastAPI 事件总线
 2. ✅ Gemini 多切片 OCR + 模型调用重试/容错 JSON 解析
 3. ✅ 采集失败降级、单 SKU 隔离、诊断面板
 4. ✅ 复杂网页抗干扰抓取（`page_sanitize` + `resilient_fetch` + 浏览器内容区定位）
-5. ⬜ YouTube 字幕解析、Context Caching、多品类 Schema
+5. ✅ YouTube 字幕 Adapter（`captionTracks` → transcript 片段）
+6. ⬜ YouTube 评论 / B 站弹幕 API、Context Caching、多品类 Schema
 
 ### Milestone 4 · 知识库增强
 

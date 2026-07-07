@@ -29,7 +29,13 @@ class FakeHttp:
                     "大光圈紫边明显，对焦环阻尼偶发卡顿",
                 )
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 site:youtube.com review chromatic aberration focus ring issue": [],
+            "Zeiss Makro-Planar T* 50mm f/2 site:youtube.com review chromatic aberration focus ring issue": [
+                SearchResult(
+                    "YouTube review: Zeiss 50mm chromatic aberration",
+                    "https://www.youtube.com/watch?v=mock-yt-zeiss",
+                    "Purple fringing and focus ring issues discussed in review.",
+                )
+            ],
             "Zeiss Makro-Planar T* 50mm f/2 site:chiphell.com 色散 阻尼 品控 翻车": [
                 SearchResult(
                     "Chiphell Zeiss 50mm 翻车记录",
@@ -55,6 +61,12 @@ class FakeHttp:
                 Minimum Focus Distance: 0.24m. Filter Thread: 67mm.</html>
             """,
             "https://www.bilibili.com/video/BVmock": "这支镜头大光圈紫边明显，对焦环阻尼偶尔卡顿。",
+            "https://www.youtube.com/watch?v=mock-yt-zeiss": """
+                <html><script>var ytInitialPlayerResponse = {"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"https://www.youtube.com/api/timedtext?v=mock-yt-zeiss&lang=en","languageCode":"en"}]}}};</script></html>
+            """,
+            "https://www.youtube.com/api/timedtext?v=mock-yt-zeiss&lang=en": """
+                <transcript><text start="0" dur="2">There is obvious purple fringing wide open.</text></transcript>
+            """,
             "https://www.chiphell.com/thread-mock.html": "第887楼：对焦环阻尼不均，疑似品控问题。",
             "https://item.jd.com/mock-zeiss.html": "标价 5999 元，优惠券 500，补贴 600，到手价 4899",
         }
