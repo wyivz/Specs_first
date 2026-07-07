@@ -1,0 +1,346 @@
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from backend.config import settings
+from schemas import ConflictLevel, ConflictWarning, EvidenceItem, RealWorldFinding
+
+
+FINDINGS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "detail": {"type": "string"},
+                    "condition": {"type": "string"},
+                    "frequency": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["minor", "major"]},
+                    "evidence_index": {"type": "integer"},
+                },
+                "required": ["title", "detail", "condition", "frequency", "severity", "evidence_index"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["findings"],
+    "additionalProperties": False,
+}
+
+ARBITRATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "warnings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string"},
+                    "official_claim": {"type": "string"},
+                    "real_world_claim": {"type": "string"},
+                    "level": {"type": "string", "enum": ["minor", "major"]},
+                    "arbitration_summary": {"type": "string"},
+                    "finding_index": {"type": "integer"},
+                },
+                "required": [
+                    "field",
+                    "official_claim",
+                    "real_world_claim",
+                    "level",
+                    "arbitration_summary",
+                    "finding_index",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "summary": {"type": "string"},
+    },
+    "required": ["warnings", "summary"],
+    "additionalProperties": False,
+}
+
+
+class KeywordModelRouter:
+    """Deterministic fallback when API keys are absent."""
+
+    def extract_real_world_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
+        findings: list[RealWorldFinding] = []
+        seen_titles: set[str] = set()
+        for evidence in corpus:
+            text = evidence.excerpt.lower()
+            finding: RealWorldFinding | None = None
+            if any(term in text for term in ["purple fringing", "chromatic aberration", "longitudinal ca", "紫边", "色散"]):
+                finding = RealWorldFinding(
+                    title="Visible chromatic aberration",
+                    detail=evidence.excerpt,
+                    condition="high-contrast or wide-open shooting",
+                    frequency="reported by field users",
+                    severity=ConflictLevel.MINOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["focus ring", "damping", "sticky", "对焦环", "阻尼", "卡顿"]):
+                finding = RealWorldFinding(
+                    title="Uneven focus ring damping",
+                    detail=evidence.excerpt,
+                    condition="manual focusing near close-focus range",
+                    frequency="copy-variation report",
+                    severity=ConflictLevel.MAJOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["front-heavy", "heavy", "压手", "太重", "重量"]):
+                finding = RealWorldFinding(
+                    title="Front-heavy handling",
+                    detail=evidence.excerpt,
+                    condition="small camera bodies",
+                    frequency="single field report",
+                    severity=ConflictLevel.MINOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["flare", "ghosting", "眩光", "鬼影"]):
+                finding = RealWorldFinding(
+                    title="Flare or ghosting risk",
+                    detail=evidence.excerpt,
+                    condition="strong backlight or point light sources",
+                    frequency="field report",
+                    severity=ConflictLevel.MINOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["copy variation", "decenter", "品控", "偏心"]):
+                finding = RealWorldFinding(
+                    title="Copy variation or QC risk",
+                    detail=evidence.excerpt,
+                    condition="sample-dependent",
+                    frequency="field report",
+                    severity=ConflictLevel.MAJOR,
+                    evidence=[evidence],
+                )
+            if finding and finding.title not in seen_titles:
+                seen_titles.add(finding.title)
+                findings.append(finding)
+        return findings
+
+    def arbitrate_conflicts(self, findings: list[RealWorldFinding]) -> list[ConflictWarning]:
+        warnings: list[ConflictWarning] = []
+        for finding in findings:
+            if finding.title == "Uneven focus ring damping":
+                warnings.append(
+                    ConflictWarning(
+                        field="minimum_focus_distance",
+                        official_claim="Official close-focus capability is valid, but ergonomics are not specified.",
+                        real_world_claim=finding.detail,
+                        level=ConflictLevel.MAJOR,
+                        arbitration_summary="Official close-focus specs remain valid; manual focus feel has credible copy-variation risk.",
+                        evidence=finding.evidence,
+                    )
+                )
+            elif finding.title == "Visible chromatic aberration":
+                warnings.append(
+                    ConflictWarning(
+                        field="optical_structure",
+                        official_claim="Official optical structure is a factual specification.",
+                        real_world_claim=finding.detail,
+                        level=ConflictLevel.MINOR,
+                        arbitration_summary="Official optical formula is not contradicted; real-world edge CA is a meaningful optical tradeoff.",
+                        evidence=finding.evidence,
+                    )
+                )
+            elif finding.title in {"Copy variation or QC risk", "Flare or ghosting risk", "Front-heavy handling"}:
+                warnings.append(
+                    ConflictWarning(
+                        field="optical_structure",
+                        official_claim="Official optical specifications do not cover sample variation or scene-dependent artifacts.",
+                        real_world_claim=finding.detail,
+                        level=finding.severity,
+                        arbitration_summary="The official specs are not directly falsified, but field evidence flags a purchase-relevant risk.",
+                        evidence=finding.evidence,
+                    )
+                )
+        return warnings
+
+    def summarize(self, warnings: list[ConflictWarning], findings: list[RealWorldFinding]) -> str:
+        if any(warning.level == ConflictLevel.MAJOR for warning in warnings):
+            return "Official specifications are usable, but field evidence shows a major handling or QC risk that should be considered before purchase."
+        if findings:
+            return "Official specifications are broadly consistent; real-world reports show minor optical or handling tradeoffs."
+        return "No evidence-backed real-world flaws were found in the collected corpus."
+
+
+class HybridModelRouter(KeywordModelRouter):
+    """Gemini dehydrates noisy corpus; OpenAI performs strict arbitration."""
+
+    def __init__(self, mode: str | None = None) -> None:
+        self.mode = mode or settings.model_mode
+        self._keyword = KeywordModelRouter()
+
+    def extract_real_world_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
+        if not corpus:
+            return []
+        if settings.has_gemini:
+            try:
+                findings = self._gemini_extract(sku, corpus)
+                if findings:
+                    return findings
+            except Exception:
+                pass
+        return self._keyword.extract_real_world_findings(sku, corpus)
+
+    def arbitrate_conflicts(self, findings: list[RealWorldFinding]) -> list[ConflictWarning]:
+        if settings.has_openai and findings:
+            try:
+                warnings = self._openai_arbitrate(findings)
+                if warnings is not None:
+                    return warnings
+            except Exception:
+                pass
+        return self._keyword.arbitrate_conflicts(findings)
+
+    def summarize(self, warnings: list[ConflictWarning], findings: list[RealWorldFinding]) -> str:
+        if settings.has_openai and (warnings or findings):
+            try:
+                summary = self._openai_summarize(warnings, findings)
+                if summary:
+                    return summary
+            except Exception:
+                pass
+        return self._keyword.summarize(warnings, findings)
+
+    def _gemini_extract(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
+        import google.generativeai as genai
+
+        genai.configure(api_key=settings.gemini_api_key)
+        model = genai.GenerativeModel(settings.gemini_model)
+        corpus_text = "\n\n".join(
+            f"[{index}] platform={item.platform} author={item.author} url={item.url}\n{item.excerpt}"
+            for index, item in enumerate(corpus)
+        )
+        prompt = (
+            f"You are a harsh product QA reviewer for {sku}. "
+            "Discard marketing fluff and subjective praise. "
+            "Extract only evidence-backed real-world flaws from the corpus below. "
+            "Return JSON only with shape "
+            '{"findings":[{"title":"","detail":"","condition":"","frequency":"","severity":"minor|major","evidence_index":0}]}. '
+            "Each finding must reference one evidence_index from the corpus.\n\n"
+            f"{corpus_text}"
+        )
+        response = model.generate_content(prompt)
+        payload = _parse_json_payload(response.text or "")
+        findings: list[RealWorldFinding] = []
+        for item in payload.get("findings", []):
+            index = int(item.get("evidence_index", -1))
+            if index < 0 or index >= len(corpus):
+                continue
+            findings.append(
+                RealWorldFinding(
+                    title=str(item.get("title", "Real-world issue")).strip(),
+                    detail=str(item.get("detail", "")).strip() or corpus[index].excerpt,
+                    condition=str(item.get("condition", "unspecified")).strip(),
+                    frequency=str(item.get("frequency", "field report")).strip(),
+                    severity=ConflictLevel(str(item.get("severity", "minor"))),
+                    evidence=[corpus[index]],
+                )
+            )
+        return findings
+
+    def _openai_arbitrate(self, findings: list[RealWorldFinding]) -> list[ConflictWarning] | None:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=settings.openai_api_key)
+        findings_payload = [
+            {
+                "title": finding.title,
+                "detail": finding.detail,
+                "severity": finding.severity.value,
+                "evidence_urls": [item.url for item in finding.evidence],
+            }
+            for finding in findings
+        ]
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You arbitrate conflicts between official specs and real-world product reports. "
+                        "Return strict JSON only."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps({"findings": findings_payload}, ensure_ascii=False),
+                },
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "arbitration", "strict": True, "schema": ARBITRATION_SCHEMA},
+            },
+        )
+        payload = json.loads(response.choices[0].message.content or "{}")
+        warnings: list[ConflictWarning] = []
+        for item in payload.get("warnings", []):
+            index = int(item.get("finding_index", -1))
+            if index < 0 or index >= len(findings):
+                continue
+            finding = findings[index]
+            warnings.append(
+                ConflictWarning(
+                    field=str(item.get("field", "general")),
+                    official_claim=str(item.get("official_claim", "")),
+                    real_world_claim=str(item.get("real_world_claim", finding.detail)),
+                    level=ConflictLevel(str(item.get("level", finding.severity.value))),
+                    arbitration_summary=str(item.get("arbitration_summary", "")),
+                    evidence=finding.evidence,
+                )
+            )
+        self._last_summary = str(payload.get("summary", ""))
+        return warnings
+
+    def _openai_summarize(self, warnings: list[ConflictWarning], findings: list[RealWorldFinding]) -> str:
+        cached = getattr(self, "_last_summary", "")
+        if cached:
+            return cached
+        from openai import OpenAI
+
+        client = OpenAI(api_key=settings.openai_api_key)
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Write one concise arbitration summary sentence in Chinese or English matching the input language.",
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "warnings": [warning.arbitration_summary for warning in warnings],
+                            "findings": [finding.title for finding in findings],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        )
+        return (response.choices[0].message.content or "").strip()
+
+
+def _parse_json_payload(text: str) -> dict[str, Any]:
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return json.loads(text)
+
+
+def create_model_router(mode: str | None = None) -> KeywordModelRouter:
+    resolved = mode or settings.model_mode
+    if resolved in {"hybrid", "partial", "keyword"} and (settings.has_gemini or settings.has_openai):
+        return HybridModelRouter(resolved)
+    return KeywordModelRouter()
+
+
+ModelRouter = create_model_router
