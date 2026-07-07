@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from schemas import ComparisonMatrix, ProductAsset
+from schemas import CellStatus, ComparisonCell, ComparisonMatrix, ProductAsset
 
 
 class ObsidianWriter:
@@ -71,33 +71,69 @@ class ObsidianWriter:
         return path
 
     def write_matrix_view(self, category: str, matrix: ComparisonMatrix) -> Path:
+        """Write the Dataview matrix view file.
+        
+        The Dataview query is dynamically generated from the matrix columns,
+        making it work for any product category.
+        """
         path = self.matrix_dir / f"{slugify(category)}_progressive_comparison_matrix.md"
-        content = "\n".join([
-            f"# 📷 {category} 参数与真实翻车点横向比对矩阵",
-            "",
+        
+        # Dynamically generate Dataview column definitions from matrix columns
+        # Skip sku and brand as they're handled specially, and skip trailer columns
+        dataview_columns: list[str] = []
+        for col in matrix.columns:
+            if col.key in ("sku", "brand", "price_real_world_min", "critical_flaws", "arbitration_summary"):
+                continue
+            # Convert column key to frontmatter field name format
+            field_name = f"{col.key}_official"
+            dataview_columns.append(f'    {field_name} AS "{col.label}"')
+        
+        # Build the Dataview query
+        dataview_lines = [
             "```dataview",
             "TABLE",
-            '    focal_length_official AS "焦距"',
-            '    max_aperture_official AS "最大光圈"',
-            '    weight_official AS "重量"',
-            '    optical_structure_official AS "官方结构"',
-            '    spec_highlights AS "独有特性"',
+        ]
+        
+        # Add spec columns dynamically
+        if dataview_columns:
+            dataview_lines.extend(dataview_columns)
+        
+        # Add standard trailer columns
+        dataview_lines.extend([
             '    price_real_world_min AS "真实到手价(元)"',
             '    critical_flaws AS "💥 民间实测翻车点"',
             '    arbitration_summary AS "⚖️ 终审仲裁"',
             'FROM #Specs-First AND "01_Product_Items"',
             "SORT price_real_world_min ASC",
             "```",
+        ])
+        
+        # Build the markdown table snapshot
+        table_header = "| SKU | Brand | " + " | ".join(col.label for col in matrix.columns if col.key not in ("sku", "brand")) + " |"
+        table_separator = "| --- | --- | " + " | ".join("---" for col in matrix.columns if col.key not in ("sku", "brand")) + " |"
+        table_rows: list[str] = []
+        for row in matrix.rows:
+            cells = [str(row.get("sku", ComparisonCell("", CellStatus.NORMAL)).value)]
+            cells.append(str(row.get("brand", ComparisonCell("", CellStatus.NORMAL)).value))
+            for col in matrix.columns:
+                if col.key in ("sku", "brand"):
+                    continue
+                cell = row.get(col.key, ComparisonCell("", CellStatus.NORMAL))
+                cells.append(str(cell.value) if cell.value is not None else "")
+            table_rows.append("| " + " | ".join(cells) + " |")
+        
+        content = "\n".join([
+            f"# 📊 {category} 参数与真实翻车点横向比对矩阵",
+            "",
+            *dataview_lines,
             "",
             "## 前端矩阵快照",
             "",
-            "| SKU | Price | Flaws | Arbitration |",
-            "| --- | ---: | --- | --- |",
-            *[
-                f"| {row['sku'].value} | {row['price_real_world_min'].value} | {row['critical_flaws'].value} | {row['arbitration_summary'].value} |"
-                for row in matrix.rows
-            ],
+            table_header,
+            table_separator,
+            *table_rows,
         ])
+        
         path.write_text(content + "\n", encoding="utf-8")
         return path
 

@@ -10,6 +10,17 @@ CAPTURED_AT = datetime(2026, 7, 7, 12, 0, tzinfo=UTC).isoformat()
 
 
 class MockCollector(Collector):
+    """Mock collector for demonstration and testing.
+    
+    NOTE: The lens-related SKUs and parameters below are provided as EXAMPLES ONLY
+    for demonstration purposes. The system is designed to be category-agnostic and
+    will work with any product type (phones, keyboards, cameras, appliances, etc.).
+    
+    In production, the RealCollector will fetch actual product data based on the
+    category parameter, and the spec columns will be dynamically determined from
+    the official specs extracted from product pages.
+    """
+    
     def discover_candidates(self, query: str, category: str) -> list[ProductCandidate]:
         return [
             ProductCandidate(

@@ -10,15 +10,15 @@ from schemas.models import (
 )
 
 
-DEFAULT_LENS_COLUMNS = [
+# Default columns for any product category - dynamically derived from official_specs
+# The spec column names are determined by the product category at runtime,
+# not hardcoded to any specific product type like lenses.
+DEFAULT_BASE_COLUMNS = [
     ColumnDefinition("sku", "SKU"),
     ColumnDefinition("brand", "Brand"),
-    ColumnDefinition("focal_length", "Focal Length"),
-    ColumnDefinition("max_aperture", "Max Aperture"),
-    ColumnDefinition("weight", "Weight"),
-    ColumnDefinition("optical_structure", "Optical Structure"),
-    ColumnDefinition("minimum_focus_distance", "Minimum Focus"),
-    ColumnDefinition("filter_thread", "Filter Thread"),
+]
+
+DEFAULT_TRAILER_COLUMNS = [
     ColumnDefinition("price_real_world_min", "Real-World Min Price"),
     ColumnDefinition("critical_flaws", "Critical Flaws"),
     ColumnDefinition("arbitration_summary", "Arbitration"),
@@ -26,6 +26,27 @@ DEFAULT_LENS_COLUMNS = [
 
 
 def build_comparison_matrix(assets: list[ProductAsset]) -> ComparisonMatrix:
+    """Build a comparison matrix from product assets.
+    
+    The spec columns are dynamically derived from the official_specs in each asset,
+    making this function work for any product category (lenses, phones, keyboards, etc.).
+    """
+    if not assets:
+        return ComparisonMatrix(columns=DEFAULT_BASE_COLUMNS + DEFAULT_TRAILER_COLUMNS, rows=[])
+    
+    # Collect all unique spec names across all assets (preserving order)
+    all_spec_names: list[str] = []
+    seen_spec_names: set[str] = set()
+    for asset in assets:
+        for spec in asset.official_specs:
+            if spec.name not in seen_spec_names:
+                all_spec_names.append(spec.name)
+                seen_spec_names.add(spec.name)
+    
+    # Build column definitions
+    spec_columns = [ColumnDefinition(name, name.replace("_", " ").title()) for name in all_spec_names]
+    columns = DEFAULT_BASE_COLUMNS + spec_columns + DEFAULT_TRAILER_COLUMNS
+    
     rows: list[dict[str, ComparisonCell]] = []
 
     for asset in assets:
@@ -39,14 +60,8 @@ def build_comparison_matrix(assets: list[ProductAsset]) -> ComparisonMatrix:
             "brand": ComparisonCell(asset.brand, CellStatus.NORMAL),
         }
 
-        for key in [
-            "focal_length",
-            "max_aperture",
-            "weight",
-            "optical_structure",
-            "minimum_focus_distance",
-            "filter_thread",
-        ]:
+        # Dynamically handle all spec columns
+        for key in all_spec_names:
             spec = specs.get(key)
             warning = conflict_by_field.get(key)
             if warning:
@@ -91,7 +106,7 @@ def build_comparison_matrix(assets: list[ProductAsset]) -> ComparisonMatrix:
         )
         rows.append(row)
 
-    return ComparisonMatrix(columns=DEFAULT_LENS_COLUMNS, rows=rows)
+    return ComparisonMatrix(columns=columns, rows=rows)
 
 
 def build_partial_row(asset: ProductAsset) -> dict:

@@ -69,7 +69,13 @@ ARBITRATION_SCHEMA: dict[str, Any] = {
 
 
 class KeywordModelRouter:
-    """Deterministic fallback when API keys are absent."""
+    """Deterministic fallback when API keys are absent.
+    
+    NOTE: The keyword patterns below are EXAMPLES for common product issues.
+    In production with real LLM APIs (Gemini/OpenAI), the extraction is done
+    by the model based on the actual product context, not hardcoded patterns.
+    This fallback exists only for testing without API keys.
+    """
 
     def extract_official_specs_from_text(
         self,
@@ -82,14 +88,21 @@ class KeywordModelRouter:
         return extract_specs_from_text(text, source_url), []
 
     def extract_real_world_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
+        """Extract real-world findings from corpus using keyword patterns.
+        
+        NOTE: These patterns are EXAMPLES for demonstration. In production,
+        the Gemini model will dynamically identify issues based on product context.
+        """
         findings: list[RealWorldFinding] = []
         seen_titles: set[str] = set()
         for evidence in corpus:
             text = evidence.excerpt.lower()
             finding: RealWorldFinding | None = None
+            
+            # Generic quality control issues
             if any(term in text for term in ["purple fringing", "chromatic aberration", "longitudinal ca", "紫边", "色散"]):
                 finding = RealWorldFinding(
-                    title="Visible chromatic aberration",
+                    title="Visible optical aberration",
                     detail=evidence.excerpt,
                     condition="high-contrast or wide-open shooting",
                     frequency="reported by field users",
@@ -98,25 +111,25 @@ class KeywordModelRouter:
                 )
             elif any(term in text for term in ["focus ring", "damping", "sticky", "对焦环", "阻尼", "卡顿"]):
                 finding = RealWorldFinding(
-                    title="Uneven focus ring damping",
+                    title="Mechanical control issue",
                     detail=evidence.excerpt,
-                    condition="manual focusing near close-focus range",
+                    condition="during normal operation",
                     frequency="copy-variation report",
                     severity=ConflictLevel.MAJOR,
                     evidence=[evidence],
                 )
             elif any(term in text for term in ["front-heavy", "heavy", "压手", "太重", "重量"]):
                 finding = RealWorldFinding(
-                    title="Front-heavy handling",
+                    title="Weight or balance concern",
                     detail=evidence.excerpt,
-                    condition="small camera bodies",
-                    frequency="single field report",
+                    condition="during extended use",
+                    frequency="field report",
                     severity=ConflictLevel.MINOR,
                     evidence=[evidence],
                 )
             elif any(term in text for term in ["flare", "ghosting", "眩光", "鬼影"]):
                 finding = RealWorldFinding(
-                    title="Flare or ghosting risk",
+                    title="Lens flare or ghosting",
                     detail=evidence.excerpt,
                     condition="strong backlight or point light sources",
                     frequency="field report",
@@ -125,13 +138,33 @@ class KeywordModelRouter:
                 )
             elif any(term in text for term in ["copy variation", "decenter", "品控", "偏心"]):
                 finding = RealWorldFinding(
-                    title="Copy variation or QC risk",
+                    title="Quality control or sample variation",
                     detail=evidence.excerpt,
                     condition="sample-dependent",
                     frequency="field report",
                     severity=ConflictLevel.MAJOR,
                     evidence=[evidence],
                 )
+            # Generic defect patterns for any product
+            elif any(term in text for term in ["defect", "fail", "broken", "缺陷", "故障", "损坏"]):
+                finding = RealWorldFinding(
+                    title="Product defect report",
+                    detail=evidence.excerpt,
+                    condition="normal usage",
+                    frequency="field report",
+                    severity=ConflictLevel.MAJOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["noise", "rattle", "noise", "异响", "噪音"]):
+                finding = RealWorldFinding(
+                    title="Noise or rattle issue",
+                    detail=evidence.excerpt,
+                    condition="during operation",
+                    frequency="field report",
+                    severity=ConflictLevel.MINOR,
+                    evidence=[evidence],
+                )
+                
             if finding and finding.title not in seen_titles:
                 seen_titles.add(finding.title)
                 findings.append(finding)
@@ -145,38 +178,68 @@ class KeywordModelRouter:
         findings: list[RealWorldFinding],
         official_specs: list[OfficialSpec] | None = None,
     ) -> list[ConflictWarning]:
+        """Arbitrate conflicts between official specs and real-world findings.
+        
+        NOTE: This keyword-based fallback provides generic conflict detection.
+        In production with OpenAI/Gemini, the arbitration is done intelligently
+        based on the actual product context and spec names.
+        """
         warnings: list[ConflictWarning] = []
+        spec_names = [spec.name for spec in (official_specs or [])]
+        
         for finding in findings:
-            if finding.title == "Uneven focus ring damping":
+            # Generic arbitration: map findings to related spec fields when possible
+            # Otherwise, create a general warning
+            
+            # Try to find a related spec field
+            related_field = "general_spec"
+            for spec_name in spec_names:
+                if any(term in spec_name.lower() for term in ["focus", "optical", "mechanical", "build", "quality"]):
+                    related_field = spec_name
+                    break
+            
+            if "mechanical" in finding.title.lower() or "control" in finding.title.lower():
                 warnings.append(
                     ConflictWarning(
-                        field="minimum_focus_distance",
-                        official_claim="Official close-focus capability is valid, but ergonomics are not specified.",
+                        field=related_field,
+                        official_claim="Official specifications may not cover mechanical or control feel.",
                         real_world_claim=finding.detail,
                         level=ConflictLevel.MAJOR,
-                        arbitration_summary="Official close-focus specs remain valid; manual focus feel has credible copy-variation risk.",
+                        arbitration_summary="Official specs are valid; field evidence shows a mechanical or control risk to consider.",
                         evidence=finding.evidence,
                     )
                 )
-            elif finding.title == "Visible chromatic aberration":
+            elif "optical" in finding.title.lower() or "aberration" in finding.title.lower():
                 warnings.append(
                     ConflictWarning(
-                        field="optical_structure",
-                        official_claim="Official optical structure is a factual specification.",
+                        field=related_field if related_field != "general_spec" else "optical_specifications",
+                        official_claim="Official specifications are factual.",
                         real_world_claim=finding.detail,
                         level=ConflictLevel.MINOR,
-                        arbitration_summary="Official optical formula is not contradicted; real-world edge CA is a meaningful optical tradeoff.",
+                        arbitration_summary="Official specs are not contradicted; real-world evidence shows a tradeoff to consider.",
                         evidence=finding.evidence,
                     )
                 )
-            elif finding.title in {"Copy variation or QC risk", "Flare or ghosting risk", "Front-heavy handling"}:
+            elif "quality" in finding.title.lower() or "defect" in finding.title.lower():
                 warnings.append(
                     ConflictWarning(
-                        field="optical_structure",
-                        official_claim="Official optical specifications do not cover sample variation or scene-dependent artifacts.",
+                        field="quality_control",
+                        official_claim="Official specifications do not cover sample variation or quality control.",
                         real_world_claim=finding.detail,
                         level=finding.severity,
                         arbitration_summary="The official specs are not directly falsified, but field evidence flags a purchase-relevant risk.",
+                        evidence=finding.evidence,
+                    )
+                )
+            else:
+                # Generic warning for any finding
+                warnings.append(
+                    ConflictWarning(
+                        field=related_field,
+                        official_claim="Official specifications may not cover this aspect.",
+                        real_world_claim=finding.detail,
+                        level=finding.severity,
+                        arbitration_summary="Field evidence shows a consideration not covered by official specs.",
                         evidence=finding.evidence,
                     )
                 )

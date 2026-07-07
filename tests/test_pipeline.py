@@ -20,7 +20,8 @@ class PipelineTest(unittest.TestCase):
 
             zeiss_row = result.matrix.rows[0]
             self.assertEqual(zeiss_row["critical_flaws"].status, CellStatus.WARNING)
-            self.assertIn("Visible chromatic aberration", zeiss_row["critical_flaws"].value)
+            # Title has been generalized to be category-agnostic
+            self.assertIn("aberration", zeiss_row["critical_flaws"].value.lower())
             self.assertTrue(zeiss_row["critical_flaws"].evidence[0].url.startswith("https://"))
             self.assertEqual(zeiss_row["price_real_world_min"].value, 4899)
             self.assertEqual(zeiss_row["arbitration_summary"].status, CellStatus.CONFLICT)
