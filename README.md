@@ -222,7 +222,7 @@ vault_output/
 
 ## 许可证
 
-MIT（待补充 LICENSE 文件）
+MIT — 详见 [LICENSE](LICENSE)
 
 ## 相关文档
 

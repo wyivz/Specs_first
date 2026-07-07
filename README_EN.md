@@ -222,7 +222,7 @@ Enable the **Dataview** plugin in Obsidian and open the matrix file to render th
 
 ## License
 
-MIT (LICENSE file TBD)
+MIT — see [LICENSE](LICENSE)
 
 ## Related Docs
 
