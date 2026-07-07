@@ -81,13 +81,14 @@ FastAPI 事件总线
 - [x] **FastAPI**：`POST /tasks`、`GET /tasks/{id}/events`（SSE）、`GET /result`
 - [x] **Streamlit UI**：Phase 0 选 SKU、渐进式对比表、🟡/🔴 冲突角标、证据链
 - [x] **Obsidian Writer**：中文脱水报告 + Dataview 动态矩阵
-- [x] **单元测试**：Pipeline / RealCollector / ModelRouter / TaskManager（8 项通过）
+- [x] **单元测试**：Pipeline / RealCollector / ModelRouter / TaskManager / Checkpoint（10 项通过）
 
 ### 进行中 / 部分完成
 
 - [~] **Gemini / OpenAI 实调**：接口已接，需配置 `.env` 中的 API Key 方可启用
-- [~] **Playwright 浏览器采集**：`collectors/browser.py` 已有截图切片与验证码检测，尚未接入主管道
-- [~] **Redis 断点续传**：依赖已声明，HITL 队列尚未落地
+- [x] **任务断点续传（Milestone 2 骨架）**：内存/Redis Checkpoint、`PAUSED_NEED_AUTH` 挂起、`POST /tasks/{id}/resume-auth` 续传
+- [x] **Playwright 浏览器采集骨架**：电商页截图切片、验证码检测、Session 状态文件恢复
+- [~] **Streamlit HITL 续传 UI**：侧边栏「续传任务」已接，完整浏览器弹窗待完善
 
 ### 尚未开始
 
@@ -105,11 +106,12 @@ FastAPI 事件总线
 
 跑通 FastAPI 任务管道；Gemini 吞大文本，OpenAI Strict JSON 写出不乱码的 SKU Markdown。
 
-### Milestone 2 · 人机协同断点续传（下一步）
+### Milestone 2 · 人机协同断点续传（进行中）
 
-1. Playwright Session 序列化与恢复
-2. 遇滑块时任务挂起，Streamlit 弹出浏览器窗口
-3. Redis 持久化任务状态，Worker 优雅休眠
+1. ✅ Playwright Session 状态文件保存/恢复
+2. ✅ 遇滑块时任务挂起 + Checkpoint 持久化（内存/Redis）
+3. ✅ API / Streamlit 续传入口
+4. ⬜ 前端嵌入式浏览器窗口与 Worker 队列
 
 ### Milestone 3 · 生产级采集
 
@@ -165,6 +167,8 @@ uvicorn backend.api:app --reload
 | `POST /tasks` | 启动对比任务 |
 | `GET /tasks/{id}/events` | SSE 实时事件流 |
 | `GET /tasks/{id}/result` | 最终矩阵与 Vault 路径 |
+| `POST /tasks/{id}/resume-auth` | 验证码通过后续传任务 |
+| `GET /tasks/{id}/checkpoint` | 查看挂起任务断点 |
 
 ### 配置真实模型
 

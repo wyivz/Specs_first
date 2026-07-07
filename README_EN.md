@@ -81,13 +81,14 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 - [x] **FastAPI**: `POST /tasks`, `GET /tasks/{id}/events` (SSE), `GET /result`
 - [x] **Streamlit UI**: Phase 0 SKU picker, progressive table, 🟡/🔴 conflict badges, evidence links
 - [x] **Obsidian writer**: Chinese dehydration reports + Dataview master matrix
-- [x] **Unit tests**: Pipeline / RealCollector / ModelRouter / TaskManager (8 passing)
+- [x] **Unit tests**: Pipeline / RealCollector / ModelRouter / TaskManager / Checkpoint (10 passing)
 
 ### In progress / partial
 
 - [~] **Live Gemini / OpenAI calls**: wired but require `.env` API keys
-- [~] **Playwright browser capture**: `collectors/browser.py` has slice screenshots and captcha detection, not yet wired into the main pipeline
-- [~] **Redis checkpointing**: dependency declared, HITL queue not implemented
+- [x] **Task checkpoint resume (Milestone 2 skeleton)**: memory/Redis checkpoints, `PAUSED_NEED_AUTH`, `POST /tasks/{id}/resume-auth`
+- [x] **Playwright browser capture skeleton**: e-commerce slice screenshots, captcha detection, session state restore
+- [~] **Streamlit HITL resume UI**: sidebar resume button wired; embedded browser window TBD
 
 ### Not started
 
@@ -105,11 +106,12 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 
 Run the FastAPI task pipeline; Gemini ingests large corpora; OpenAI Strict JSON writes stable SKU Markdown files.
 
-### Milestone 2 · HITL checkpoint resume (next)
+### Milestone 2 · HITL checkpoint resume (in progress)
 
-1. Playwright session serialization and restore
-2. Pause tasks on slider captcha; Streamlit opens browser for manual auth
-3. Redis-backed task state; workers sleep gracefully
+1. ✅ Playwright session state save/restore
+2. ✅ Pause on slider captcha + checkpoint persistence (memory/Redis)
+3. ✅ API / Streamlit resume entrypoints
+4. ⬜ Embedded browser window and worker queue
 
 ### Milestone 3 · Production-grade collection
 
@@ -165,6 +167,8 @@ uvicorn backend.api:app --reload
 | `POST /tasks` | Start a comparison task |
 | `GET /tasks/{id}/events` | SSE live event stream |
 | `GET /tasks/{id}/result` | Final matrix and vault paths |
+| `POST /tasks/{id}/resume-auth` | Resume after manual auth |
+| `GET /tasks/{id}/checkpoint` | Inspect paused checkpoint |
 
 ### Enable real models
 

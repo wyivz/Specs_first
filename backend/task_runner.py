@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import json
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
+from backend.checkpoint import CheckpointStore, create_checkpoint_store
 from backend.events import InMemoryEventBus
 from backend.model_router import create_model_router
 from backend.pipeline import SpecsFirstPipeline, TaskResult
 from collectors import MockCollector, RealCollector
 from collectors.base import Collector
+from schemas import TaskState
 
 
 @dataclass
@@ -26,6 +26,7 @@ class TaskRecord:
 @dataclass
 class TaskManager:
     event_bus: InMemoryEventBus = field(default_factory=InMemoryEventBus)
+    checkpoint_store: CheckpointStore = field(default_factory=create_checkpoint_store)
     tasks: dict[str, TaskRecord] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -42,6 +43,7 @@ class TaskManager:
             router=create_model_router(model_mode),
             event_bus=self.event_bus,
             vault_path=Path(vault_path),
+            checkpoint_store=self.checkpoint_store,
         )
 
     def start_task(
@@ -54,6 +56,7 @@ class TaskManager:
         vault_path: str | Path = "vault_output",
         discover_only: bool = False,
         task_id: str | None = None,
+        use_browser: bool = False,
     ) -> str:
         task_id = task_id or str(uuid4())
         record = TaskRecord(task_id=task_id, state="RUNNING")
@@ -70,19 +73,58 @@ class TaskManager:
                     source_urls=source_urls,
                     task_id=task_id,
                     discover_only=discover_only,
+                    use_browser=use_browser,
                 )
                 record.result = result
                 record.state = result.state.value
             except Exception as exc:
-                record.state = "FAILED"
+                record.state = TaskState.FAILED.value
                 record.error = str(exc)
-                from schemas import TaskEvent, TaskState
+                from schemas import TaskEvent
 
                 self.event_bus.publish(
                     TaskEvent(task_id, "task_failed", record.error, TaskState.FAILED, {"error": record.error})
                 )
             finally:
-                self.event_bus.close(task_id)
+                if record.state != TaskState.PAUSED_NEED_AUTH.value:
+                    self.event_bus.close(task_id)
+
+        thread = threading.Thread(target=runner, daemon=True)
+        record.thread = thread
+        thread.start()
+        return task_id
+
+    def resume_task(self, task_id: str, use_browser: bool = True) -> str:
+        checkpoint = self.checkpoint_store.load(task_id)
+        if not checkpoint:
+            raise KeyError(f"No checkpoint found for task {task_id}")
+
+        record = self.tasks.get(task_id) or TaskRecord(task_id=task_id)
+        record.state = "RUNNING"
+        with self._lock:
+            self.tasks[task_id] = record
+
+        def runner() -> None:
+            try:
+                pipeline = self.create_pipeline(
+                    mode=checkpoint.mode,
+                    source_urls=checkpoint.source_urls,
+                    vault_path=checkpoint.vault_path,
+                )
+                result = pipeline.run(checkpoint=checkpoint, use_browser=use_browser)
+                record.result = result
+                record.state = result.state.value
+            except Exception as exc:
+                record.state = TaskState.FAILED.value
+                record.error = str(exc)
+                from schemas import TaskEvent
+
+                self.event_bus.publish(
+                    TaskEvent(task_id, "task_failed", record.error, TaskState.FAILED, {"error": record.error})
+                )
+            finally:
+                if record.state != TaskState.PAUSED_NEED_AUTH.value:
+                    self.event_bus.close(task_id)
 
         thread = threading.Thread(target=runner, daemon=True)
         record.thread = thread

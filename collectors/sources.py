@@ -13,6 +13,7 @@ from collectors.extractors import (
     infer_specs_from_sku,
     platform_from_url,
 )
+from collectors.browser import BrowserAuthRequired, PlaywrightCapture
 from collectors.http import HttpClient, SearchResult, clip, extract_title, html_to_text
 from schemas import EvidenceItem, OfficialSpec, PriceFinding, ProductCandidate
 
@@ -141,11 +142,24 @@ class ForumSourceCollector:
 
 
 class EcommerceSourceCollector:
-    def __init__(self, http: HttpClient, diagnostics: CollectorDiagnostics | None = None) -> None:
+    def __init__(
+        self,
+        http: HttpClient,
+        diagnostics: CollectorDiagnostics | None = None,
+        browser: PlaywrightCapture | None = None,
+    ) -> None:
         self.http = http
         self.diagnostics = diagnostics or CollectorDiagnostics()
+        self.browser = browser or PlaywrightCapture()
 
-    def collect(self, candidate: ProductCandidate) -> list[PriceFinding]:
+    def collect(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> list[PriceFinding]:
         findings: list[PriceFinding] = []
         for platform, query in [
             ("JD", f"{candidate.sku} site:jd.com 到手价 优惠券 百亿补贴"),
@@ -153,9 +167,28 @@ class EcommerceSourceCollector:
         ]:
             for result in self.http.search(query, max_results=5):
                 combined_text = f"{result.title}. {result.snippet}"
+                screenshot_path = ""
+                page_ok = False
+                if use_browser and result.url.startswith("http"):
+                    try:
+                        from pathlib import Path
+
+                        capture = self.browser.capture_page_slices(
+                            result.url,
+                            task_id=task_id or "manual",
+                            storage_state_path=Path(storage_state_path) if storage_state_path else None,
+                        )
+                        combined_text = f"{combined_text} {capture.page_text}"
+                        screenshot_path = str(capture.screenshot_paths[0]) if capture.screenshot_paths else ""
+                        page_ok = True
+                    except BrowserAuthRequired:
+                        raise
+                    except Exception as exc:
+                        self.diagnostics.record(platform, f"browser capture failed for {result.url}: {exc}")
                 page = self.http.fetch(result.url)
                 if page.ok:
                     combined_text = f"{combined_text} {html_to_text(page.text)}"
+                    page_ok = True
                 elif page.error:
                     self.diagnostics.record(platform, f"failed to fetch {result.url}: {page.error}")
                 parsed = extract_price(combined_text)
@@ -177,7 +210,7 @@ class EcommerceSourceCollector:
                         subsidy_discount=parsed.subsidy_discount,
                         cross_store_discount=parsed.cross_store_discount,
                         final_price=parsed.final_price,
-                        screenshot_path="",
+                        screenshot_path=screenshot_path,
                         captured_at=evidence.captured_at,
                         evidence=evidence,
                     )

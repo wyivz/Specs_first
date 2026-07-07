@@ -120,7 +120,14 @@ class MockCollector(Collector):
             )
         ]
 
-    def collect_prices(self, candidate: ProductCandidate) -> list[PriceFinding]:
+    def collect_prices(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> list[PriceFinding]:
         prices = {
             "Zeiss": (5999, 500, 600, 0, 4899, "vault_output/mock_screenshots/zeiss_price.png"),
             "Sony": (14999, 1200, 1800, 300, 11699, "vault_output/mock_screenshots/sony_price.png"),

@@ -47,6 +47,7 @@ def create_task(payload: dict) -> dict:
         mode=payload.get("mode", "mock"),
         vault_path=payload.get("vault_path", "vault_output"),
         discover_only=payload.get("discover_only", False),
+        use_browser=payload.get("use_browser", False),
     )
     return {"task_id": task_id, "state": "RUNNING"}
 
@@ -90,3 +91,21 @@ def get_result(task_id: str) -> dict:
         },
         "output_paths": [str(path) for path in result.output_paths],
     }
+
+
+@app.post("/tasks/{task_id}/resume-auth")
+def resume_auth(task_id: str, payload: dict | None = None) -> dict:
+    payload = payload or {}
+    try:
+        task_manager.resume_task(task_id, use_browser=payload.get("use_browser", True))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"task_id": task_id, "state": "RUNNING"}
+
+
+@app.get("/tasks/{task_id}/checkpoint")
+def get_checkpoint(task_id: str) -> dict:
+    checkpoint = task_manager.checkpoint_store.load(task_id)
+    if not checkpoint:
+        raise HTTPException(status_code=404, detail="Checkpoint not found")
+    return to_dict(checkpoint)

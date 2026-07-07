@@ -19,5 +19,12 @@ class Collector(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def collect_prices(self, candidate: ProductCandidate) -> list[PriceFinding]:
+    def collect_prices(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> list[PriceFinding]:
         raise NotImplementedError

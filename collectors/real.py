@@ -42,8 +42,22 @@ class RealCollector(Collector):
         evidence.extend(self.injected.collect_evidence(self.source_urls))
         return dedupe_evidence(evidence)
 
-    def collect_prices(self, candidate: ProductCandidate) -> list[PriceFinding]:
+    def collect_prices(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> list[PriceFinding]:
         prices = []
-        prices.extend(self.ecommerce.collect(candidate))
+        prices.extend(
+            self.ecommerce.collect(
+                candidate,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+            )
+        )
         prices.extend(self.injected.collect_prices(self.source_urls))
         return sorted(prices, key=lambda item: item.final_price)[:5]
