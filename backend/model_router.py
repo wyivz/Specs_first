@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from backend.config import settings
 from backend.retry import retry_call
@@ -82,10 +83,11 @@ class KeywordModelRouter:
         sku: str,
         text: str,
         source_url: str,
+        category: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
         from collectors.extractors import extract_specs_from_text
 
-        return extract_specs_from_text(text, source_url), []
+        return extract_specs_from_text(text, source_url, category), []
 
     def extract_real_world_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
         """Extract real-world findings from corpus using keyword patterns.
@@ -270,25 +272,23 @@ class HybridModelRouter(KeywordModelRouter):
         sku: str,
         text: str,
         source_url: str,
+        category: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
         if settings.has_gemini and text.strip():
             try:
-                specs, highlights = retry_call(
-                    lambda: self._gemini_extract_official_specs(sku, text, source_url),
-                    attempts=2,
-                )
+                specs, highlights = self._gemini_extract_official_specs(sku, text, source_url, category)
                 if specs:
                     return specs, highlights
             except Exception:
                 pass
-        return self._keyword.extract_official_specs_from_text(sku, text, source_url)
+        return self._keyword.extract_official_specs_from_text(sku, text, source_url, category)
 
     def extract_real_world_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
         if not corpus:
             return []
         if settings.has_gemini:
             try:
-                findings = retry_call(lambda: self._gemini_extract_findings(sku, corpus), attempts=2)
+                findings = self._gemini_extract_findings(sku, corpus)
                 if findings:
                     return findings
             except Exception:
@@ -379,22 +379,83 @@ class HybridModelRouter(KeywordModelRouter):
         genai.configure(api_key=settings.gemini_api_key)
         return genai.GenerativeModel(settings.gemini_model)
 
+    @contextmanager
+    def _gemini_cached_content(self, corpus_text: str, system_instruction: str) -> Iterator[Any]:
+        """Yield a GenerativeModel bound to a Gemini context cache of ``corpus_text``.
+
+        Context caching lets large, repeatedly-referenced text (the same
+        product corpus is re-sent on every retry attempt) be billed once
+        instead of on every call. Gemini enforces a minimum cache size
+        (~2048 tokens), so caching is only attempted above
+        ``gemini_context_cache_min_chars``. Any failure (unsupported model,
+        below the token floor, API error) silently falls back to yielding
+        ``None`` so the caller sends the full prompt inline instead. The
+        remote cache is always cleaned up on exit.
+        """
+        cache = None
+        model = None
+        if settings.gemini_context_cache_enabled and len(corpus_text) >= settings.gemini_context_cache_min_chars:
+            try:
+                import datetime
+
+                import google.generativeai as genai
+                from google.generativeai import caching
+
+                genai.configure(api_key=settings.gemini_api_key)
+                cache = caching.CachedContent.create(
+                    model=settings.gemini_model,
+                    system_instruction=system_instruction,
+                    contents=[corpus_text],
+                    ttl=datetime.timedelta(seconds=settings.gemini_context_cache_ttl_seconds),
+                )
+                model = genai.GenerativeModel.from_cached_content(cached_content=cache)
+            except Exception:
+                cache = None
+                model = None
+        try:
+            yield model
+        finally:
+            if cache is not None:
+                try:
+                    cache.delete()
+                except Exception:
+                    pass
+
     def _gemini_extract_official_specs(
         self,
         sku: str,
         text: str,
         source_url: str,
+        category: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
-        prompt = (
-            f"Extract official product specifications for {sku} from the source text below. "
+        from schemas.category_profile import canonical_slots
+
+        corpus = text[:120000]
+        slots = canonical_slots(category)
+        system_instruction = (
+            "You extract official product specifications verbatim from source text. "
+            "Never invent values that are not present in the text."
+        )
+        instruction = (
+            f"Extract official product specifications for {sku} (category: {category or 'unspecified'}) "
+            "from the source text. "
             "Return JSON only: "
             '{"specs":[{"name":"snake_case_parameter_name","value":"","unit":""}],'
             '"highlights":["unique feature"]}. '
-            "Use concise snake_case names derived from the source labels (for example parameter_a, screen_size, battery_capacity). "
-            "Include only factual values present in the text.\n\n"
-            f"{text[:120000]}"
+            f"Prefer these canonical snake_case field names when the source text covers them: {', '.join(slots)}. "
+            "For any other factual attribute present in the text that doesn't fit those names, "
+            "invent a concise snake_case name (for example screen_size, battery_capacity) instead of dropping it. "
+            "Attributes unique to this SKU that don't belong as a comparison column go into 'highlights' instead. "
+            "Include only factual values present in the text."
         )
-        response = self._gemini_model().generate_content(prompt)
+
+        with self._gemini_cached_content(corpus, system_instruction) as cached_model:
+            def _call():
+                if cached_model is not None:
+                    return cached_model.generate_content(instruction)
+                return self._gemini_model().generate_content(f"{instruction}\n\n{corpus}")
+
+            response = retry_call(_call, attempts=2)
         payload = _parse_json_payload(response.text or "", default={"specs": [], "highlights": []})
         specs = [
             OfficialSpec(
@@ -414,16 +475,24 @@ class HybridModelRouter(KeywordModelRouter):
             f"[{index}] platform={item.platform} author={item.author} url={item.url}\n{item.excerpt}"
             for index, item in enumerate(corpus)
         )
-        prompt = (
-            f"You are a harsh product QA reviewer for {sku}. "
-            "Discard marketing fluff and subjective praise. "
-            "Extract only evidence-backed real-world flaws from the corpus below. "
+        system_instruction = (
+            "You are a harsh product QA reviewer. Discard marketing fluff and subjective praise; "
+            "extract only evidence-backed real-world flaws from the provided corpus."
+        )
+        instruction = (
+            f"Review the cached corpus for {sku}. "
             "Return JSON only with shape "
             '{"findings":[{"title":"","detail":"","condition":"","frequency":"","severity":"minor|major","evidence_index":0}]}. '
-            "Each finding must reference one evidence_index from the corpus.\n\n"
-            f"{corpus_text}"
+            "Each finding must reference one evidence_index from the corpus."
         )
-        response = self._gemini_model().generate_content(prompt)
+
+        with self._gemini_cached_content(corpus_text, system_instruction) as cached_model:
+            def _call():
+                if cached_model is not None:
+                    return cached_model.generate_content(instruction)
+                return self._gemini_model().generate_content(f"{instruction}\n\n{corpus_text}")
+
+            response = retry_call(_call, attempts=2)
         payload = _parse_json_payload(response.text or "", default={"findings": []})
         findings: list[RealWorldFinding] = []
         for item in payload.get("findings", []):

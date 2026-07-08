@@ -118,7 +118,7 @@ FastAPI 事件总线
 3. ✅ API / Streamlit 续传入口
 4. ⬜ 前端嵌入式浏览器窗口
 
-### Milestone 3 · 生产级采集（进行中）
+### Milestone 3 · 生产级采集（基本完成）
 
 1. ✅ B 站 / 京东专用 Adapter
 2. ✅ Gemini 多切片 OCR + 模型调用重试/容错 JSON 解析
@@ -126,7 +126,8 @@ FastAPI 事件总线
 4. ✅ 复杂网页抗干扰抓取（`page_sanitize` + `resilient_fetch` + 浏览器内容区定位）
 5. ✅ YouTube 字幕 Adapter（`captionTracks` → transcript 片段）
 6. ✅ YouTube 评论 API（已接入）；B 站信源定稿为「字幕 + 热门评论」（不做弹幕），无字幕时自动 ASR 兜底
-7. ⬜ Gemini Context Caching、多品类 Schema 精细化（当前为通用 8 槽位 + highlights，尚未做品类专属模板库）
+7. ✅ Gemini Context Caching：官方参数抽取 / 民间脱水复用同一缓存语料，避免重试重复计费大文本（`GEMINI_CONTEXT_CACHE_*`）
+8. ✅ 多品类 Schema 精细化：`schemas/category_profile.py` 内置镜头/手机/笔记本/耳机/相机/显示器/键盘/无人机/穿戴设备等品类的 5-8 槽位模板 + 中英文标签别名，中英文标签自动收敛到同一列；未建模品类自动降级为通用 8 槽位
 
 ### Milestone 4 · 知识库增强
 

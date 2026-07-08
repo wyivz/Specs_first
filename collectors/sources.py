@@ -114,7 +114,7 @@ class OfficialSourceCollector:
                     continue
             text = snapshot.text
             page_texts.append(text)
-            for spec in extract_specs_from_text(text, snapshot.url):
+            for spec in extract_specs_from_text(text, snapshot.url, candidate.category):
                 specs_by_name.setdefault(spec.name, spec)
             title = snapshot.page.title or extract_title(snapshot.markup)
             if title and len(highlights) < 3:
@@ -130,6 +130,7 @@ class OfficialSourceCollector:
                     candidate.sku,
                     combined_text,
                     candidate.source_url,
+                    category=candidate.category,
                 )
                 for spec in gemini_specs:
                     specs_by_name.setdefault(spec.name, spec)

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import dataclasses
 import unittest
+from unittest.mock import patch
 
+from backend.config import settings
 from backend.model_router import HybridModelRouter, KeywordModelRouter, create_model_router
 from schemas import ConflictLevel, EvidenceItem, OfficialSpec, RealWorldFinding
 
@@ -50,6 +53,27 @@ class ModelRouterTest(unittest.TestCase):
         )
         warnings = router.arbitrate_conflicts([finding], official_specs=[OfficialSpec("parameter_a", "spec", "", "https://example.com")])
         self.assertEqual(warnings[0].level, ConflictLevel.MAJOR)
+
+    def test_gemini_cached_content_skips_cache_below_char_floor(self) -> None:
+        router = HybridModelRouter.__new__(HybridModelRouter)
+        with router._gemini_cached_content("too short", "system") as model:
+            self.assertIsNone(model)
+
+    def test_gemini_cached_content_disabled_via_settings(self) -> None:
+        router = HybridModelRouter.__new__(HybridModelRouter)
+        disabled = dataclasses.replace(settings, gemini_context_cache_enabled=False)
+        with patch("backend.model_router.settings", disabled):
+            with router._gemini_cached_content("x" * 20000, "system") as model:
+                self.assertIsNone(model)
+
+    def test_gemini_cached_content_falls_back_when_cache_create_fails(self) -> None:
+        router = HybridModelRouter.__new__(HybridModelRouter)
+        boosted = dataclasses.replace(settings, gemini_context_cache_min_chars=10, gemini_api_key="fake-key")
+        with patch("backend.model_router.settings", boosted):
+            # google.generativeai isn't installed in the test environment, so
+            # cache creation raises ImportError and we fall back to None.
+            with router._gemini_cached_content("x" * 100, "system") as model:
+                self.assertIsNone(model)
 
 
 if __name__ == "__main__":

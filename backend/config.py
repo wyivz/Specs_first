@@ -46,6 +46,13 @@ class Settings:
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     openai_model: str = os.getenv("DEFAULT_OPENAI_MODEL", "gpt-4o-mini")
     gemini_model: str = os.getenv("DEFAULT_GEMINI_MODEL", "gemini-1.5-flash")
+
+    # Gemini context caching (Phase 1/2 large-corpus ingestion): avoid
+    # re-sending the same huge text on retries. Gemini requires a minimum
+    # of ~2048 tokens per cache, so we only attempt it above a char floor.
+    gemini_context_cache_enabled: bool = os.getenv("GEMINI_CONTEXT_CACHE_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
+    gemini_context_cache_min_chars: int = _int_env("GEMINI_CONTEXT_CACHE_MIN_CHARS", 6000)
+    gemini_context_cache_ttl_seconds: int = _int_env("GEMINI_CONTEXT_CACHE_TTL_SECONDS", 300)
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     vault_path: Path = Path(os.getenv("OBSIDIAN_VAULT_PATH", "vault_output"))
     default_mode: str = os.getenv("SPECS_FIRST_MODE", "mock")

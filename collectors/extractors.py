@@ -9,10 +9,10 @@ from collectors.page_sanitize import sanitize_html
 from collectors.http import SearchResult, clip
 from schemas import EvidenceItem, OfficialSpec, ProductCandidate
 from schemas.category_profile import (
-    GENERIC_PARAMETER_SLOTS,
+    canonical_slots,
+    normalize_spec_name,
     real_world_issue_patterns,
     review_content_patterns,
-    slugify_spec_name,
 )
 
 
@@ -114,12 +114,22 @@ def clean_sku(title: str) -> str:
     return title[:120] or "Unknown Product"
 
 
-def extract_specs_from_text(text: str, source_url: str) -> list[OfficialSpec]:
-    """Extract category-agnostic key-value specs from arbitrary product pages."""
+def extract_specs_from_text(text: str, source_url: str, category: str = "") -> list[OfficialSpec]:
+    """Extract key-value specs from arbitrary product pages.
+
+    When ``category`` matches a known template (see
+    ``schemas.category_profile.CATEGORY_TEMPLATES``), labels are normalized
+    onto that category's canonical 5-8 "hard slot" columns (e.g. "Focal
+    Length" and "焦距" both collapse onto ``focal_length``) so the
+    comparison matrix doesn't fragment into near-duplicate sparse columns.
+    Unmodeled categories/labels fall back to a stable slugified name.
+    """
     specs_by_name: dict[str, OfficialSpec] = {}
     for label, value in _extract_key_value_pairs(text):
-        name = slugify_spec_name(label)
-        if name in specs_by_name or SKIP_SPEC_LABELS.search(label):
+        if SKIP_SPEC_LABELS.search(label):
+            continue
+        name = normalize_spec_name(label, category)
+        if name in specs_by_name:
             continue
         specs_by_name[name] = OfficialSpec(
             name=name,
@@ -128,12 +138,15 @@ def extract_specs_from_text(text: str, source_url: str) -> list[OfficialSpec]:
             source_url=source_url,
         )
 
+    slots = canonical_slots(category)
     slot_index = 0
     for measurement in _extract_measurements(text):
-        if slot_index >= len(GENERIC_PARAMETER_SLOTS):
+        while slot_index < len(slots) and slots[slot_index] in specs_by_name:
+            slot_index += 1
+        if slot_index >= len(slots):
             break
-        slot = GENERIC_PARAMETER_SLOTS[slot_index]
-        if slot in specs_by_name or any(spec.value == measurement for spec in specs_by_name.values()):
+        slot = slots[slot_index]
+        if any(spec.value == measurement for spec in specs_by_name.values()):
             continue
         specs_by_name[slot] = OfficialSpec(name=slot, value=measurement, unit="", source_url=source_url)
         slot_index += 1

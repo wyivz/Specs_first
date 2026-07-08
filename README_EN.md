@@ -118,7 +118,7 @@ Run the FastAPI task pipeline; Gemini ingests large corpora and OCR screenshots;
 3. ✅ API / Streamlit resume entrypoints
 4. ⬜ Embedded browser window
 
-### Milestone 3 · Production-grade collection (in progress)
+### Milestone 3 · Production-grade collection (largely complete)
 
 1. ✅ Bilibili / JD adapters
 2. ✅ Gemini multi-slice OCR + retry / tolerant JSON parsing
@@ -126,7 +126,8 @@ Run the FastAPI task pipeline; Gemini ingests large corpora and OCR screenshots;
 4. ✅ Interference-resistant fetch (`page_sanitize` + `resilient_fetch` + browser main-content targeting)
 5. ✅ YouTube subtitle adapter (`captionTracks` → transcript snippets)
 6. ✅ YouTube comments API; Bilibili source scope finalized as subtitles + top comments (no danmaku), with ASR fallback
-7. ⬜ Gemini context caching; finer-grained multi-category schema templates (currently generic 8-slot + highlights)
+7. ✅ Gemini context caching: official-spec extraction and real-world dehydration reuse one cache per corpus, avoiding re-billing large text on retries (`GEMINI_CONTEXT_CACHE_*`)
+8. ✅ Multi-category schema templates: `schemas/category_profile.py` ships 5-8 slot templates + bilingual (EN/ZH) label aliases for lens/phone/laptop/headphone/camera/monitor/keyboard/drone/wearable categories, so differently-worded labels collapse onto the same matrix column; unmodeled categories fall back to the generic 8-slot schema
 
 ### Milestone 4 · Knowledge-base enhancements
 
