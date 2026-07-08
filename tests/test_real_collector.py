@@ -22,28 +22,28 @@ class FakeHttp:
             "Zeiss Makro-Planar T* 50mm f/2 official specifications manual": [
                 SearchResult("Manual", "https://zeiss.example/specs", "Official manual")
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 site:bilibili.com 评测 紫边 对焦 卡顿": [
+            "Zeiss Makro-Planar T* 50mm f/2 site:bilibili.com 评测 缺点 问题 翻车 体验": [
                 SearchResult(
-                    "B站评测：Zeiss 50mm 紫边明显",
+                    "B站评测：Zeiss 50mm 缺点汇总",
                     "https://www.bilibili.com/video/BVmock",
-                    "大光圈紫边明显，对焦环阻尼偶发卡顿",
+                    "评测中提到缺陷、卡顿和劝退点",
                 )
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 site:youtube.com review chromatic aberration focus ring issue": [
+            "Zeiss Makro-Planar T* 50mm f/2 site:youtube.com review defect issue problem quality": [
                 SearchResult(
                     "YouTube review: Zeiss 50mm chromatic aberration",
                     "https://www.youtube.com/watch?v=mock-yt-zeiss",
                     "Purple fringing and focus ring issues discussed in review.",
                 )
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 site:chiphell.com 色散 阻尼 品控 翻车": [
+            "Zeiss Makro-Planar T* 50mm f/2 site:chiphell.com 缺点 品控 翻车 问题 体验": [
                 SearchResult(
-                    "Chiphell Zeiss 50mm 翻车记录",
+                    "Chiphell Zeiss 50mm 讨论",
                     "https://www.chiphell.com/thread-mock.html",
-                    "对焦环阻尼不均，疑似品控问题",
+                    "产品质量问题和品控讨论",
                 )
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 site:reddit.com chromatic aberration focus ring copy variation": [],
+            "Zeiss Makro-Planar T* 50mm f/2 site:reddit.com defect issue quality problem review": [],
             "Zeiss Makro-Planar T* 50mm f/2 site:jd.com 到手价 优惠券 百亿补贴": [
                 SearchResult(
                     "JD Zeiss 50mm",
@@ -56,18 +56,21 @@ class FakeHttp:
         self.pages = {
             "https://zeiss.example/specs": """
                 <html><title>Zeiss 50mm Official Specs</title>
-                Focal Length: 50mm. Maximum Aperture: f/2.
-                Weight: 530g. Optical Structure: 6 groups / 8 elements.
-                Minimum Focus Distance: 0.24m. Filter Thread: 67mm.</html>
+                参数A: 50mm
+                参数B: f/2
+                重量: 530g
+                参数C: 6 groups / 8 elements
+                参数D: 0.24m
+                参数E: 67mm</html>
             """,
-            "https://www.bilibili.com/video/BVmock": "这支镜头大光圈紫边明显，对焦环阻尼偶尔卡顿。",
+            "https://www.bilibili.com/video/BVmock": "评测结论：有明显缺陷，操作卡顿，体验劝退。",
             "https://www.youtube.com/watch?v=mock-yt-zeiss": """
                 <html><script>var ytInitialPlayerResponse = {"captions":{"playerCaptionsTracklistRenderer":{"captionTracks":[{"baseUrl":"https://www.youtube.com/api/timedtext?v=mock-yt-zeiss&lang=en","languageCode":"en"}]}}};</script></html>
             """,
             "https://www.youtube.com/api/timedtext?v=mock-yt-zeiss&lang=en": """
                 <transcript><text start="0" dur="2">There is obvious purple fringing wide open.</text></transcript>
             """,
-            "https://www.chiphell.com/thread-mock.html": "第887楼：对焦环阻尼不均，疑似品控问题。",
+            "https://www.chiphell.com/thread-mock.html": "第887楼：产品质量问题，个体差异明显，疑似品控翻车。",
             "https://item.jd.com/mock-zeiss.html": "标价 5999 元，优惠券 500，补贴 600，到手价 4899",
         }
 

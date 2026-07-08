@@ -8,41 +8,29 @@ from urllib.parse import urlparse
 from collectors.page_sanitize import sanitize_html
 from collectors.http import SearchResult, clip
 from schemas import EvidenceItem, OfficialSpec, ProductCandidate
+from schemas.category_profile import (
+    GENERIC_PARAMETER_SLOTS,
+    real_world_issue_patterns,
+    review_content_patterns,
+    slugify_spec_name,
+)
 
 
-SPEC_PATTERNS = {
-    "focal_length": [
-        r"(?:focal length|焦距)\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?\s*mm)",
-        r"\b([0-9]{2,3}\s*mm)\b",
-    ],
-    "max_aperture": [
-        r"(?:maximum aperture|最大光圈|aperture)\s*[:：]?\s*(f/?\s*[0-9]+(?:\.[0-9]+)?)",
-        r"\b(f/?\s*[0-9]+(?:\.[0-9]+)?)\b",
-    ],
-    "weight": [
-        r"(?:weight|重量)\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?\s*(?:g|kg|克))",
-    ],
-    "optical_structure": [
-        r"(?:optical (?:construction|structure)|lens construction|镜头结构|光学结构)\s*[:：]?\s*([0-9]+\s*(?:groups?|组)\s*/?\s*[0-9]+\s*(?:elements?|片))",
-        r"([0-9]+\s*组\s*[0-9]+\s*片)",
-    ],
-    "minimum_focus_distance": [
-        r"(?:minimum focus(?:ing)? distance|最近对焦距离)\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?\s*(?:m|cm|米|厘米))",
-    ],
-    "filter_thread": [
-        r"(?:filter (?:thread|diameter|size)|滤镜(?:口径|尺寸))\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?\s*mm)",
-        r"(?:ø|φ)\s*([0-9]+(?:\.[0-9]+)?\s*mm)",
-    ],
-}
+KEY_VALUE_SPEC_PATTERN = re.compile(
+    r"(?:^|[\n;|])\s*([A-Za-z0-9\u4e00-\u9fff][^:：\n|]{1,48}?)\s*[:：]\s*([^\n;|]{1,120})",
+    re.M,
+)
+MEASUREMENT_PATTERN = re.compile(
+    r"\b([0-9]+(?:\.[0-9]+)?\s*(?:mm|cm|m|g|kg|gb|tb|hz|w|mah|inch|英寸|克|千克|毫米|厘米|米|%))\b",
+    re.I,
+)
+SKIP_SPEC_LABELS = re.compile(
+    r"(copyright|cookie|login|javascript|function|window|price|价格|购买|cart|subscribe)",
+    re.I,
+)
 
-NEGATIVE_PATTERNS = [
-    r"紫边|色散|chromatic aberration|purple fringing|loCA",
-    r"卡顿|阻尼|damping|sticky|focus ring",
-    r"跑焦|对焦.*慢|autofocus.*slow|hunt(?:ing)?",
-    r"眩光|鬼影|flare|ghosting",
-    r"重|压手|front-heavy|heavy",
-    r"品控|copy variation|decenter",
-]
+NEGATIVE_PATTERNS = real_world_issue_patterns()
+REVIEW_PATTERNS = review_content_patterns()
 
 PRICE_PATTERN = re.compile(
     r"(?:¥|￥|RMB|CNY|\$)?\s*([1-9][0-9]{2,6}(?:\.[0-9]{1,2})?)\s*(?:元|rmb|cny|usd)?",
@@ -77,19 +65,22 @@ def now_iso() -> str:
 
 def infer_brand(title_or_query: str) -> str:
     brands = [
-        "Zeiss",
-        "Sony",
-        "Sigma",
-        "Canon",
-        "Nikon",
-        "Fujifilm",
-        "Panasonic",
-        "Tamron",
-        "Leica",
-        "DJI",
         "Apple",
         "Samsung",
         "Xiaomi",
+        "Huawei",
+        "Sony",
+        "Canon",
+        "Nikon",
+        "DJI",
+        "Logitech",
+        "Keychron",
+        "Zeiss",
+        "Sigma",
+        "Tamron",
+        "Leica",
+        "Fujifilm",
+        "Panasonic",
     ]
     lower = title_or_query.lower()
     for brand in brands:
@@ -124,25 +115,34 @@ def clean_sku(title: str) -> str:
 
 
 def extract_specs_from_text(text: str, source_url: str) -> list[OfficialSpec]:
-    specs: list[OfficialSpec] = []
-    for name, patterns in SPEC_PATTERNS.items():
-        for pattern in patterns:
-            match = re.search(pattern, text, re.I)
-            if match:
-                specs.append(OfficialSpec(name=name, value=match.group(1).strip(), unit="", source_url=source_url))
-                break
-    return specs
+    """Extract category-agnostic key-value specs from arbitrary product pages."""
+    specs_by_name: dict[str, OfficialSpec] = {}
+    for label, value in _extract_key_value_pairs(text):
+        name = slugify_spec_name(label)
+        if name in specs_by_name or SKIP_SPEC_LABELS.search(label):
+            continue
+        specs_by_name[name] = OfficialSpec(
+            name=name,
+            value=clip(value.strip(), 120),
+            unit="",
+            source_url=source_url,
+        )
+
+    slot_index = 0
+    for measurement in _extract_measurements(text):
+        if slot_index >= len(GENERIC_PARAMETER_SLOTS):
+            break
+        slot = GENERIC_PARAMETER_SLOTS[slot_index]
+        if slot in specs_by_name or any(spec.value == measurement for spec in specs_by_name.values()):
+            continue
+        specs_by_name[slot] = OfficialSpec(name=slot, value=measurement, unit="", source_url=source_url)
+        slot_index += 1
+    return list(specs_by_name.values())
 
 
 def infer_specs_from_sku(candidate: ProductCandidate) -> list[OfficialSpec]:
-    specs: list[OfficialSpec] = []
-    focal = re.search(r"\b([0-9]{2,3})\s*mm\b", candidate.sku, re.I)
-    aperture = re.search(r"\bf/?\s*([0-9]+(?:\.[0-9]+)?)\b", candidate.sku, re.I)
-    if focal:
-        specs.append(OfficialSpec("focal_length", f"{focal.group(1)}mm", "", candidate.source_url))
-    if aperture:
-        specs.append(OfficialSpec("max_aperture", f"f/{aperture.group(1)}", "", candidate.source_url))
-    return specs
+    """Keyword fallback only — no category-specific SKU parsing."""
+    return []
 
 
 def build_evidence(platform: str, url: str, author: str, locator: str, excerpt: str, confidence: float) -> EvidenceItem:
@@ -166,13 +166,16 @@ def evidence_from_page(platform: str, url: str, markup: str, confidence: float =
             continue
         start = max(0, match.start() - 180)
         end = min(len(text), match.end() + 220)
+        excerpt = text[start:end]
+        if not any(re.search(review_pattern, excerpt, re.I) for review_pattern in REVIEW_PATTERNS):
+            continue
         evidence.append(
             build_evidence(
                 platform=platform,
                 url=url,
                 author=domain_author(url),
                 locator=f"text-match-{index + 1}",
-                excerpt=text[start:end],
+                excerpt=excerpt,
                 confidence=confidence,
             )
         )
@@ -259,3 +262,25 @@ def dedupe_evidence(items: list[EvidenceItem]) -> list[EvidenceItem]:
         seen.add(key)
         output.append(item)
     return output
+
+
+def _extract_key_value_pairs(text: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for match in KEY_VALUE_SPEC_PATTERN.finditer(text):
+        label = match.group(1).strip()
+        value = match.group(2).strip()
+        if len(label) < 2 or len(value) < 1 or SKIP_SPEC_LABELS.search(label):
+            continue
+        pairs.append((label, value))
+    return pairs
+
+
+def _extract_measurements(text: str) -> list[str]:
+    seen: set[str] = set()
+    measurements: list[str] = []
+    for match in MEASUREMENT_PATTERN.finditer(text):
+        value = match.group(1).strip()
+        if value not in seen:
+            seen.add(value)
+            measurements.append(value)
+    return measurements

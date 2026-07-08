@@ -49,7 +49,7 @@ class TaskManager:
     def start_task(
         self,
         query: str,
-        category: str = "Lens",
+        category: str = "Product",
         selected_skus: list[str] | None = None,
         source_urls: list[str] | None = None,
         mode: str = "mock",
@@ -137,7 +137,7 @@ class TaskManager:
     def discover(
         self,
         query: str,
-        category: str = "Lens",
+        category: str = "Product",
         mode: str = "mock",
         source_urls: list[str] | None = None,
     ) -> list[dict]:

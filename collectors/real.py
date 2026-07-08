@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 
 from collectors.base import Collector
 from collectors.extractors import dedupe_evidence
-from collectors.http import HttpClient
 from collectors.browser import PlaywrightCapture
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.http import HttpClient

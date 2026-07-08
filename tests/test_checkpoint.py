@@ -25,7 +25,7 @@ class PausingCollector(Collector):
         ]
 
     def collect_official_specs(self, candidate: ProductCandidate, **kwargs) -> tuple[list[OfficialSpec], list[str]]:
-        return [OfficialSpec("focal_length", "50mm", "", candidate.source_url)], ["test highlight"]
+        return [OfficialSpec("parameter_a", "50mm", "", candidate.source_url)], ["test highlight"]
 
     def collect_real_world_corpus(self, candidate: ProductCandidate, **kwargs):
         return []

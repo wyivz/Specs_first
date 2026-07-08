@@ -19,7 +19,7 @@ class BrokenSecondSkuCollector(Collector):
     def collect_official_specs(self, candidate: ProductCandidate, **kwargs) -> tuple[list[OfficialSpec], list[str]]:
         if candidate.brand == "Bad":
             raise RuntimeError("simulated collector failure")
-        return [OfficialSpec("focal_length", "50mm", "", candidate.source_url)], []
+        return [OfficialSpec("parameter_a", "50mm", "", candidate.source_url)], []
 
     def collect_real_world_corpus(self, candidate: ProductCandidate, **kwargs):
         return []

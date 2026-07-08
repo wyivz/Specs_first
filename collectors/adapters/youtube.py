@@ -9,14 +9,11 @@ from urllib.parse import parse_qs, urlparse
 from collectors.extractors import build_evidence, evidence_from_page
 from collectors.http import HttpClient, clip
 from schemas import EvidenceItem
+from schemas.category_profile import real_world_issue_patterns, review_content_patterns
 
 
 class YouTubeAdapter:
-    REVIEW_HINTS = re.compile(
-        r"(chromatic|aberration|purple|fringing|focus|bokeh|sharpness|distortion|"
-        r"紫边|色散|对焦|锐度|虚化|畸变|卡顿|缺点|问题|劝退|翻车|品控|对比|评测|review|issue|problem|disappoint)",
-        re.I,
-    )
+    REVIEW_HINTS = re.compile("|".join(real_world_issue_patterns() + review_content_patterns()), re.I)
     VIDEO_ID_PATTERN = re.compile(r"(?:v=|/shorts/|/embed/|youtu\.be/)([A-Za-z0-9_-]{6,})")
 
     def __init__(self, http: HttpClient | None = None) -> None:

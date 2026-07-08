@@ -99,54 +99,8 @@ class KeywordModelRouter:
             text = evidence.excerpt.lower()
             finding: RealWorldFinding | None = None
             
-            # Generic quality control issues
-            if any(term in text for term in ["purple fringing", "chromatic aberration", "longitudinal ca", "紫边", "色散"]):
-                finding = RealWorldFinding(
-                    title="Visible optical aberration",
-                    detail=evidence.excerpt,
-                    condition="high-contrast or wide-open shooting",
-                    frequency="reported by field users",
-                    severity=ConflictLevel.MINOR,
-                    evidence=[evidence],
-                )
-            elif any(term in text for term in ["focus ring", "damping", "sticky", "对焦环", "阻尼", "卡顿"]):
-                finding = RealWorldFinding(
-                    title="Mechanical control issue",
-                    detail=evidence.excerpt,
-                    condition="during normal operation",
-                    frequency="copy-variation report",
-                    severity=ConflictLevel.MAJOR,
-                    evidence=[evidence],
-                )
-            elif any(term in text for term in ["front-heavy", "heavy", "压手", "太重", "重量"]):
-                finding = RealWorldFinding(
-                    title="Weight or balance concern",
-                    detail=evidence.excerpt,
-                    condition="during extended use",
-                    frequency="field report",
-                    severity=ConflictLevel.MINOR,
-                    evidence=[evidence],
-                )
-            elif any(term in text for term in ["flare", "ghosting", "眩光", "鬼影"]):
-                finding = RealWorldFinding(
-                    title="Lens flare or ghosting",
-                    detail=evidence.excerpt,
-                    condition="strong backlight or point light sources",
-                    frequency="field report",
-                    severity=ConflictLevel.MINOR,
-                    evidence=[evidence],
-                )
-            elif any(term in text for term in ["copy variation", "decenter", "品控", "偏心"]):
-                finding = RealWorldFinding(
-                    title="Quality control or sample variation",
-                    detail=evidence.excerpt,
-                    condition="sample-dependent",
-                    frequency="field report",
-                    severity=ConflictLevel.MAJOR,
-                    evidence=[evidence],
-                )
-            # Generic defect patterns for any product
-            elif any(term in text for term in ["defect", "fail", "broken", "缺陷", "故障", "损坏"]):
+            # Generic quality / performance issues
+            if any(term in text for term in ["defect", "fail", "broken", "fault", "缺陷", "故障", "损坏"]):
                 finding = RealWorldFinding(
                     title="Product defect report",
                     detail=evidence.excerpt,
@@ -155,12 +109,75 @@ class KeywordModelRouter:
                     severity=ConflictLevel.MAJOR,
                     evidence=[evidence],
                 )
-            elif any(term in text for term in ["noise", "rattle", "noise", "异响", "噪音"]):
+            elif any(term in text for term in ["quality control", "sample variation", "unit variation", "品控", "个体差异"]):
+                finding = RealWorldFinding(
+                    title="Quality control or sample variation",
+                    detail=evidence.excerpt,
+                    condition="sample-dependent",
+                    frequency="field report",
+                    severity=ConflictLevel.MAJOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["sticky", "damping", "卡顿", "延迟", "lag", "unresponsive", "slow"]):
+                finding = RealWorldFinding(
+                    title="Performance or control issue",
+                    detail=evidence.excerpt,
+                    condition="during normal operation",
+                    frequency="field report",
+                    severity=ConflictLevel.MAJOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["overheat", "thermal", "过热", "温度"]):
+                finding = RealWorldFinding(
+                    title="Thermal or overheating concern",
+                    detail=evidence.excerpt,
+                    condition="under load or extended use",
+                    frequency="field report",
+                    severity=ConflictLevel.MAJOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["battery", "续航", "standby drain", "耗电"]):
+                finding = RealWorldFinding(
+                    title="Battery or endurance concern",
+                    detail=evidence.excerpt,
+                    condition="daily use",
+                    frequency="field report",
+                    severity=ConflictLevel.MINOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["heavy", "压手", "太重", "front-heavy", "bulky"]):
+                finding = RealWorldFinding(
+                    title="Weight or ergonomics concern",
+                    detail=evidence.excerpt,
+                    condition="during extended use",
+                    frequency="field report",
+                    severity=ConflictLevel.MINOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["noise", "rattle", "buzz", "异响", "噪音"]):
                 finding = RealWorldFinding(
                     title="Noise or rattle issue",
                     detail=evidence.excerpt,
                     condition="during operation",
                     frequency="field report",
+                    severity=ConflictLevel.MINOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["disappoint", "regret", "avoid", "劝退", "翻车", "misleading", "虚标"]):
+                finding = RealWorldFinding(
+                    title="User dissatisfaction report",
+                    detail=evidence.excerpt,
+                    condition="after purchase or extended use",
+                    frequency="field report",
+                    severity=ConflictLevel.MINOR,
+                    evidence=[evidence],
+                )
+            elif any(term in text for term in ["purple fringing", "chromatic aberration", "aberration", "紫边", "色散"]):
+                finding = RealWorldFinding(
+                    title="Reported performance tradeoff",
+                    detail=evidence.excerpt,
+                    condition="specific usage scenario",
+                    frequency="reported by field users",
                     severity=ConflictLevel.MINOR,
                     evidence=[evidence],
                 )
@@ -191,43 +208,30 @@ class KeywordModelRouter:
             # Generic arbitration: map findings to related spec fields when possible
             # Otherwise, create a general warning
             
-            # Try to find a related spec field
-            related_field = "general_spec"
-            for spec_name in spec_names:
-                if any(term in spec_name.lower() for term in ["focus", "optical", "mechanical", "build", "quality"]):
-                    related_field = spec_name
-                    break
-            
-            if "mechanical" in finding.title.lower() or "control" in finding.title.lower():
+            related_field = "parameter_a" if spec_names else "general_spec"
+            if spec_names:
+                related_field = spec_names[0]
+
+            title_lower = finding.title.lower()
+            if any(term in title_lower for term in ["defect", "quality", "performance", "control", "thermal", "battery"]):
                 warnings.append(
                     ConflictWarning(
                         field=related_field,
-                        official_claim="Official specifications may not cover mechanical or control feel.",
+                        official_claim="Official specifications may not cover this real-world behavior.",
                         real_world_claim=finding.detail,
-                        level=ConflictLevel.MAJOR,
-                        arbitration_summary="Official specs are valid; field evidence shows a mechanical or control risk to consider.",
+                        level=finding.severity,
+                        arbitration_summary="Official specs are not directly falsified, but field evidence flags a purchase-relevant risk.",
                         evidence=finding.evidence,
                     )
                 )
-            elif "optical" in finding.title.lower() or "aberration" in finding.title.lower():
+            elif any(term in title_lower for term in ["weight", "ergonomics", "noise", "dissatisfaction", "tradeoff"]):
                 warnings.append(
                     ConflictWarning(
-                        field=related_field if related_field != "general_spec" else "optical_specifications",
-                        official_claim="Official specifications are factual.",
+                        field=related_field,
+                        official_claim="Official specifications are factual but may omit experiential tradeoffs.",
                         real_world_claim=finding.detail,
                         level=ConflictLevel.MINOR,
                         arbitration_summary="Official specs are not contradicted; real-world evidence shows a tradeoff to consider.",
-                        evidence=finding.evidence,
-                    )
-                )
-            elif "quality" in finding.title.lower() or "defect" in finding.title.lower():
-                warnings.append(
-                    ConflictWarning(
-                        field="quality_control",
-                        official_claim="Official specifications do not cover sample variation or quality control.",
-                        real_world_claim=finding.detail,
-                        level=finding.severity,
-                        arbitration_summary="The official specs are not directly falsified, but field evidence flags a purchase-relevant risk.",
                         evidence=finding.evidence,
                     )
                 )
@@ -249,7 +253,7 @@ class KeywordModelRouter:
         if any(warning.level == ConflictLevel.MAJOR for warning in warnings):
             return "Official specifications are usable, but field evidence shows a major handling or QC risk that should be considered before purchase."
         if findings:
-            return "Official specifications are broadly consistent; real-world reports show minor optical or handling tradeoffs."
+            return "Official specifications are broadly consistent; real-world reports show minor tradeoffs worth noting."
         return "No evidence-backed real-world flaws were found in the collected corpus."
 
 
@@ -384,9 +388,10 @@ class HybridModelRouter(KeywordModelRouter):
         prompt = (
             f"Extract official product specifications for {sku} from the source text below. "
             "Return JSON only: "
-            '{"specs":[{"name":"focal_length|max_aperture|weight|optical_structure|minimum_focus_distance|filter_thread","value":"","unit":""}],'
+            '{"specs":[{"name":"snake_case_parameter_name","value":"","unit":""}],'
             '"highlights":["unique feature"]}. '
-            "Use only factual values present in the text.\n\n"
+            "Use concise snake_case names derived from the source labels (for example parameter_a, screen_size, battery_capacity). "
+            "Include only factual values present in the text.\n\n"
             f"{text[:120000]}"
         )
         response = self._gemini_model().generate_content(prompt)

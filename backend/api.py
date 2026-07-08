@@ -30,7 +30,7 @@ def health() -> dict:
 def discover(payload: dict) -> dict:
     candidates = task_manager.discover(
         query=payload.get("query", ""),
-        category=payload.get("category", "Lens"),
+        category=payload.get("category", "Product"),
         mode=payload.get("mode", "mock"),
         source_urls=payload.get("source_urls", []),
     )
@@ -41,7 +41,7 @@ def discover(payload: dict) -> dict:
 def create_task(payload: dict) -> dict:
     task_id = task_manager.start_task(
         query=payload.get("query", ""),
-        category=payload.get("category", "Lens"),
+        category=payload.get("category", "Product"),
         selected_skus=payload.get("selected_skus"),
         source_urls=payload.get("source_urls", []),
         mode=payload.get("mode", "mock"),

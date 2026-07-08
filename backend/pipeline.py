@@ -50,7 +50,7 @@ class SpecsFirstPipeline:
     def run(
         self,
         query: str = "",
-        category: str = "Lens",
+        category: str = "Product",
         selected_skus: list[str] | None = None,
         source_urls: list[str] | None = None,
         task_id: str | None = None,

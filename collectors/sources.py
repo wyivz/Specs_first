@@ -20,6 +20,11 @@ from collectors.http import HttpClient, SearchResult, clip, extract_title
 from collectors.page_sanitize import sanitize_html
 from collectors.resilient_fetch import ResilientFetcher
 from schemas import EvidenceItem, OfficialSpec, PriceFinding, ProductCandidate
+from schemas.category_profile import (
+    ecommerce_search_queries,
+    forum_search_queries,
+    video_search_queries,
+)
 
 
 def _rich_text(markup: str, url: str) -> str:
@@ -163,10 +168,7 @@ class VideoSourceCollector:
         storage_state_path: str = "",
     ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
-        for platform, query in [
-            ("Bilibili", f"{candidate.sku} site:bilibili.com 评测 紫边 对焦 卡顿"),
-            ("YouTube", f"{candidate.sku} site:youtube.com review chromatic aberration focus ring issue"),
-        ]:
+        for platform, query in video_search_queries(candidate.sku):
             for result in self.http.search(query, max_results=6):
                 search_evidence = evidence_from_search_result(platform, result, confidence=0.52)
                 if search_evidence:
@@ -218,10 +220,7 @@ class ForumSourceCollector:
         storage_state_path: str = "",
     ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
-        for platform, query in [
-            ("Chiphell", f"{candidate.sku} site:chiphell.com 色散 阻尼 品控 翻车"),
-            ("Reddit", f"{candidate.sku} site:reddit.com chromatic aberration focus ring copy variation"),
-        ]:
+        for platform, query in forum_search_queries(candidate.sku):
             for result in self.http.search(query, max_results=8):
                 search_evidence = evidence_from_search_result(platform, result, confidence=0.57)
                 if search_evidence:
@@ -267,10 +266,7 @@ class EcommerceSourceCollector:
         storage_state_path: str = "",
     ) -> list[PriceFinding]:
         findings: list[PriceFinding] = []
-        for platform, query in [
-            ("JD", f"{candidate.sku} site:jd.com 到手价 优惠券 百亿补贴"),
-            ("Taobao/Tmall", f"{candidate.sku} site:taobao.com OR site:tmall.com 到手价 券后"),
-        ]:
+        for platform, query in ecommerce_search_queries(candidate.sku):
             for result in self.http.search(query, max_results=5):
                 target_url = self.jd.normalize_url(result.url) if platform == "JD" else result.url
                 combined_text = f"{result.title}. {result.snippet}"
