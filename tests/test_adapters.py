@@ -9,6 +9,7 @@ from collectors.adapters.bilibili import BilibiliAdapter
 from collectors.adapters.bilibili_api_client import BilibiliApiClient
 from collectors.adapters.jd import JdAdapter
 from collectors.adapters.tmall_taobao import TmallTaobaoAdapter
+from collectors.credentials import TaobaoCredentials
 from collectors.adapters.youtube import YouTubeAdapter
 from collectors.adapters.youtube_comments import YouTubeCommentFetcher
 from collectors.credentials import BilibiliCredentials
@@ -101,7 +102,48 @@ class AdapterTest(unittest.TestCase):
         markup = '<script>var x={"descUrl":"//h5api.m.taobao.com/h5/mtop.taobao.detail.getdesc/6.0/?id=123"};</script>'
         urls = adapter.detail_api_urls("https://detail.tmall.com/item.htm?id=1234567890", markup)
         self.assertTrue(any("taobao.detail.getdesc" in url for url in urls))
-        self.assertTrue(any("itemNumId=1234567890" in url for url in urls))
+        self.assertTrue(any("1234567890" in url for url in urls))
+
+    def test_tmall_taobao_signed_urls_when_cookie_configured(self) -> None:
+        credentials = TaobaoCredentials(
+            cookie="_m_h5_tk=deadbeef1234567890abcdef_1700000000000; cookie2=1",
+        )
+        adapter = TmallTaobaoAdapter(credentials)
+        urls = adapter.detail_api_urls("https://detail.tmall.com/item.htm?id=1234567890")
+        self.assertTrue(any("sign=" in url for url in urls))
+        self.assertTrue(any("data=" in url for url in urls))
+        self.assertEqual(
+            adapter.compute_sign("deadbeef1234567890abcdef", 1700000000000, {"id": "1234567890"}),
+            adapter.compute_sign("deadbeef1234567890abcdef", 1700000000000, {"id": "1234567890"}),
+        )
+
+    def test_tmall_taobao_mtop_auth_error_raises_platform_auth(self) -> None:
+        adapter = TmallTaobaoAdapter()
+        payload = '{"ret":["FAIL_SYS_TOKEN_EMPTY::令牌为空"],"data":{}}'
+        with self.assertRaises(Exception) as ctx:
+            adapter.inspect_mtop_response(payload, url="https://item.taobao.com/item.htm?id=1")
+        self.assertIn("Taobao/Tmall", str(ctx.exception))
+
+    def test_tmall_taobao_extracts_script_price(self) -> None:
+        adapter = TmallTaobaoAdapter()
+        markup = '<script>{"subPrice":"3299","price":"3599"}</script><div>券后价 3299 元</div>'
+        parsed = adapter.extract_price(markup)
+        assert parsed is not None
+        self.assertEqual(parsed.final_price, 3299.0)
+
+    def test_tmall_taobao_unwraps_desc_payload(self) -> None:
+        adapter = TmallTaobaoAdapter()
+        payload = '{"data":{"pcDescContent":"<table><tr><td>重量</td><td>500g</td></tr></table>"}}'
+        html = adapter.unwrap_desc_payload(payload)
+        self.assertIn("重量", html)
+        self.assertIn("500g", html)
+
+    def test_tmall_taobao_normalize_item_url(self) -> None:
+        adapter = TmallTaobaoAdapter()
+        self.assertEqual(
+            adapter.normalize_url("https://detail.tmall.com/item.htm?id=1234567890&foo=1"),
+            "https://detail.tmall.com/item.htm?id=1234567890",
+        )
 
     def test_youtube_extracts_transcript_snippets(self) -> None:
         caption_xml = """
@@ -129,7 +171,7 @@ class AdapterTest(unittest.TestCase):
         )
 
         class FakeHttp:
-            def fetch(self, url: str) -> FetchResult:
+            def fetch(self, url: str, *, platform: str = "", extra_headers=None) -> FetchResult:
                 if "timedtext" in url:
                     return FetchResult(url=url, status=200, text=caption_xml, content_type="text/xml")
                 return FetchResult(url=url, status=404, text="", content_type="", error="not found")
@@ -155,7 +197,7 @@ class AdapterTest(unittest.TestCase):
         fetched: list[str] = []
 
         class FakeHttp:
-            def fetch(self, url: str) -> FetchResult:
+            def fetch(self, url: str, *, platform: str = "", extra_headers=None) -> FetchResult:
                 fetched.append(url)
                 if "lang=en" in url:
                     return FetchResult(

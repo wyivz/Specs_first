@@ -9,10 +9,9 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Install optional dependencies before running the UI: streamlit") from exc
 
-from backend.pipeline import create_pipeline
-from backend.task_runner import task_manager
+from frontend.api_client import get_api_client
 from collectors.embedded_browser import get_bridge
-from schemas import CellStatus, TaskEvent, to_dict
+from schemas import CellStatus, to_dict
 
 
 STATUS_BADGE = {
@@ -159,7 +158,8 @@ def start_background_task(
     vault_path: str,
     use_browser: bool = False,
 ) -> None:
-    task_id = task_manager.start_task(
+    api = get_api_client()
+    task_id = api.start_task(
         query=query,
         category=category,
         selected_skus=selected_skus,
@@ -178,7 +178,7 @@ def start_background_task(
 
 
 def resume_background_task(task_id: str) -> None:
-    task_manager.resume_task(task_id, use_browser=True)
+    get_api_client().resume_auth(task_id, use_browser=True)
     st.session_state["active_task_id"] = task_id
     st.session_state["seen_event_count"] = 0
     st.session_state.setdefault("matrix_rows", [])
@@ -188,39 +188,31 @@ def resume_background_task(task_id: str) -> None:
 
 
 def render_active_task() -> bool:
-    """Poll the background task (if any) and render its live progress.
-
-    Runs the pipeline via ``backend.task_runner.task_manager`` on a
-    dedicated thread so the Streamlit script itself stays free to process
-    widget interactions on every rerun — this is what makes the embedded
-    browser panel above actually interactive instead of freezing the whole
-    page for up to 5 minutes while a captcha is pending.
-
-    Returns True while a task is still active (caller should keep polling).
-    """
+    """Poll the background task via the HTTP API and render live progress."""
     task_id = st.session_state.get("active_task_id")
     if not task_id:
         return False
 
-    record = task_manager.get(task_id)
-    events: list[TaskEvent] = list(task_manager.event_bus.stream(task_id))
+    api = get_api_client()
+    status = api.get_task(task_id)
+    events = api.events_snapshot(task_id)
     new_events = events[st.session_state.get("seen_event_count", 0):]
     st.session_state["seen_event_count"] = len(events)
 
     for event in new_events:
-        st.session_state["events_log"].append(f"- `{event.event_type}`: {event.message}")
-        payload = event.payload or {}
-        if event.event_type == "matrix_row_updated":
+        st.session_state["events_log"].append(f"- `{event['event_type']}`: {event['message']}")
+        payload = event.get("payload") or {}
+        if event["event_type"] == "matrix_row_updated":
             st.session_state["matrix_rows"] = payload.get("matrix_rows", st.session_state["matrix_rows"])
-        if event.event_type == "diagnostics_updated":
+        if event["event_type"] == "diagnostics_updated":
             st.session_state["diagnostics"] = payload.get("records", [])
-        if event.event_type == "task_done":
+        if event["event_type"] == "task_done":
             st.session_state["diagnostics"] = payload.get("diagnostics", st.session_state.get("diagnostics", []))
 
-    progress_text = new_events[-1].message if new_events else "Running..."
+    progress_text = new_events[-1]["message"] if new_events else "Running..."
     total_steps = st.session_state.get("total_steps", 1)
     completed = len(st.session_state["matrix_rows"])
-    progress_value = 1.0 if not (record and record.state == "RUNNING") else min(completed / total_steps, 0.95)
+    progress_value = 1.0 if status["state"] != "RUNNING" else min(completed / total_steps, 0.95)
     st.progress(progress_value, text=progress_text)
 
     st.markdown("#### Live event stream\n" + "\n".join(st.session_state["events_log"][-12:]))
@@ -231,22 +223,23 @@ def render_active_task() -> bool:
 
     render_embedded_browser_panel(task_id)
 
-    if not record or record.state in {"DONE", "FAILED", "PAUSED_NEED_AUTH"}:
+    if status["state"] in {"DONE", "FAILED", "PAUSED_NEED_AUTH"}:
         st.session_state.pop("active_task_id", None)
-        if record and record.result:
-            st.session_state["result"] = record.result
-        if record and record.state == "PAUSED_NEED_AUTH":
+        if status["state"] == "DONE":
+            st.session_state["result"] = api.get_result(task_id)
+        if status["state"] == "PAUSED_NEED_AUTH":
             st.session_state["paused_task_id"] = task_id
             st.warning(
                 "检测到验证码/安全检测，且嵌入式浏览器未能在超时前完成验证。"
                 "任务已挂起，可在侧边栏「续传任务」重试（会重新打开嵌入式浏览器）。"
             )
-        elif record and record.state == "FAILED":
-            st.error(f"任务失败：{record.error}")
+        elif status["state"] == "FAILED":
+            st.error(f"任务失败：{status.get('error', '')}")
         else:
             st.success("Obsidian assets written.")
-            if record and record.result:
-                for path in record.result.output_paths:
+            result = st.session_state.get("result")
+            if result:
+                for path in result.get("output_paths", []):
                     st.code(str(path))
         return False
 
@@ -311,8 +304,13 @@ if "candidates" not in st.session_state:
 col_discover, col_run = st.columns(2)
 with col_discover:
     if st.button("Phase 0 · 发现候选 SKU", use_container_width=True):
-        pipeline = create_pipeline(mode=mode, source_urls=[line.strip() for line in source_urls_text.splitlines() if line.strip()])
-        st.session_state["candidates"] = pipeline.collector.discover_candidates(query, category)[:10]
+        source_urls = [line.strip() for line in source_urls_text.splitlines() if line.strip()]
+        st.session_state["candidates"] = get_api_client().discover(
+            query=query,
+            category=category,
+            mode=mode,
+            source_urls=source_urls,
+        )[:10]
         st.session_state.pop("result", None)
 
 with col_run:
@@ -321,7 +319,7 @@ with col_run:
 selected_skus: list[str] = []
 if st.session_state["candidates"]:
     st.subheader("勾选要对比的 SKU")
-    options = [candidate.sku for candidate in st.session_state["candidates"]]
+    options = [candidate["sku"] for candidate in st.session_state["candidates"]]
     default = options[:3]
     selected_skus = st.multiselect("Selected SKUs", options, default=default)
 else:
@@ -351,13 +349,15 @@ if diagnostics:
 
 if result and not still_running:
     st.subheader("Saved result snapshot")
-    render_matrix_table([to_dict(row) for row in result.matrix.rows])
+    render_matrix_table(result.get("matrix", {}).get("rows", []))
     st.subheader("Obsidian output")
     csv_export_path = None
-    for path in result.output_paths:
+    for path in result.get("output_paths", []):
         st.code(str(path))
         if str(path).endswith(".csv"):
-            csv_export_path = path
+            from pathlib import Path
+
+            csv_export_path = Path(path)
     if csv_export_path:
         st.download_button(
             "下载 CSV 对比矩阵",

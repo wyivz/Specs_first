@@ -14,7 +14,7 @@ class FakeHttp:
     pages: dict[str, str]
     status_by_url: dict[str, int] | None = None
 
-    def fetch(self, url: str) -> FetchResult:
+    def fetch(self, url: str, *, platform: str = "", extra_headers=None) -> FetchResult:
         status_map = self.status_by_url or {}
         if url not in self.pages:
             return FetchResult(url=url, status=status_map.get(url, 404), text="", content_type="text/html", error="not found")

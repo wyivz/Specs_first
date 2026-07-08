@@ -111,7 +111,7 @@ class FakeHttp:
     def search(self, query: str, max_results: int = 8):
         return self.searches.get(query, [])[:max_results]
 
-    def fetch(self, url: str):
+    def fetch(self, url: str, *, platform: str = "", extra_headers=None):
         text = self.pages.get(url)
         if text is None:
             return FetchResult(url=url, status=404, text="", content_type="text/html", error="not found")

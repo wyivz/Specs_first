@@ -6,6 +6,7 @@ from collectors.adapters.youtube_comments import YouTubeCommentFetcher
 from collectors.adapters.jd import JdAdapter
 from collectors.adapters.tmall_taobao import TmallTaobaoAdapter
 from collectors.browser import BrowserAuthRequired, PlaywrightCapture
+from collectors.credentials import load_taobao_credentials
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import (
     build_evidence,
@@ -279,7 +280,7 @@ class EcommerceSourceCollector:
         self.browser = browser or PlaywrightCapture()
         self.resilient = resilient or ResilientFetcher(http, self.browser, self.diagnostics)
         self.jd = JdAdapter()
-        self.tmall_taobao = TmallTaobaoAdapter()
+        self.tmall_taobao = TmallTaobaoAdapter(load_taobao_credentials())
 
     def collect(
         self,
@@ -292,7 +293,12 @@ class EcommerceSourceCollector:
         findings: list[PriceFinding] = []
         for platform, query in ecommerce_search_queries(candidate.sku):
             for result in self.http.search(query, max_results=5):
-                target_url = self.jd.normalize_url(result.url) if platform == "JD" else result.url
+                if platform == "JD":
+                    target_url = self.jd.normalize_url(result.url)
+                elif platform == "Taobao/Tmall":
+                    target_url = self.tmall_taobao.normalize_url(result.url)
+                else:
+                    target_url = result.url
                 combined_text = f"{result.title}. {result.snippet}"
                 try:
                     snapshot = self.resilient.fetch(
@@ -302,8 +308,14 @@ class EcommerceSourceCollector:
                         storage_state_path=storage_state_path,
                         sku=candidate.sku,
                     )
-                except BrowserAuthRequired:
+                except (BrowserAuthRequired, PlatformAuthRequired):
                     raise
+                if platform == "Taobao/Tmall":
+                    self.tmall_taobao.maybe_raise_page_auth(
+                        snapshot.text,
+                        snapshot.page.blockers,
+                        snapshot.url,
+                    )
                 screenshot_paths = list(snapshot.screenshot_paths)
                 combined_text = f"{combined_text} {snapshot.text}"
                 if platform == "JD" and snapshot.markup:
@@ -322,6 +334,57 @@ class EcommerceSourceCollector:
                                 evidence=jd_finding.evidence,
                             )
                         )
+                        continue
+                if platform == "Taobao/Tmall" and snapshot.markup:
+                    tb_finding = self.tmall_taobao.build_price_finding(
+                        snapshot.url, snapshot.markup, platform="Taobao/Tmall"
+                    )
+                    if tb_finding:
+                        findings.append(
+                            PriceFinding(
+                                platform=tb_finding.platform,
+                                list_price=tb_finding.list_price,
+                                coupon_discount=tb_finding.coupon_discount,
+                                subsidy_discount=tb_finding.subsidy_discount,
+                                cross_store_discount=tb_finding.cross_store_discount,
+                                final_price=tb_finding.final_price,
+                                screenshot_path=",".join(screenshot_paths),
+                                captured_at=tb_finding.captured_at,
+                                evidence=tb_finding.evidence,
+                            )
+                        )
+                        continue
+                    detail_urls = self.tmall_taobao.detail_api_urls(snapshot.url, snapshot.markup)
+                    for detail_url in detail_urls[:2]:
+                        if "sign=" not in detail_url:
+                            continue
+                        try:
+                            raw = self.tmall_taobao.fetch_mtop_payload(
+                                self.http,
+                                detail_url,
+                                referer=snapshot.url,
+                            )
+                        except PlatformAuthRequired:
+                            raise
+                        tb_finding = self.tmall_taobao.build_price_finding(
+                            snapshot.url, raw, platform="Taobao/Tmall"
+                        )
+                        if tb_finding:
+                            findings.append(
+                                PriceFinding(
+                                    platform=tb_finding.platform,
+                                    list_price=tb_finding.list_price,
+                                    coupon_discount=tb_finding.coupon_discount,
+                                    subsidy_discount=tb_finding.subsidy_discount,
+                                    cross_store_discount=tb_finding.cross_store_discount,
+                                    final_price=tb_finding.final_price,
+                                    screenshot_path=",".join(screenshot_paths),
+                                    captured_at=tb_finding.captured_at,
+                                    evidence=tb_finding.evidence,
+                                )
+                            )
+                            break
+                    if findings and findings[-1].platform == "Taobao/Tmall":
                         continue
                 if not snapshot.ok:
                     self.diagnostics.record(
@@ -377,19 +440,35 @@ class EcommerceSourceCollector:
         highlights: list[str] = []
         for platform, query in ecommerce_search_queries(candidate.sku):
             for result in self.http.search(query, max_results=4):
-                target_url = self.jd.normalize_url(result.url) if platform == "JD" else result.url
-                snapshot = self.resilient.fetch(
-                    target_url,
-                    task_id=task_id,
-                    use_browser=use_browser,
-                    storage_state_path=storage_state_path,
-                    sku=candidate.sku,
-                )
+                if platform == "JD":
+                    target_url = self.jd.normalize_url(result.url)
+                elif platform == "Taobao/Tmall":
+                    target_url = self.tmall_taobao.normalize_url(result.url)
+                else:
+                    target_url = result.url
+                try:
+                    snapshot = self.resilient.fetch(
+                        target_url,
+                        task_id=task_id,
+                        use_browser=use_browser or platform == "Taobao/Tmall",
+                        storage_state_path=storage_state_path,
+                        sku=candidate.sku,
+                    )
+                except (BrowserAuthRequired, PlatformAuthRequired):
+                    raise
+                if platform == "Taobao/Tmall":
+                    self.tmall_taobao.maybe_raise_page_auth(
+                        snapshot.text,
+                        snapshot.page.blockers,
+                        snapshot.url,
+                    )
                 if not snapshot.markup:
                     continue
                 detail_api_urls = self._detail_api_urls_for_platform(platform, snapshot.url, snapshot.markup)
                 detail_payloads = self._fetch_detail_payloads(
                     detail_api_urls,
+                    platform=platform,
+                    referer_url=snapshot.url,
                     task_id=task_id,
                     use_browser=use_browser,
                     storage_state_path=storage_state_path,
@@ -430,6 +509,8 @@ class EcommerceSourceCollector:
         self,
         urls: list[str],
         *,
+        platform: str = "",
+        referer_url: str = "",
         task_id: str,
         use_browser: bool,
         storage_state_path: str,
@@ -437,18 +518,37 @@ class EcommerceSourceCollector:
     ) -> list[str]:
         payloads: list[str] = []
         for detail_url in urls[:6]:
-            snapshot = self.resilient.fetch(
-                detail_url,
-                task_id=task_id,
-                use_browser=use_browser,
-                storage_state_path=storage_state_path,
-                sku=sku,
-            )
-            if snapshot.markup:
-                payloads.append(snapshot.markup)
-            elif snapshot.text:
-                payloads.append(snapshot.text)
+            if platform == "Taobao/Tmall" and "mtop." in detail_url and self.tmall_taobao.credentials.configured:
+                try:
+                    raw = self.tmall_taobao.fetch_mtop_payload(
+                        self.http,
+                        detail_url,
+                        referer=referer_url or detail_url,
+                    )
+                except PlatformAuthRequired:
+                    raise
+                if raw:
+                    payloads.append(self._unwrap_detail_payload(platform, raw))
+                continue
+            try:
+                snapshot = self.resilient.fetch(
+                    detail_url,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                    sku=sku,
+                )
+            except (BrowserAuthRequired, PlatformAuthRequired):
+                raise
+            raw = snapshot.markup or snapshot.text
+            if raw:
+                payloads.append(self._unwrap_detail_payload(platform, raw))
         return payloads
+
+    def _unwrap_detail_payload(self, platform: str, payload: str) -> str:
+        if platform == "Taobao/Tmall":
+            return self.tmall_taobao.unwrap_desc_payload(payload) or payload
+        return payload
 
 
 class UrlInjectionCollector:

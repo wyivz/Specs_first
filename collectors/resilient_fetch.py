@@ -120,7 +120,8 @@ class ResilientFetcher:
             return http_snapshot
 
     def _fetch_http(self, url: str) -> PageSnapshot:
-        result = self.http.fetch(url)
+        extra_headers = self._platform_headers(url)
+        result = self.http.fetch(url, extra_headers=extra_headers)
         if not result.ok:
             page = sanitize_html(url, "")
             page.blockers.append(PageBlocker("http_error", result.error or f"HTTP {result.status}"))
@@ -173,6 +174,18 @@ class ResilientFetcher:
             method="browser",
             screenshot_paths=tuple(str(path) for path in capture.screenshot_paths),
         )
+
+    @staticmethod
+    def _platform_headers(url: str) -> dict[str, str]:
+        lower = url.lower()
+        if "taobao.com" not in lower and "tmall.com" not in lower:
+            return {}
+        from collectors.credentials import load_taobao_credentials
+
+        credentials = load_taobao_credentials()
+        if not credentials.configured:
+            return {}
+        return credentials.request_headers()
 
     def _needs_browser_escalation(self, snapshot: PageSnapshot, strategy: SiteStrategy) -> bool:
         if snapshot.status in {403, 429, 503}:

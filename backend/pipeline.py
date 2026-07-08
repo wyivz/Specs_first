@@ -24,7 +24,8 @@ from schemas import (
     to_dict,
 )
 from schemas.matrix import build_comparison_matrix, build_partial_row
-from schemas.serialize import asset_from_dict, candidate_from_dict, finding_from_dict, official_spec_from_dict
+from schemas.serialize import asset_from_dict, candidate_from_dict
+from backend.candidate_processor import CandidateProcessor
 
 
 @dataclass
@@ -287,131 +288,19 @@ class SpecsFirstPipeline:
         storage_state_path: str,
         on_event: Callable[[TaskEvent], None] | None,
     ) -> ProductAsset | None:
-        progress = in_progress_payload
-        if progress:
-            official_specs = [official_spec_from_dict(item) for item in progress["official_specs"]]
-            highlights = progress["highlights"]
-            findings = [finding_from_dict(item) for item in progress["findings"]]
-        else:
-            self._emit(
-                task_id,
-                "phase_started",
-                f"Phase 1: collecting official specs for {candidate.sku}",
-                TaskState.RUNNING,
-                {"sku": candidate.sku, "phase": 1},
-                on_event,
-            )
-            official_specs, highlights = self.collector.collect_official_specs(
-                candidate,
-                task_id=task_id,
-                use_browser=use_browser,
-                storage_state_path=storage_state_path,
-            )
-            self._emit(
-                task_id,
-                "specs_collected",
-                f"Official specs collected for {candidate.sku}",
-                TaskState.RUNNING,
-                {
-                    "sku": candidate.sku,
-                    "official_specs": [to_dict(spec) for spec in official_specs],
-                    "spec_highlights": highlights,
-                },
-                on_event,
-            )
-
-            self._emit(
-                task_id,
-                "phase_started",
-                f"Phase 2: dehydrating field evidence for {candidate.sku}",
-                TaskState.RUNNING,
-                {"sku": candidate.sku, "phase": 2},
-                on_event,
-            )
-            try:
-                corpus = self.collector.collect_real_world_corpus(
-                    candidate,
-                    task_id=task_id,
-                    use_browser=use_browser,
-                    storage_state_path=storage_state_path,
-                )
-            except PlatformAuthRequired as exc:
-                exc.in_progress_payload = {
-                    "official_specs": [to_dict(spec) for spec in official_specs],
-                    "highlights": highlights,
-                    "findings": [],
-                }
-                raise
-            findings = self.router.extract_real_world_findings(candidate.sku, corpus)
-            self._emit(
-                task_id,
-                "findings_extracted",
-                f"Extracted {len(findings)} real-world findings for {candidate.sku}",
-                TaskState.RUNNING,
-                {
-                    "sku": candidate.sku,
-                    "findings": [to_dict(finding) for finding in findings],
-                    "corpus_size": len(corpus),
-                },
-                on_event,
-            )
-
-        self._emit(
-            task_id,
-            "phase_started",
-            f"Phase 3: normalizing price evidence for {candidate.sku}",
-            TaskState.RUNNING,
-            {"sku": candidate.sku, "phase": 3},
-            on_event,
+        processor = CandidateProcessor(
+            collector=self.collector,
+            router=self.router,
+            emit=lambda event_type, message, state, payload=None: self._emit(
+                task_id, event_type, message, state, payload, on_event
+            ),
         )
-        prices = []
-        try:
-            prices = self.collector.collect_prices(
-                candidate,
-                task_id=task_id,
-                use_browser=use_browser,
-                storage_state_path=storage_state_path,
-            )
-            prices = self.router.enrich_prices_with_ocr(candidate.sku, prices)
-        except Exception as exc:
-            if hasattr(self.collector, "diagnostics"):
-                self.collector.diagnostics.record(
-                    "price",
-                    f"price stage downgraded for {candidate.sku}: {exc}",
-                    level="warning",
-                    sku=candidate.sku,
-                )
-            self._emit(
-                task_id,
-                "price_degraded",
-                f"Price stage downgraded for {candidate.sku}; continuing with specs/findings only",
-                TaskState.RUNNING,
-                {"sku": candidate.sku, "error": str(exc)},
-                on_event,
-            )
-            prices = []
-
-        self._emit(
-            task_id,
-            "phase_started",
-            f"Phase 4: arbitrating conflicts for {candidate.sku}",
-            TaskState.RUNNING,
-            {"sku": candidate.sku, "phase": 4},
-            on_event,
-        )
-        warnings = self.router.arbitrate_conflicts(findings, official_specs)
-        summary = self.router.summarize(warnings, findings)
-
-        return ProductAsset(
-            sku=candidate.sku,
-            brand=candidate.brand,
-            category=candidate.category,
-            official_specs=official_specs,
-            spec_highlights=highlights,
-            real_world_findings=findings,
-            prices=prices,
-            conflict_warnings=warnings,
-            arbitration_summary=summary,
+        return processor.process(
+            task_id=task_id,
+            candidate=candidate,
+            in_progress_payload=in_progress_payload,
+            use_browser=use_browser,
+            storage_state_path=storage_state_path,
         )
 
     def _pause_for_auth(

@@ -83,11 +83,14 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 - [x] **FastAPI**: `POST /tasks`, `GET /tasks/{id}/events` (SSE), `GET /result`
 - [x] **Streamlit UI**: Phase 0 SKU picker, progressive table, 🟡/🔴 conflict badges, evidence links
 - [x] **Obsidian writer**: Chinese dehydration reports + Dataview master matrix
-- [x] **Unit tests**: Pipeline / RealCollector / ModelRouter / TaskManager / Checkpoint (10 passing)
+- [x] **Unit tests**: **71 passing** + GitHub Actions CI
+- [x] **Taobao/Tmall adapter**: mtop H5 signing, `TAOBAO_COOKIE` config, captcha pause + resume
+- [x] **Code modularization**: `candidate_processor`, split model routers, Pydantic API models, Streamlit `api_client`
 
 ### In progress / partial
 
 - [~] **Live Gemini / OpenAI calls**: wired but require `.env` API keys
+- [~] **Taobao/Tmall cookies**: expire periodically; re-copy from browser when API returns token errors
 - [x] **Task checkpoint resume (Milestone 2 skeleton)**: memory/Redis checkpoints, `PAUSED_NEED_AUTH`, `POST /tasks/{id}/resume-auth`
 - [x] **Playwright browser capture skeleton**: slice screenshots, captcha detection, session restore
 - [x] **Streamlit HITL resume UI**: sidebar resume button
@@ -176,6 +179,7 @@ uvicorn backend.api:app --reload
 | `POST /discover` | Discover candidate SKUs |
 | `POST /tasks` | Start a comparison task |
 | `GET /tasks/{id}/events` | SSE live event stream |
+| `GET /tasks/{id}/events/snapshot` | Event snapshot (Streamlit polling) |
 | `GET /tasks/{id}/result` | Final matrix and vault paths |
 | `POST /tasks/{id}/resume-auth` | Resume after manual auth |
 | `GET /tasks/{id}/checkpoint` | Inspect paused checkpoint |
@@ -197,6 +201,10 @@ DEFAULT_OPENAI_MODEL=gpt-4o-mini   # Structured Output only
 DEFAULT_GEMINI_MODEL=gemini-1.5-flash  # text ingestion + OCR
 OBSIDIAN_VAULT_PATH=./vault_output
 SPECS_FIRST_MODE=mock
+
+# Taobao/Tmall (real mode): copy full Cookie from browser DevTools while logged in
+TAOBAO_COOKIE=
+TAOBAO_M_H5_TK=
 ```
 
 ### Tests
@@ -204,6 +212,8 @@ SPECS_FIRST_MODE=mock
 ```powershell
 python -m unittest discover -s tests
 ```
+
+**71 tests** currently passing.
 
 ---
 

@@ -76,6 +76,10 @@ class Settings:
     bilibili_dedeuserid: str = os.getenv("BILIBILI_DEDEUSERID", "")
     bilibili_buvid3: str = os.getenv("BILIBILI_BUVID3", "")
 
+    # Taobao/Tmall cookies (never commit real values)
+    taobao_cookie: str = os.getenv("TAOBAO_COOKIE", "")
+    taobao_m_h5_tk: str = os.getenv("TAOBAO_M_H5_TK", "")
+
     @property
     def has_openai(self) -> bool:
         return bool(self.openai_api_key)

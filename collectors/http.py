@@ -48,7 +48,7 @@ class HttpClient:
         self.retries = retries
         self.sleep_seconds = sleep_seconds
 
-    def fetch(self, url: str, *, platform: str = "") -> FetchResult:
+    def fetch(self, url: str, *, platform: str = "", extra_headers: dict[str, str] | None = None) -> FetchResult:
         resolved_platform = platform or self._platform_for_url(url)
         try:
             from collectors.rate_limit import get_rate_limiter
@@ -56,10 +56,13 @@ class HttpClient:
             get_rate_limiter().wait(resolved_platform)
         except Exception:
             pass
+        headers = dict(DEFAULT_HEADERS)
+        if extra_headers:
+            headers.update(extra_headers)
         last_error = ""
         for attempt in range(self.retries + 1):
             try:
-                request = Request(url, headers=DEFAULT_HEADERS)
+                request = Request(url, headers=headers)
                 with urlopen(request, timeout=self.timeout_seconds) as response:
                     raw = response.read(2_000_000)
                     content_type = response.headers.get("content-type", "")

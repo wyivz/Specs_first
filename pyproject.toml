@@ -14,7 +14,17 @@ dependencies = [
   "bilibili-api-python>=17.0.0",
   "youtube-comment-downloader>=0.1.76",
   "youtube-transcript-api>=0.6.0",
+  "httpx>=0.27.0",
 ]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.45.0"]
+asr = []
+dev = ["httpx>=0.27.0"]
+
+[tool.setuptools.packages.find]
+include = ["backend*", "collectors*", "schemas*", "frontend*", "obsidian*"]
+exclude = ["tests*", "vault_output*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

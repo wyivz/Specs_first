@@ -5,7 +5,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from collectors.credentials import BilibiliCredentials
+from collectors.credentials import BilibiliCredentials, TaobaoCredentials
 from collectors.rate_limit import CollectionGuard, PlatformRateLimiter, get_collection_guard, platform_for_url
 
 
@@ -42,6 +42,13 @@ class CollectionInfraTest(unittest.TestCase):
         empty = BilibiliCredentials(sessdata="", bili_jct="", dedeuserid="")
         self.assertFalse(empty.configured)
         ready = BilibiliCredentials(sessdata="a", bili_jct="b", dedeuserid="c")
+        self.assertTrue(ready.configured)
+
+    def test_taobao_credentials_extract_sign_token(self) -> None:
+        empty = TaobaoCredentials()
+        self.assertFalse(empty.configured)
+        ready = TaobaoCredentials(cookie="_m_h5_tk=abc123_token_part_1700; other=1")
+        self.assertEqual(ready.sign_token(), "abc123")
         self.assertTrue(ready.configured)
 
     def test_get_collection_guard_is_singleton(self) -> None:
