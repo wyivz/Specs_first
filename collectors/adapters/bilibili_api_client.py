@@ -37,12 +37,15 @@ class BilibiliApiClient:
         get_pages() which returns a list of page dicts each with a 'cid' key.
         The subtitle metadata returned by get_subtitle(cid=cid) only contains
         a URL; we then fetch that URL to obtain the body[] array.
+
+        If the video has no native CC subtitle, and a local ASR backend is
+        installed, falls back to downloading the audio track and
+        transcribing it (see ``_fetch_subtitle_via_asr``).
         """
         if not bvid or not self.credentials.configured:
             return ""
         try:
             from bilibili_api import sync, video
-            import urllib.request
 
             credential = self.credentials.to_credential()
             video_obj = video.Video(bvid=bvid, credential=credential)
@@ -50,10 +53,10 @@ class BilibiliApiClient:
             self.rate_limiter.wait("bilibili")  # type: ignore[union-attr]
             pages = sync.sync(video_obj.get_pages())
             if not pages:
-                return ""
+                return self._fetch_subtitle_via_asr(bvid)
             cid = pages[0].get("cid")
             if not cid:
-                return ""
+                return self._fetch_subtitle_via_asr(bvid)
 
             self.rate_limiter.wait("bilibili")  # type: ignore[union-attr]
             subtitle_meta = sync.sync(video_obj.get_subtitle(cid=cid))
@@ -64,15 +67,15 @@ class BilibiliApiClient:
                     platform="bilibili",
                     message=f"Bilibili verification required while fetching subtitles for {bvid}",
                 ) from exc
-            return ""
+            return self._fetch_subtitle_via_asr(bvid)
 
         subtitles = (subtitle_meta or {}).get("subtitles") or []
         if not subtitles:
-            return ""
+            return self._fetch_subtitle_via_asr(bvid)
 
         subtitle_url = subtitles[0].get("subtitle_url") or ""
         if not subtitle_url:
-            return ""
+            return self._fetch_subtitle_via_asr(bvid)
         if subtitle_url.startswith("//"):
             subtitle_url = "https:" + subtitle_url
 
@@ -84,11 +87,49 @@ class BilibiliApiClient:
                 body_data = _json.loads(resp.read().decode("utf-8", errors="replace"))
         except Exception as exc:
             self._record("bilibili", f"subtitle body fetch failed for {bvid}: {exc}", level="warning")
-            return ""
+            return self._fetch_subtitle_via_asr(bvid)
 
         body = body_data.get("body") or []
         parts = [item.get("content", "").strip() for item in body if item.get("content")]
-        return clip(" ".join(parts), 12000)
+        text = clip(" ".join(parts), 12000)
+        return text or self._fetch_subtitle_via_asr(bvid)
+
+    def _fetch_subtitle_via_asr(self, bvid: str) -> str:
+        """Download audio + run local ASR when no native CC subtitle exists.
+
+        No-op (returns "") unless BILIBILI_ASR_FALLBACK is enabled and a
+        local ASR backend (funasr / faster-whisper) plus yt-dlp are
+        installed. Never raises: any failure just yields an empty transcript
+        so the caller degrades to comment-only evidence.
+        """
+        from backend.config import settings
+
+        if not settings.bilibili_asr_fallback:
+            return ""
+        try:
+            from collectors.asr import available_backend, transcribe_url
+        except Exception:
+            return ""
+        if available_backend() is None:
+            self._record(
+                "bilibili",
+                f"no native subtitle for {bvid} and no local ASR backend installed; skipping transcript",
+                level="info",
+            )
+            return ""
+
+        url = f"https://www.bilibili.com/video/{bvid}"
+        self._record("bilibili", f"no native subtitle for {bvid}; falling back to local ASR", level="info")
+        try:
+            result = transcribe_url(url, language="zh")
+        except Exception as exc:
+            self._record("bilibili", f"ASR fallback failed for {bvid}: {exc}", level="warning")
+            return ""
+        if not result.ok:
+            if result.error:
+                self._record("bilibili", f"ASR fallback failed for {bvid}: {result.error}", level="warning")
+            return ""
+        return clip(result.text, 12000)
 
     def fetch_comment_texts(self, bvid: str) -> list[str]:
         if not bvid or not self.credentials.configured:

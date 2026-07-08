@@ -39,6 +39,35 @@ class AdapterTest(unittest.TestCase):
         self.assertTrue(any("fringing" in item.excerpt.lower() for item in evidence))
         self.assertTrue(any(item.author == "bilibili_comment" for item in evidence))
 
+    def test_bilibili_subtitle_asr_fallback_when_no_native_subtitle(self) -> None:
+        client = BilibiliApiClient(credentials=BilibiliCredentials("s", "j", "d"))
+        fake_asr_module = type(
+            "FakeAsrModule",
+            (),
+            {
+                "available_backend": staticmethod(lambda: "faster-whisper"),
+                "transcribe_url": staticmethod(
+                    lambda url, **kwargs: type(
+                        "R", (), {"ok": True, "text": "audio transcript text", "error": ""}
+                    )()
+                ),
+            },
+        )
+        with patch.dict("sys.modules", {"collectors.asr": fake_asr_module}):
+            text = client._fetch_subtitle_via_asr("BV1ABCD12345")
+        self.assertEqual(text, "audio transcript text")
+
+    def test_bilibili_subtitle_asr_fallback_disabled(self) -> None:
+        import dataclasses
+
+        from backend.config import settings
+
+        client = BilibiliApiClient(credentials=BilibiliCredentials("s", "j", "d"))
+        disabled_settings = dataclasses.replace(settings, bilibili_asr_fallback=False)
+        with patch("backend.config.settings", disabled_settings):
+            text = client._fetch_subtitle_via_asr("BV1ABCD12345")
+        self.assertEqual(text, "")
+
     def test_youtube_comment_fetcher_selects_review_comments(self) -> None:
         fetcher = YouTubeCommentFetcher(max_comments_per_video=5)
         selected = fetcher.select_review_comments(

@@ -36,7 +36,9 @@ Targeted retrieval from brand sites, manuals, and whitepapers for focal length, 
 
 ### Phase 2 · Real-world dehydration
 
-Concurrent fetch from Bilibili comments/danmaku, YouTube, Chiphell, Reddit, etc. **Gemini Flash** strips phrases like “legendary bokeh” and keeps only evidence-backed flaws.
+Concurrent fetch from Bilibili subtitles/top comments, YouTube, Chiphell, Reddit, etc. **Gemini Flash** strips phrases like "legendary bokeh" and keeps only evidence-backed flaws.
+
+> **Bilibili source scope (finalized)**: subtitles + top comments only — no danmaku collection. Native CC subtitles are preferred; when unavailable, the pipeline automatically falls back to downloading the audio (yt-dlp) and transcribing locally (funasr/faster-whisper). Disable via `BILIBILI_ASR_FALLBACK=false`.
 
 ### Phase 3 · Price OCR (Gemini multimodal)
 
@@ -98,6 +100,7 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 - [x] **Graceful degradation + diagnostics panel**: events, API `/diagnostics`, Streamlit panel
 - [x] **Per-SKU fault isolation**: one failed SKU does not block the rest
 - [x] **YouTube subtitle adapter**: caption tracks from `ytInitialPlayerResponse`, review-oriented transcript snippets
+- [x] **Bilibili ASR fallback**: local transcription when no native subtitle exists (subtitles + top comments only, no danmaku)
 - [~] **Live Gemini OCR**: requires API key + Playwright captures
 
 ---
@@ -122,7 +125,8 @@ Run the FastAPI task pipeline; Gemini ingests large corpora and OCR screenshots;
 3. ✅ Graceful degradation, per-SKU isolation, diagnostics panel
 4. ✅ Interference-resistant fetch (`page_sanitize` + `resilient_fetch` + browser main-content targeting)
 5. ✅ YouTube subtitle adapter (`captionTracks` → transcript snippets)
-6. ⬜ YouTube comments / Bilibili danmaku API, context caching, multi-category schemas
+6. ✅ YouTube comments API; Bilibili source scope finalized as subtitles + top comments (no danmaku), with ASR fallback
+7. ⬜ Gemini context caching; finer-grained multi-category schema templates (currently generic 8-slot + highlights)
 
 ### Milestone 4 · Knowledge-base enhancements
 

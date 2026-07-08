@@ -58,6 +58,10 @@ class Settings:
     youtube_comment_max_per_video: int = _int_env("YOUTUBE_COMMENT_MAX_PER_VIDEO", 20)
     bilibili_max_videos_per_sku: int = _int_env("BILIBILI_MAX_VIDEOS_PER_SKU", 2)
     bilibili_max_comments_per_video: int = _int_env("BILIBILI_MAX_COMMENTS_PER_VIDEO", 50)
+    # When a video has no native CC subtitle, fall back to downloading audio
+    # (yt-dlp) and running local ASR (funasr/faster-whisper) to obtain a
+    # transcript. No-op if neither backend is installed.
+    bilibili_asr_fallback: bool = os.getenv("BILIBILI_ASR_FALLBACK", "true").strip().lower() not in {"0", "false", "no"}
 
     # Bilibili credentials (never commit real values)
     bilibili_sessdata: str = os.getenv("BILIBILI_SESSDATA", "")
