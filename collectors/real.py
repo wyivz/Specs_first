@@ -4,9 +4,11 @@ from dataclasses import dataclass, field
 
 from collectors.base import Collector
 from collectors.extractors import dedupe_evidence
-from collectors.browser import PlaywrightCapture
+from collectors.browser import BrowserAuthRequired, PlaywrightCapture
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.http import HttpClient
+from collectors.platform_auth import PlatformAuthRequired
+from collectors.rate_limit import get_collection_guard
 from collectors.resilient_fetch import ResilientFetcher
 from collectors.sources import (
     EcommerceSourceCollector,
@@ -59,33 +61,34 @@ class RealCollector(Collector):
         use_browser: bool = False,
         storage_state_path: str = "",
     ) -> list[EvidenceItem]:
-        evidence = []
-        evidence.extend(
-            self.video.collect(
-                candidate,
-                task_id=task_id,
-                use_browser=use_browser,
-                storage_state_path=storage_state_path,
+        with get_collection_guard():
+            evidence = []
+            evidence.extend(
+                self.video.collect(
+                    candidate,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                )
             )
-        )
-        evidence.extend(
-            self.forum.collect(
-                candidate,
-                task_id=task_id,
-                use_browser=use_browser,
-                storage_state_path=storage_state_path,
+            evidence.extend(
+                self.forum.collect(
+                    candidate,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                )
             )
-        )
-        evidence.extend(
-            self.injected.collect_evidence(
-                self.source_urls,
-                task_id=task_id,
-                use_browser=use_browser,
-                storage_state_path=storage_state_path,
-                sku=candidate.sku,
+            evidence.extend(
+                self.injected.collect_evidence(
+                    self.source_urls,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                    sku=candidate.sku,
+                )
             )
-        )
-        return dedupe_evidence(evidence)
+            return dedupe_evidence(evidence)
 
     def collect_prices(
         self,
@@ -95,24 +98,25 @@ class RealCollector(Collector):
         use_browser: bool = False,
         storage_state_path: str = "",
     ) -> list[PriceFinding]:
-        prices = []
-        prices.extend(
-            self.ecommerce.collect(
-                candidate,
-                task_id=task_id,
-                use_browser=use_browser,
-                storage_state_path=storage_state_path,
+        with get_collection_guard():
+            prices = []
+            prices.extend(
+                self.ecommerce.collect(
+                    candidate,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                )
             )
-        )
-        prices.extend(
-            self.injected.collect_prices(
-                self.source_urls,
-                task_id=task_id,
-                use_browser=use_browser,
-                storage_state_path=storage_state_path,
+            prices.extend(
+                self.injected.collect_prices(
+                    self.source_urls,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                )
             )
-        )
-        return sorted(prices, key=lambda item: item.final_price)[:5]
+            return sorted(prices, key=lambda item: item.final_price)[:5]
 
     def diagnostics_report(self) -> list[dict]:
         return self.diagnostics.to_dicts()

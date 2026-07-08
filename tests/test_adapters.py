@@ -1,22 +1,50 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from backend.model_router import _parse_json_payload
 from backend.retry import retry_call
 from collectors.adapters.bilibili import BilibiliAdapter
+from collectors.adapters.bilibili_api_client import BilibiliApiClient
 from collectors.adapters.jd import JdAdapter
 from collectors.adapters.youtube import YouTubeAdapter
+from collectors.adapters.youtube_comments import YouTubeCommentFetcher
+from collectors.credentials import BilibiliCredentials
 from collectors.http import FetchResult
 
 
 class AdapterTest(unittest.TestCase):
     def test_bilibili_extracts_comment_like_snippets(self) -> None:
-        adapter = BilibiliAdapter()
+        adapter = BilibiliAdapter(credentials=BilibiliCredentials("", "", ""))
         markup = "<html>用户评论：大光圈紫边明显，对焦环阻尼偶尔卡顿。另一个缺点是对焦慢。</html>"
         evidence = adapter.extract_evidence("https://www.bilibili.com/video/BVtest", markup)
         self.assertTrue(evidence)
         self.assertTrue(any("紫边" in item.excerpt or "对焦" in item.excerpt for item in evidence))
+
+    def test_bilibili_api_client_extracts_bvid(self) -> None:
+        self.assertEqual(
+            BilibiliApiClient.extract_bvid("https://www.bilibili.com/video/BV1ABCD12345"),
+            "BV1ABCD12345",
+        )
+
+    @patch.object(BilibiliApiClient, "fetch_subtitle_text", return_value="Purple fringing is visible at wide open.")
+    @patch.object(BilibiliApiClient, "fetch_comment_texts", return_value=["Great lens but fringing remains an issue."])
+    def test_bilibili_api_enrichment(self, _comments, _subtitle) -> None:
+        client = BilibiliApiClient(
+            credentials=BilibiliCredentials("s", "j", "d"),
+            max_comments_per_video=10,
+        )
+        evidence = client.collect_api_evidence("https://www.bilibili.com/video/BV1ABCD12345")
+        self.assertTrue(any("fringing" in item.excerpt.lower() for item in evidence))
+        self.assertTrue(any(item.author == "bilibili_comment" for item in evidence))
+
+    def test_youtube_comment_fetcher_selects_review_comments(self) -> None:
+        fetcher = YouTubeCommentFetcher(max_comments_per_video=5)
+        selected = fetcher.select_review_comments(
+            ["Great lens", "Visible purple fringing under backlight", "Nice build"]
+        )
+        self.assertTrue(any("fringing" in item.lower() for item in selected))
 
     def test_jd_extracts_script_price(self) -> None:
         adapter = JdAdapter()
@@ -64,7 +92,8 @@ class AdapterTest(unittest.TestCase):
                 return FetchResult(url=url, status=404, text="", content_type="", error="not found")
 
         adapter = YouTubeAdapter(FakeHttp())  # type: ignore[arg-type]
-        evidence = adapter.extract_evidence("https://www.youtube.com/watch?v=mock123", markup)
+        with patch.object(adapter.comment_fetcher, "fetch_comment_texts", return_value=[]):
+            evidence = adapter.extract_evidence("https://www.youtube.com/watch?v=mock123", markup)
         self.assertTrue(any("purple fringing" in item.excerpt.lower() for item in evidence))
         self.assertTrue(any(item.locator.startswith("transcript-snippet") for item in evidence))
 

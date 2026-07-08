@@ -48,7 +48,14 @@ class HttpClient:
         self.retries = retries
         self.sleep_seconds = sleep_seconds
 
-    def fetch(self, url: str) -> FetchResult:
+    def fetch(self, url: str, *, platform: str = "") -> FetchResult:
+        resolved_platform = platform or self._platform_for_url(url)
+        try:
+            from collectors.rate_limit import get_rate_limiter
+
+            get_rate_limiter().wait(resolved_platform)
+        except Exception:
+            pass
         last_error = ""
         for attempt in range(self.retries + 1):
             try:
@@ -73,7 +80,19 @@ class HttpClient:
                 time.sleep(self.sleep_seconds * (attempt + 1))
         return FetchResult(url=url, status=0, text="", content_type="", error=last_error)
 
+    @staticmethod
+    def _platform_for_url(url: str) -> str:
+        from collectors.rate_limit import platform_for_url
+
+        return platform_for_url(url)
+
     def search(self, query: str, max_results: int = 8) -> list[SearchResult]:
+        try:
+            from collectors.rate_limit import get_rate_limiter
+
+            get_rate_limiter().wait("http")
+        except Exception:
+            pass
         url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
         result = self.fetch(url)
         if not result.ok:

@@ -6,8 +6,11 @@ import re
 import xml.etree.ElementTree as ET
 from urllib.parse import parse_qs, urlparse
 
+from collectors.adapters.youtube_comments import YouTubeCommentFetcher
+from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import build_evidence, evidence_from_page
 from collectors.http import HttpClient, clip
+from collectors.rate_limit import PlatformRateLimiter, get_rate_limiter
 from schemas import EvidenceItem
 from schemas.category_profile import real_world_issue_patterns, review_content_patterns
 
@@ -16,8 +19,18 @@ class YouTubeAdapter:
     REVIEW_HINTS = re.compile("|".join(real_world_issue_patterns() + review_content_patterns()), re.I)
     VIDEO_ID_PATTERN = re.compile(r"(?:v=|/shorts/|/embed/|youtu\.be/)([A-Za-z0-9_-]{6,})")
 
-    def __init__(self, http: HttpClient | None = None) -> None:
+    def __init__(
+        self,
+        http: HttpClient | None = None,
+        *,
+        comment_fetcher: YouTubeCommentFetcher | None = None,
+        rate_limiter: PlatformRateLimiter | None = None,
+        diagnostics: CollectorDiagnostics | None = None,
+    ) -> None:
         self.http = http or HttpClient()
+        self.rate_limiter = rate_limiter or get_rate_limiter()
+        self.diagnostics = diagnostics
+        self.comment_fetcher = comment_fetcher or YouTubeCommentFetcher(diagnostics=diagnostics)
 
     def supports(self, url: str) -> bool:
         host = urlparse(url).netloc.lower()
@@ -72,6 +85,21 @@ class YouTubeAdapter:
                     confidence=max(0.5, confidence - 0.08),
                 )
             )
+
+        api_comments = self.comment_fetcher.fetch_comment_texts(watch_url, video_id=video_id)
+        for index, snippet in enumerate(self.comment_fetcher.select_review_comments(api_comments)[:6]):
+            if any(existing.excerpt[:80] == snippet[:80] for existing in evidence):
+                continue
+            evidence.append(
+                build_evidence(
+                    platform="YouTube",
+                    url=watch_url,
+                    author="youtube_comment",
+                    locator=f"api-comment-{index + 1}",
+                    excerpt=snippet,
+                    confidence=max(0.58, confidence - 0.04),
+                )
+            )
         return evidence
 
     def fetch_transcript(
@@ -89,17 +117,17 @@ class YouTubeAdapter:
         if player is None:
             page = self.http.fetch(url)
             if not page.ok:
-                return ""
+                return self._fetch_transcript_fallback(resolved_id, preferred_languages)
             player = self._extract_embedded_json(page.text, "ytInitialPlayerResponse")
         if not player:
-            return ""
+            return self._fetch_transcript_fallback(resolved_id, preferred_languages)
         tracks = (
             player.get("captions", {})
             .get("playerCaptionsTracklistRenderer", {})
             .get("captionTracks", [])
         )
         if not tracks:
-            return ""
+            return self._fetch_transcript_fallback(resolved_id, preferred_languages)
         track = self._pick_caption_track(tracks, preferred_languages)
         if not track:
             return ""
@@ -109,10 +137,76 @@ class YouTubeAdapter:
         if "fmt=" not in caption_url:
             separator = "&" if "?" in caption_url else "?"
             caption_url = f"{caption_url}{separator}fmt=srv3"
+        # YouTube enforces PoToken for URLs containing &exp=xpe — the timedtext
+        # endpoint returns an empty 200 body in that case.  We detect it early
+        # and skip straight to the transcript-api fallback.
+        if "&exp=xpe" in caption_url:
+            if self.diagnostics:
+                self.diagnostics.record(
+                    "youtube",
+                    f"captionTrack for {resolved_id} requires PoToken (&exp=xpe); "
+                    "falling back to youtube-transcript-api",
+                    level="info",
+                )
+            return self._fetch_transcript_fallback(resolved_id, preferred_languages)
         result = self.http.fetch(caption_url)
         if not result.ok:
+            return self._fetch_transcript_fallback(resolved_id, preferred_languages)
+        transcript = self._parse_caption_payload(result.text)
+        if transcript:
+            return transcript
+        return self._fetch_transcript_fallback(resolved_id, preferred_languages)
+
+    def _fetch_transcript_fallback(
+        self,
+        video_id: str,
+        preferred_languages: tuple[str, ...],
+    ) -> str:
+        try:
+            from youtube_transcript_api import (
+                YouTubeTranscriptApi,
+                PoTokenRequired,
+                RequestBlocked,
+                IpBlocked,
+                TranscriptsDisabled,
+                NoTranscriptFound,
+                VideoUnavailable,
+            )
+        except ImportError:
             return ""
-        return self._parse_caption_payload(result.text)
+        self.rate_limiter.wait("youtube")
+        try:
+            languages = list(preferred_languages) + ["en"]
+            fetched = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+        except PoTokenRequired:
+            if self.diagnostics:
+                self.diagnostics.record(
+                    "youtube",
+                    f"transcript-api: PoToken required for {video_id} (YouTube bot-detection); "
+                    "transcript unavailable without a residential IP",
+                    level="info",
+                )
+            return ""
+        except (RequestBlocked, IpBlocked) as exc:
+            if self.diagnostics:
+                self.diagnostics.record(
+                    "youtube",
+                    f"transcript-api: IP blocked for {video_id}: {exc}",
+                    level="info",
+                )
+            return ""
+        except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
+            return ""
+        except Exception as exc:
+            if self.diagnostics:
+                self.diagnostics.record(
+                    "youtube",
+                    f"transcript-api fallback failed for {video_id}: {exc}",
+                    level="info",
+                )
+            return ""
+        parts = [item.get("text", "").strip() for item in fetched if item.get("text")]
+        return clip(" ".join(parts), 12000)
 
     def _pick_caption_track(self, tracks: list[dict], preferred_languages: tuple[str, ...]) -> dict | None:
         for language in preferred_languages:

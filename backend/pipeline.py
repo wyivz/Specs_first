@@ -13,6 +13,7 @@ from backend.model_router import create_model_router
 from collectors import MockCollector, RealCollector
 from collectors.base import Collector
 from collectors.browser import BrowserAuthRequired
+from collectors.platform_auth import PlatformAuthRequired
 from obsidian import ObsidianWriter
 from schemas import (
     ComparisonMatrix,
@@ -191,6 +192,31 @@ class SpecsFirstPipeline:
                     on_event=on_event,
                     in_progress_payload=in_progress_payload if index == start_index else None,
                 )
+            except PlatformAuthRequired as exc:
+                auth_exc = BrowserAuthRequired(
+                    exc.message,
+                    url=exc.url,
+                    storage_state_path=Path(exc.storage_state_path) if exc.storage_state_path else None,
+                )
+                if exc.in_progress_payload:
+                    auth_exc.in_progress_payload = exc.in_progress_payload
+                return self._pause_for_auth(
+                    task_id=task_id,
+                    query=query,
+                    category=category,
+                    mode=mode,
+                    source_urls=source_urls,
+                    selected_skus=selected_skus,
+                    candidates=candidates,
+                    selected=selected,
+                    assets=assets,
+                    index=index,
+                    candidate=candidate,
+                    exc=auth_exc,
+                    storage_state_path=storage_state_path,
+                    on_event=on_event,
+                    in_progress_payload=in_progress_payload if index == start_index else None,
+                )
             except Exception as exc:
                 self._record_sku_failure(task_id, candidate.sku, exc, on_event)
                 continue
@@ -301,12 +327,20 @@ class SpecsFirstPipeline:
                 {"sku": candidate.sku, "phase": 2},
                 on_event,
             )
-            corpus = self.collector.collect_real_world_corpus(
-                candidate,
-                task_id=task_id,
-                use_browser=use_browser,
-                storage_state_path=storage_state_path,
-            )
+            try:
+                corpus = self.collector.collect_real_world_corpus(
+                    candidate,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                )
+            except PlatformAuthRequired as exc:
+                exc.in_progress_payload = {
+                    "official_specs": [to_dict(spec) for spec in official_specs],
+                    "highlights": highlights,
+                    "findings": [],
+                }
+                raise
             findings = self.router.extract_real_world_findings(candidate.sku, corpus)
             self._emit(
                 task_id,

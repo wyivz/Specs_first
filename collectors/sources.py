@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collectors.adapters.bilibili import BilibiliAdapter
 from collectors.adapters.youtube import YouTubeAdapter
+from collectors.adapters.youtube_comments import YouTubeCommentFetcher
 from collectors.adapters.jd import JdAdapter
 from collectors.browser import BrowserAuthRequired, PlaywrightCapture
 from collectors.diagnostics import CollectorDiagnostics
@@ -16,8 +17,9 @@ from collectors.extractors import (
     infer_specs_from_sku,
     platform_from_url,
 )
-from collectors.http import HttpClient, SearchResult, clip, extract_title
+from collectors.http import FetchResult, HttpClient, clip, extract_title
 from collectors.page_sanitize import sanitize_html
+from collectors.platform_auth import PlatformAuthRequired
 from collectors.resilient_fetch import ResilientFetcher
 from schemas import EvidenceItem, OfficialSpec, PriceFinding, ProductCandidate
 from schemas.category_profile import (
@@ -153,11 +155,22 @@ class VideoSourceCollector:
         diagnostics: CollectorDiagnostics | None = None,
         resilient: ResilientFetcher | None = None,
     ) -> None:
+        from backend.config import settings
+
         self.http = http
         self.diagnostics = diagnostics or CollectorDiagnostics()
         self.resilient = resilient or ResilientFetcher(http, diagnostics=self.diagnostics)
-        self.bilibili = BilibiliAdapter()
-        self.youtube = YouTubeAdapter(http)
+        self.bilibili = BilibiliAdapter(diagnostics=self.diagnostics)
+        self.youtube = YouTubeAdapter(
+            http,
+            diagnostics=self.diagnostics,
+            comment_fetcher=YouTubeCommentFetcher(
+                max_comments_per_video=settings.youtube_comment_max_per_video,
+                delay_min_seconds=settings.youtube_comment_delay_min,
+                delay_max_seconds=settings.youtube_comment_delay_max,
+                diagnostics=self.diagnostics,
+            ),
+        )
 
     def collect(
         self,
@@ -168,6 +181,7 @@ class VideoSourceCollector:
         storage_state_path: str = "",
     ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
+        self.bilibili.reset_api_budget()
         for platform, query in video_search_queries(candidate.sku):
             for result in self.http.search(query, max_results=6):
                 search_evidence = evidence_from_search_result(platform, result, confidence=0.52)
@@ -181,16 +195,20 @@ class VideoSourceCollector:
                     sku=candidate.sku,
                 )
                 if page.ok or page.markup:
-                    if platform == "Bilibili" and self.bilibili.supports(page.url):
-                        evidence.extend(
-                            self.bilibili.extract_evidence(page.url, page.markup, confidence=0.6)
-                        )
-                    elif platform == "YouTube" and self.youtube.supports(page.url):
-                        evidence.extend(
-                            self.youtube.extract_evidence(page.url, page.markup, confidence=0.62)
-                        )
-                    else:
-                        evidence.extend(evidence_from_page(platform, page.url, page.markup, confidence=0.58))
+                    try:
+                        if platform == "Bilibili" and self.bilibili.supports(page.url):
+                            evidence.extend(
+                                self.bilibili.extract_evidence(page.url, page.markup, confidence=0.6)
+                            )
+                        elif platform == "YouTube" and self.youtube.supports(page.url):
+                            evidence.extend(
+                                self.youtube.extract_evidence(page.url, page.markup, confidence=0.62)
+                            )
+                        else:
+                            evidence.extend(evidence_from_page(platform, page.url, page.markup, confidence=0.58))
+                    except PlatformAuthRequired as exc:
+                        exc.url = exc.url or page.url
+                        raise
                 else:
                     self.diagnostics.record(
                         platform,
