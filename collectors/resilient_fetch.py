@@ -7,6 +7,7 @@ from collectors.browser import BrowserAuthRequired, PlaywrightCapture
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.http import FetchResult, HttpClient
 from collectors.page_sanitize import PageBlocker, SanitizedPage, is_usable_page, sanitize_html
+from collectors.site_strategy import SiteStrategy, strategy_for_url
 
 
 @dataclass(frozen=True)
@@ -37,16 +38,7 @@ class ResilientFetcher:
     http: HttpClient
     browser: PlaywrightCapture | None = None
     diagnostics: CollectorDiagnostics | None = None
-    prefer_browser_hosts: tuple[str, ...] = (
-        "jd.com",
-        "jd.hk",
-        "taobao.com",
-        "tmall.com",
-        "bilibili.com",
-        "youtube.com",
-        "youtu.be",
-        "chiphell.com",
-    )
+    site_strategies: tuple[SiteStrategy, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         self.browser = self.browser or PlaywrightCapture()
@@ -71,10 +63,16 @@ class ResilientFetcher:
                 error="invalid url",
             )
 
-        force_browser = use_browser or self._should_prefer_browser(url)
+        strategy = strategy_for_url(url)
+        force_browser = use_browser or strategy.mode == "browser_first"
+        if strategy.mode == "api_first":
+            force_browser = use_browser
         http_snapshot = self._fetch_http(url)
-        if http_snapshot.ok and not force_browser:
+        needs_escalation = self._needs_browser_escalation(http_snapshot, strategy)
+        if http_snapshot.ok and not needs_escalation:
             return http_snapshot
+        if needs_escalation and self.browser is not None:
+            force_browser = True
 
         if http_snapshot.page.is_blocked and any(
             blocker.kind == "auth_or_captcha" for blocker in http_snapshot.page.blockers
@@ -82,11 +80,11 @@ class ResilientFetcher:
             force_browser = True
 
         if not force_browser:
-            if http_snapshot.ok:
+            if http_snapshot.ok and not needs_escalation:
                 return http_snapshot
             self.diagnostics.record(
                 "fetch",
-                f"http fetch weak for {url}; blockers={http_snapshot.page.blockers}",
+                f"http fetch weak for {url}; strategy={strategy.mode}; blockers={http_snapshot.page.blockers}",
                 level="info",
                 sku=sku,
             )
@@ -176,6 +174,27 @@ class ResilientFetcher:
             screenshot_paths=tuple(str(path) for path in capture.screenshot_paths),
         )
 
-    def _should_prefer_browser(self, url: str) -> bool:
-        lower = url.lower()
-        return any(host in lower for host in self.prefer_browser_hosts)
+    def _needs_browser_escalation(self, snapshot: PageSnapshot, strategy: SiteStrategy) -> bool:
+        if snapshot.status in {403, 429, 503}:
+            return True
+        if len(snapshot.text.strip()) < max(strategy.min_chars, 80):
+            return True
+        if any(blocker.kind in {"auth_or_captcha", "http_blocked"} for blocker in snapshot.blockers):
+            return True
+        if strategy.prefer_api and not (snapshot.page.json_ld or _contains_key_value_markup(snapshot.markup)):
+            return True
+        return not is_usable_page(snapshot.page, min_chars=strategy.min_chars)
+
+
+def _contains_key_value_markup(markup: str) -> bool:
+    lower = markup.lower()
+    return any(
+        token in lower
+        for token in (
+            "<table",
+            "spec",
+            "参数",
+            "technical details",
+            "product details",
+        )
+    )

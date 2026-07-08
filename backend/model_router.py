@@ -89,6 +89,15 @@ class KeywordModelRouter:
 
         return extract_specs_from_text(text, source_url, category), []
 
+    def extract_official_specs_from_images(
+        self,
+        sku: str,
+        image_urls: list[str],
+        source_url: str,
+        category: str = "",
+    ) -> tuple[list[OfficialSpec], list[str]]:
+        return [], []
+
     def extract_real_world_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
         """Extract real-world findings from corpus using keyword patterns.
         
@@ -294,6 +303,20 @@ class HybridModelRouter(KeywordModelRouter):
             except Exception:
                 pass
         return self._keyword.extract_real_world_findings(sku, corpus)
+
+    def extract_official_specs_from_images(
+        self,
+        sku: str,
+        image_urls: list[str],
+        source_url: str,
+        category: str = "",
+    ) -> tuple[list[OfficialSpec], list[str]]:
+        if not (settings.has_gemini and image_urls):
+            return [], []
+        try:
+            return self._gemini_extract_official_specs_from_images(sku, image_urls, source_url, category)
+        except Exception:
+            return [], []
 
     def enrich_prices_with_ocr(self, sku: str, prices: list[PriceFinding]) -> list[PriceFinding]:
         if not settings.has_gemini:
@@ -536,6 +559,54 @@ class HybridModelRouter(KeywordModelRouter):
             cross_store_discount=float(payload.get("cross_store_discount", 0)),
             final_price=final_price,
         )
+
+    def _gemini_extract_official_specs_from_images(
+        self,
+        sku: str,
+        image_urls: list[str],
+        source_url: str,
+        category: str = "",
+    ) -> tuple[list[OfficialSpec], list[str]]:
+        from schemas.category_profile import canonical_slots
+        from urllib.request import Request, urlopen
+
+        slots = canonical_slots(category)
+        prompt = (
+            f"Extract product specifications for {sku} from these detail images. "
+            "Return JSON only: "
+            '{"specs":[{"name":"snake_case_parameter_name","value":"","unit":""}],"highlights":[""]}. '
+            f"Prefer canonical fields: {', '.join(slots)}. Do not invent values."
+        )
+        specs_by_name: dict[str, OfficialSpec] = {}
+        highlights: list[str] = []
+        for url in image_urls[:8]:
+            request = Request(url, headers={"User-Agent": "SpecsFirst/0.1"})
+            with urlopen(request, timeout=12) as response:
+                data = response.read(4_000_000)
+                mime_type = response.headers.get_content_type() or "image/jpeg"
+            gemini_response = self._gemini_model().generate_content(
+                [prompt, {"mime_type": mime_type, "data": data}]
+            )
+            payload = _parse_json_payload(gemini_response.text or "", default={"specs": [], "highlights": []})
+            for item in payload.get("specs", []):
+                name = str(item.get("name", "")).strip()
+                value = str(item.get("value", "")).strip()
+                if not (name and value):
+                    continue
+                specs_by_name.setdefault(
+                    name,
+                    OfficialSpec(
+                        name=name,
+                        value=value,
+                        unit=str(item.get("unit", "")).strip(),
+                        source_url=source_url,
+                    ),
+                )
+            for item in payload.get("highlights", []):
+                text = str(item).strip()
+                if text and text not in highlights and len(highlights) < 5:
+                    highlights.append(text)
+        return list(specs_by_name.values()), highlights
 
     def _openai_arbitrate_structured(
         self,

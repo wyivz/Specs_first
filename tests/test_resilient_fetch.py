@@ -88,6 +88,56 @@ class ResilientFetcherTest(unittest.TestCase):
         with self.assertRaises(BrowserAuthRequired):
             fetcher.fetch("https://item.jd.com/123.html", use_browser=True)
 
+    def test_http_first_for_forum_domain_without_browser_upgrade(self) -> None:
+        html = (
+            "<html><body><h1>Chiphell</h1><p>"
+            "weight 530g battery life 6h compatibility sony e mount power draw 12W "
+            "measured runtime 5.8h with stable performance and no crash."
+            "</p></body></html>"
+        )
+        browser = FakeBrowser(
+            BrowserCapture(
+                url="https://www.chiphell.com/thread-1-1-1.html",
+                screenshot_paths=[],
+                page_text="browser fallback",
+                page_html="<html><body>browser fallback</body></html>",
+            )
+        )
+        fetcher = ResilientFetcher(
+            FakeHttp({"https://www.chiphell.com/thread-1-1-1.html": html}),  # type: ignore[arg-type]
+            browser=browser,  # type: ignore[arg-type]
+        )
+        snapshot = fetcher.fetch("https://www.chiphell.com/thread-1-1-1.html")
+        self.assertEqual(snapshot.method, "http")
+        self.assertEqual(browser.calls, [])
+
+    def test_api_first_domain_escalates_when_http_payload_too_short(self) -> None:
+        short_html = "<html><body>ok</body></html>"
+        browser = FakeBrowser(
+            BrowserCapture(
+                url="https://detail.tmall.com/item.htm?id=1",
+                screenshot_paths=[],
+                page_text=(
+                    "参数 重量 530g 续航 6h 功耗 12W 兼容性 Sony E "
+                    "接口 USB-C 电池 78Wh 尺寸 120mm x 80mm x 20mm"
+                ),
+                page_html=(
+                    "<html><body><table>"
+                    "<tr><th>重量</th><td>530g</td></tr>"
+                    "<tr><th>兼容性</th><td>Sony E</td></tr>"
+                    "<tr><th>功耗</th><td>12W</td></tr>"
+                    "</table></body></html>"
+                ),
+            )
+        )
+        fetcher = ResilientFetcher(
+            FakeHttp({"https://detail.tmall.com/item.htm?id=1": short_html}),  # type: ignore[arg-type]
+            browser=browser,  # type: ignore[arg-type]
+        )
+        snapshot = fetcher.fetch("https://detail.tmall.com/item.htm?id=1", task_id="task-2")
+        self.assertIn(snapshot.method, {"browser", "http"})
+        self.assertEqual(browser.calls, ["https://detail.tmall.com/item.htm?id=1"])
+
     def test_invalid_url_returns_error(self) -> None:
         fetcher = ResilientFetcher(FakeHttp({}))  # type: ignore[arg-type]
         snapshot = fetcher.fetch("not-a-url")

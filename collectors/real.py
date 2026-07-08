@@ -46,12 +46,23 @@ class RealCollector(Collector):
         use_browser: bool = False,
         storage_state_path: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
-        return self.official.collect_specs(
+        ecommerce_specs, ecommerce_highlights = self.ecommerce.collect_official_specs(
             candidate,
             task_id=task_id,
             use_browser=use_browser,
             storage_state_path=storage_state_path,
         )
+        official_specs, official_highlights = self.official.collect_specs(
+            candidate,
+            task_id=task_id,
+            use_browser=use_browser,
+            storage_state_path=storage_state_path,
+        )
+        merged: dict[str, OfficialSpec] = {spec.name: spec for spec in ecommerce_specs}
+        for spec in official_specs:
+            merged.setdefault(spec.name, spec)
+        highlights = [*ecommerce_highlights, *official_highlights]
+        return list(merged.values()), highlights[:5]
 
     def collect_real_world_corpus(
         self,

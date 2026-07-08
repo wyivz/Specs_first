@@ -28,6 +28,20 @@ class BrokenSecondSkuCollector(Collector):
         return []
 
 
+class PriceFailureCollector(Collector):
+    def discover_candidates(self, query: str, category: str) -> list[ProductCandidate]:
+        return [ProductCandidate("Good Lens", "Good", category, "https://example.com/good", 0.9)]
+
+    def collect_official_specs(self, candidate: ProductCandidate, **kwargs) -> tuple[list[OfficialSpec], list[str]]:
+        return [OfficialSpec("weight", "530g", "", candidate.source_url)], ["official specs ready"]
+
+    def collect_real_world_corpus(self, candidate: ProductCandidate, **kwargs):
+        return []
+
+    def collect_prices(self, candidate: ProductCandidate, **kwargs):
+        raise RuntimeError("price endpoint blocked")
+
+
 class RobustPipelineTest(unittest.TestCase):
     def test_one_sku_failure_does_not_stop_remaining_skus(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -41,6 +55,16 @@ class RobustPipelineTest(unittest.TestCase):
             self.assertEqual(len(result.assets), 1)
             self.assertEqual(result.assets[0].sku, "Good Lens")
             self.assertTrue(any(event.event_type == "sku_failed" for event in result.events))
+
+    def test_price_failure_does_not_block_main_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline = SpecsFirstPipeline(collector=PriceFailureCollector(), vault_path=Path(tmp))
+            result = pipeline.run("price degraded", "Lens", selected_skus=["Good Lens"])
+            self.assertEqual(result.state.value, "DONE")
+            self.assertEqual(len(result.assets), 1)
+            self.assertEqual(result.assets[0].sku, "Good Lens")
+            self.assertEqual(result.assets[0].prices, [])
+            self.assertTrue(any(event.event_type == "price_degraded" for event in result.events))
 
 
 if __name__ == "__main__":

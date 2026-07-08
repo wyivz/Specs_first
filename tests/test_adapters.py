@@ -89,6 +89,12 @@ class AdapterTest(unittest.TestCase):
             "https://item.jd.com/123456.html",
         )
 
+    def test_jd_detail_api_urls_include_desc_endpoints(self) -> None:
+        adapter = JdAdapter()
+        urls = adapter.detail_api_urls("https://item.jd.com/123456.html")
+        self.assertTrue(any("description/channel" in url for url in urls))
+        self.assertTrue(any("dx.3.cn/desc/123456" in url for url in urls))
+
     def test_youtube_extracts_transcript_snippets(self) -> None:
         caption_xml = """
         <transcript>

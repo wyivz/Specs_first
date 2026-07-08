@@ -10,9 +10,12 @@ from collectors.extractors import (
     build_evidence,
     candidate_from_search_result,
     dedupe_evidence,
+    extract_desc_api_urls,
+    extract_detail_image_urls,
     evidence_from_page,
     evidence_from_search_result,
     extract_price,
+    extract_specs_from_markup,
     extract_specs_from_text,
     infer_specs_from_sku,
     platform_from_url,
@@ -356,6 +359,93 @@ class EcommerceSourceCollector:
                     )
                 )
         return sorted(findings, key=lambda item: item.final_price)[:5]
+
+    def collect_official_specs(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+    ) -> tuple[list[OfficialSpec], list[str]]:
+        from backend.model_router import create_model_router
+
+        router = create_model_router()
+        specs_by_name: dict[str, OfficialSpec] = {}
+        highlights: list[str] = []
+        for platform, query in ecommerce_search_queries(candidate.sku):
+            for result in self.http.search(query, max_results=4):
+                target_url = self.jd.normalize_url(result.url) if platform == "JD" else result.url
+                snapshot = self.resilient.fetch(
+                    target_url,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                    sku=candidate.sku,
+                )
+                if not snapshot.markup:
+                    continue
+                detail_api_urls = self._detail_api_urls_for_platform(platform, snapshot.url, snapshot.markup)
+                detail_payloads = self._fetch_detail_payloads(
+                    detail_api_urls,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                    sku=candidate.sku,
+                )
+                merged_markup = "\n".join([snapshot.markup, *detail_payloads])
+                extracted = extract_specs_from_markup(merged_markup, snapshot.url, candidate.category)
+                for spec in extracted:
+                    specs_by_name.setdefault(spec.name, spec)
+                detail_images = extract_detail_image_urls(merged_markup)
+                if detail_images and len(highlights) < 3:
+                    highlights.append(f"{platform} detail images: {len(detail_images)}")
+                image_specs, image_highlights = router.extract_official_specs_from_images(
+                    candidate.sku,
+                    detail_images,
+                    snapshot.url,
+                    category=candidate.category,
+                )
+                for spec in image_specs:
+                    specs_by_name.setdefault(spec.name, spec)
+                for item in image_highlights:
+                    if item not in highlights and len(highlights) < 5:
+                        highlights.append(item)
+                if specs_by_name and len(highlights) < 5:
+                    highlights.append(f"{platform} parameter block captured")
+        return list(specs_by_name.values()), highlights
+
+    def _detail_api_urls_for_platform(self, platform: str, url: str, markup: str) -> list[str]:
+        if platform == "JD":
+            return self.jd.detail_api_urls(url, markup)
+        urls = extract_desc_api_urls(markup, url)
+        if platform == "Taobao/Tmall":
+            return urls[:6]
+        return urls[:3]
+
+    def _fetch_detail_payloads(
+        self,
+        urls: list[str],
+        *,
+        task_id: str,
+        use_browser: bool,
+        storage_state_path: str,
+        sku: str,
+    ) -> list[str]:
+        payloads: list[str] = []
+        for detail_url in urls[:6]:
+            snapshot = self.resilient.fetch(
+                detail_url,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+                sku=sku,
+            )
+            if snapshot.markup:
+                payloads.append(snapshot.markup)
+            elif snapshot.text:
+                payloads.append(snapshot.text)
+        return payloads
 
 
 class UrlInjectionCollector:

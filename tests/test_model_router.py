@@ -75,6 +75,17 @@ class ModelRouterTest(unittest.TestCase):
             with router._gemini_cached_content("x" * 100, "system") as model:
                 self.assertIsNone(model)
 
+    def test_keyword_router_image_spec_extraction_returns_empty(self) -> None:
+        router = KeywordModelRouter()
+        specs, highlights = router.extract_official_specs_from_images(
+            "Test SKU",
+            ["https://example.com/spec-image.jpg"],
+            "https://example.com/product",
+            category="Lens",
+        )
+        self.assertEqual(specs, [])
+        self.assertEqual(highlights, [])
+
 
 if __name__ == "__main__":
     unittest.main()

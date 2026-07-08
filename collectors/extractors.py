@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from collectors.page_sanitize import sanitize_html
-from collectors.http import SearchResult, clip
+from collectors.http import SearchResult, clip, normalize_whitespace, strip_tags
 from schemas import EvidenceItem, OfficialSpec, ProductCandidate
 from schemas.category_profile import (
     canonical_slots,
@@ -24,6 +24,13 @@ MEASUREMENT_PATTERN = re.compile(
     r"\b([0-9]+(?:\.[0-9]+)?\s*(?:mm|cm|m|g|kg|gb|tb|hz|w|mah|inch|英寸|克|千克|毫米|厘米|米|%))\b",
     re.I,
 )
+TABLE_ROW_PATTERN = re.compile(r"<tr[^>]*>\s*(.*?)\s*</tr>", re.I | re.S)
+TABLE_CELL_PATTERN = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.I | re.S)
+DETAIL_IMAGE_PATTERN = re.compile(
+    r"""(?:src|data-src|data-lazyload|original|file-url)\s*=\s*["']([^"']+\.(?:jpg|jpeg|png|webp)(?:\?[^"']*)?)["']""",
+    re.I,
+)
+DESC_API_PATTERN = re.compile(r"""["']((?:https?:)?//[^"']*(?:getdesc|desc|description)[^"']*)["']""", re.I)
 SKIP_SPEC_LABELS = re.compile(
     r"(copyright|cookie|login|javascript|function|window|price|价格|购买|cart|subscribe)",
     re.I,
@@ -151,6 +158,50 @@ def extract_specs_from_text(text: str, source_url: str, category: str = "") -> l
         specs_by_name[slot] = OfficialSpec(name=slot, value=measurement, unit="", source_url=source_url)
         slot_index += 1
     return list(specs_by_name.values())
+
+
+def extract_specs_from_markup(markup: str, source_url: str, category: str = "") -> list[OfficialSpec]:
+    text = sanitize_html(source_url, markup).rich_text
+    specs_by_name = {spec.name: spec for spec in extract_specs_from_text(text, source_url, category)}
+
+    for label, value in _extract_table_pairs(markup):
+        if SKIP_SPEC_LABELS.search(label):
+            continue
+        name = normalize_spec_name(label, category)
+        specs_by_name.setdefault(name, OfficialSpec(name=name, value=clip(value, 120), unit="", source_url=source_url))
+
+    for label, value in _extract_json_ld_pairs(markup):
+        if SKIP_SPEC_LABELS.search(label):
+            continue
+        name = normalize_spec_name(label, category)
+        specs_by_name.setdefault(name, OfficialSpec(name=name, value=clip(value, 120), unit="", source_url=source_url))
+    return list(specs_by_name.values())
+
+
+def extract_detail_image_urls(markup: str) -> list[str]:
+    seen: set[str] = set()
+    urls: list[str] = []
+    for match in DETAIL_IMAGE_PATTERN.finditer(markup):
+        url = match.group(1).strip()
+        if url.startswith("//"):
+            url = "https:" + url
+        if url.startswith("http") and url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
+def extract_desc_api_urls(markup: str, base_url: str = "") -> list[str]:
+    urls: list[str] = []
+    for match in DESC_API_PATTERN.finditer(markup):
+        url = match.group(1).strip()
+        if url.startswith("//"):
+            url = "https:" + url
+        if url.startswith("/") and base_url:
+            url = urljoin(base_url, url)
+        if url.startswith("http"):
+            urls.append(url)
+    return list(dict.fromkeys(urls))
 
 
 def infer_specs_from_sku(candidate: ProductCandidate) -> list[OfficialSpec]:
@@ -297,3 +348,36 @@ def _extract_measurements(text: str) -> list[str]:
             seen.add(value)
             measurements.append(value)
     return measurements
+
+
+def _extract_table_pairs(markup: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for row in TABLE_ROW_PATTERN.findall(markup):
+        cells = [normalize_whitespace(strip_tags(cell)) for cell in TABLE_CELL_PATTERN.findall(row)]
+        cells = [cell for cell in cells if cell]
+        if len(cells) >= 2:
+            pairs.append((cells[0], cells[1]))
+    return pairs
+
+
+def _extract_json_ld_pairs(markup: str) -> list[tuple[str, str]]:
+    page = sanitize_html("", markup)
+    pairs: list[tuple[str, str]] = []
+    for obj in page.json_ld:
+        pairs.extend(_walk_dict_pairs(obj))
+    return pairs
+
+
+def _walk_dict_pairs(node: object, parent: str = "") -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            nested_key = f"{parent}_{key}" if parent else str(key)
+            if isinstance(value, (dict, list)):
+                pairs.extend(_walk_dict_pairs(value, nested_key))
+            elif isinstance(value, (str, int, float)) and len(str(value)) <= 120:
+                pairs.append((nested_key, str(value)))
+    elif isinstance(node, list):
+        for item in node:
+            pairs.extend(_walk_dict_pairs(item, parent))
+    return pairs

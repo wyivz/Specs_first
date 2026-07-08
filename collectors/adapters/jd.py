@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import parse_qs, urlparse
 
 from collectors.extractors import ParsedPrice, build_evidence, extract_price
 from collectors.http import clip, html_to_text
@@ -28,6 +29,23 @@ class JdAdapter:
         if match:
             return f"https://item.jd.com/{match.group(1)}.html"
         return url
+
+    def detail_api_urls(self, product_url: str, markup: str = "") -> list[str]:
+        urls: list[str] = []
+        sku_id = self._extract_sku_id(product_url, markup)
+        if sku_id:
+            urls.extend(
+                [
+                    f"https://cd.jd.com/description/channel?skuId={sku_id}&mainSkuId={sku_id}",
+                    f"https://dx.3.cn/desc/{sku_id}",
+                ]
+            )
+        for match in re.finditer(r"""(?:(?:https?:)?//)[^"'\s>]*(?:getdesc|desc|description|detail)[^"'\s<]*""", markup, re.I):
+            value = match.group(0)
+            if value.startswith("//"):
+                value = "https:" + value
+            urls.append(value)
+        return list(dict.fromkeys(urls))
 
     def extract_price(self, markup: str) -> ParsedPrice | None:
         text = html_to_text(markup)
@@ -115,3 +133,18 @@ class JdAdapter:
             for item in node:
                 values.extend(self._walk_json_prices(item))
         return values
+
+    def _extract_sku_id(self, product_url: str, markup: str = "") -> str:
+        match = re.search(r"item\.jd\.com/(\d+)\.html", product_url, re.I)
+        if match:
+            return match.group(1)
+        parsed = urlparse(product_url)
+        query = parse_qs(parsed.query)
+        for key in ("sku", "skuId", "id"):
+            value = query.get(key)
+            if value and value[0].isdigit():
+                return value[0]
+        match = re.search(r'"(?:skuId|sku_id)"\s*[:=]\s*"?(\d{4,20})"?', markup, re.I)
+        if match:
+            return match.group(1)
+        return ""

@@ -364,6 +364,7 @@ class SpecsFirstPipeline:
             {"sku": candidate.sku, "phase": 3},
             on_event,
         )
+        prices = []
         try:
             prices = self.collector.collect_prices(
                 candidate,
@@ -372,13 +373,23 @@ class SpecsFirstPipeline:
                 storage_state_path=storage_state_path,
             )
             prices = self.router.enrich_prices_with_ocr(candidate.sku, prices)
-        except BrowserAuthRequired as exc:
-            exc.in_progress_payload = {
-                "official_specs": [to_dict(spec) for spec in official_specs],
-                "highlights": highlights,
-                "findings": [to_dict(finding) for finding in findings],
-            }
-            raise
+        except Exception as exc:
+            if hasattr(self.collector, "diagnostics"):
+                self.collector.diagnostics.record(
+                    "price",
+                    f"price stage downgraded for {candidate.sku}: {exc}",
+                    level="warning",
+                    sku=candidate.sku,
+                )
+            self._emit(
+                task_id,
+                "price_degraded",
+                f"Price stage downgraded for {candidate.sku}; continuing with specs/findings only",
+                TaskState.RUNNING,
+                {"sku": candidate.sku, "error": str(exc)},
+                on_event,
+            )
+            prices = []
 
         self._emit(
             task_id,

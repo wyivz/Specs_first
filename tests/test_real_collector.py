@@ -72,6 +72,22 @@ class FakeHttp:
             """,
             "https://www.chiphell.com/thread-mock.html": "第887楼：产品质量问题，个体差异明显，疑似品控翻车。",
             "https://item.jd.com/mock-zeiss.html": "标价 5999 元，优惠券 500，补贴 600，到手价 4899",
+            "https://item.jd.com/mock-specs.html": """
+                <html><body>
+                <script>window.__descApi="//api.m.jd.com/getdesc?sku=123"</script>
+                <table>
+                  <tr><th>重量</th><td>530g</td></tr>
+                  <tr><th>兼容性</th><td>Sony E</td></tr>
+                </table>
+                <img data-src="https://img10.360buyimg.com/detail.jpg" />
+                </body></html>
+            """,
+            "https://api.m.jd.com/getdesc?sku=123": """
+                <html><body>
+                <img original="https://img10.360buyimg.com/spec-1.jpg" />
+                <table><tr><th>功耗</th><td>12W</td></tr></table>
+                </body></html>
+            """,
         }
 
     def search(self, query: str, max_results: int = 8):
@@ -96,6 +112,23 @@ class RealCollectorTest(unittest.TestCase):
             self.assertGreaterEqual(len(result.assets[0].real_world_findings), 2)
             self.assertTrue(all(finding.evidence[0].url.startswith("https://") for finding in result.assets[0].real_world_findings))
             self.assertIn("dataview", "".join(path.read_text(encoding="utf-8") for path in result.output_paths).lower())
+
+    def test_ecommerce_parameter_block_is_ingested_before_price(self) -> None:
+        fake = FakeHttp()
+        fake.searches["Zeiss Makro-Planar T* 50mm f/2 site:jd.com 到手价 优惠券 百亿补贴"] = [
+            SearchResult(
+                "JD Zeiss 50mm parameter page",
+                "https://item.jd.com/mock-specs.html",
+                "规格参数 详情参数",
+            )
+        ]
+        collector = RealCollector(http=fake)  # type: ignore[arg-type]
+        candidate = collector.discover_candidates("Zeiss 50mm", "Lens")[0]
+        specs, highlights = collector.collect_official_specs(candidate)
+        names = {spec.name for spec in specs}
+        self.assertIn("weight", names)
+        self.assertTrue(any("parameter block" in item for item in highlights))
+        self.assertTrue(any("12" in spec.value and "w" in spec.value.lower() for spec in specs))
 
 
 if __name__ == "__main__":
