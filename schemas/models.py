@@ -125,6 +125,27 @@ class ProductAsset:
     def critical_flaws(self) -> list[str]:
         return [finding.title for finding in self.real_world_findings]
 
+    @property
+    def evidence_confidence_avg(self) -> float | None:
+        """Average confidence across every evidence item backing this asset's
+        real-world findings and conflict warnings. Surfaced in the Obsidian
+        frontmatter/matrix so a reader can gauge how solid the "translated"
+        flaws are, not just take them at face value.
+        """
+        scores = [
+            evidence.confidence
+            for finding in self.real_world_findings
+            for evidence in finding.evidence
+        ]
+        scores.extend(
+            evidence.confidence
+            for warning in self.conflict_warnings
+            for evidence in warning.evidence
+        )
+        if not scores:
+            return None
+        return round(sum(scores) / len(scores), 3)
+
 
 @dataclass(frozen=True)
 class ColumnDefinition:

@@ -131,9 +131,9 @@ Run the FastAPI task pipeline; Gemini ingests large corpora and OCR screenshots;
 
 ### Milestone 4 · Knowledge-base enhancements
 
-1. Obsidian templates and extended Dataview views
-2. Historical price curves and evidence confidence scores
-3. Optional CSV / Notion export
+1. ✅ Obsidian templates and Dataview extension (including `evidence_confidence_avg`)
+2. ⏸️ Historical price curves (frozen as a future optional item; not implemented in current release)
+3. ✅ CSV export (`vault_output/00_Specs_First_Matrix/`); Notion sync remains optional and unimplemented
 
 ---
 

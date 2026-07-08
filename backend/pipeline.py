@@ -14,7 +14,7 @@ from collectors import MockCollector, RealCollector
 from collectors.base import Collector
 from collectors.browser import BrowserAuthRequired
 from collectors.platform_auth import PlatformAuthRequired
-from obsidian import ObsidianWriter
+from obsidian import MatrixCsvExporter, ObsidianWriter
 from schemas import (
     ComparisonMatrix,
     ProductAsset,
@@ -245,6 +245,7 @@ class SpecsFirstPipeline:
         matrix = build_comparison_matrix(assets)
         self._emit(task_id, "phase_started", "Writing Obsidian assets", TaskState.RUNNING, on_event=on_event)
         output_paths = ObsidianWriter(self.vault_path).write(category, assets, matrix)
+        output_paths.append(MatrixCsvExporter(self.vault_path).write(category, matrix))
         self.checkpoint_store.delete(task_id)
         diagnostics = self._collector_diagnostics()
         self._emit(

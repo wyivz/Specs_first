@@ -131,9 +131,9 @@ FastAPI 事件总线
 
 ### Milestone 4 · 知识库增强
 
-1. Obsidian 模板与 Dataview 图表扩展
-2. 历史价格曲线、证据置信度字段
-3. 导出 CSV / Notion 同步（可选）
+1. ✅ Obsidian 模板与 Dataview 扩展（含 `evidence_confidence_avg`）
+2. ⏸️ 历史价格曲线（冻结为未来可选项，当前版本不实现）
+3. ✅ CSV 导出（`vault_output/00_Specs_First_Matrix/`）；Notion 同步保持可选且未实现
 
 ---
 

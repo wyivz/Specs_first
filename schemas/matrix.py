@@ -22,6 +22,7 @@ DEFAULT_TRAILER_COLUMNS = [
     ColumnDefinition("price_real_world_min", "Real-World Min Price"),
     ColumnDefinition("critical_flaws", "Critical Flaws"),
     ColumnDefinition("arbitration_summary", "Arbitration"),
+    ColumnDefinition("evidence_confidence_avg", "Evidence Confidence"),
 ]
 
 
@@ -81,6 +82,10 @@ def build_comparison_matrix(assets: list[ProductAsset]) -> ComparisonMatrix:
             asset.price_real_world_min,
             CellStatus.NORMAL if asset.price_real_world_min is not None else CellStatus.MISSING,
             price_evidence,
+        )
+        row["evidence_confidence_avg"] = ComparisonCell(
+            asset.evidence_confidence_avg,
+            CellStatus.NORMAL if asset.evidence_confidence_avg is not None else CellStatus.MISSING,
         )
 
         finding_evidence = [

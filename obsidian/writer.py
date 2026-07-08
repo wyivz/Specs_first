@@ -27,6 +27,7 @@ class ObsidianWriter:
             "sku": asset.sku,
             "brand": asset.brand,
             "price_real_world_min": asset.price_real_world_min,
+            "evidence_confidence_avg": asset.evidence_confidence_avg,
             "spec_highlights": asset.spec_highlights,
             "critical_flaws": asset.critical_flaws,
             "arbitration_summary": asset.arbitration_summary,
@@ -82,7 +83,14 @@ class ObsidianWriter:
         # Skip sku and brand as they're handled specially, and skip trailer columns
         dataview_columns: list[str] = []
         for col in matrix.columns:
-            if col.key in ("sku", "brand", "price_real_world_min", "critical_flaws", "arbitration_summary"):
+            if col.key in (
+                "sku",
+                "brand",
+                "price_real_world_min",
+                "evidence_confidence_avg",
+                "critical_flaws",
+                "arbitration_summary",
+            ):
                 continue
             # Convert column key to frontmatter field name format
             field_name = f"{col.key}_official"
@@ -101,6 +109,7 @@ class ObsidianWriter:
         # Add standard trailer columns
         dataview_lines.extend([
             '    price_real_world_min AS "真实到手价(元)"',
+            '    evidence_confidence_avg AS "证据均值置信度"',
             '    critical_flaws AS "💥 民间实测翻车点"',
             '    arbitration_summary AS "⚖️ 终审仲裁"',
             'FROM #Specs-First AND "01_Product_Items"',

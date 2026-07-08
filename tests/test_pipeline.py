@@ -25,12 +25,20 @@ class PipelineTest(unittest.TestCase):
             self.assertTrue(zeiss_row["critical_flaws"].evidence[0].url.startswith("https://"))
             self.assertEqual(zeiss_row["price_real_world_min"].value, 4899)
             self.assertEqual(zeiss_row["arbitration_summary"].status, CellStatus.CONFLICT)
+            self.assertIsInstance(zeiss_row["evidence_confidence_avg"].value, float)
 
             output_text = "\n".join(path.read_text(encoding="utf-8") for path in result.output_paths)
             self.assertIn("```dataview", output_text)
             self.assertIn("Bilibili", output_text)
             self.assertIn("Chiphell", output_text)
             self.assertIn("price_real_world_min: 4899", output_text)
+            self.assertIn("evidence_confidence_avg", output_text)
+
+            csv_paths = [path for path in result.output_paths if path.suffix == ".csv"]
+            self.assertEqual(len(csv_paths), 1)
+            csv_text = csv_paths[0].read_text(encoding="utf-8")
+            self.assertIn("evidence_confidence_avg", csv_text)
+            self.assertIn("price_real_world_min", csv_text)
 
     def test_findings_without_evidence_are_rejected(self) -> None:
         from schemas import ConflictLevel, RealWorldFinding

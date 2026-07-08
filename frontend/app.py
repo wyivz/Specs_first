@@ -29,7 +29,7 @@ def render_matrix_table(rows: list[dict[str, Any]]) -> None:
         return
 
     priority = ["sku", "brand"]
-    trailer = ["price_real_world_min", "critical_flaws", "arbitration_summary"]
+    trailer = ["price_real_world_min", "evidence_confidence_avg", "critical_flaws", "arbitration_summary"]
     ordered_keys: list[str] = []
     for row in rows:
         for key in row.keys():
@@ -353,8 +353,19 @@ if result and not still_running:
     st.subheader("Saved result snapshot")
     render_matrix_table([to_dict(row) for row in result.matrix.rows])
     st.subheader("Obsidian output")
+    csv_export_path = None
     for path in result.output_paths:
         st.code(str(path))
+        if str(path).endswith(".csv"):
+            csv_export_path = path
+    if csv_export_path:
+        st.download_button(
+            "下载 CSV 对比矩阵",
+            data=csv_export_path.read_bytes(),
+            file_name=csv_export_path.name,
+            mime="text/csv",
+            use_container_width=True,
+        )
 
 if still_running:
     time.sleep(1)
