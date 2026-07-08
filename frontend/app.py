@@ -186,6 +186,32 @@ with st.sidebar:
     st.markdown("- **Gemini**：Phase 1/2/3 文本吞噬 + OCR")
     st.markdown("- **OpenAI**：Phase 4 Structured Output 锁格式")
     st.caption("未配置 API Key 时自动降级为关键词规则引擎。")
+    # ASR manual-trigger (P3)
+    st.markdown("---")
+    st.markdown("**本地 ASR 转写（无字幕视频）**")
+    try:
+        from collectors.asr import available_backend as _asr_backend
+        _backend = _asr_backend()
+    except Exception:
+        _backend = None
+    if _backend:
+        st.caption(f"后端: {_backend}")
+        asr_url = st.text_input("视频 URL（YouTube / B 站）", key="asr_url", placeholder="https://www.youtube.com/watch?v=...")
+        asr_lang = st.selectbox("语言", ["auto", "zh", "en"], key="asr_lang")
+        if st.button("本地转写", use_container_width=True, key="asr_run"):
+            if asr_url:
+                with st.spinner(f"正在转写（{_backend}）…可能需要数分钟"):
+                    from collectors.asr import transcribe_url as _transcribe
+                    from pathlib import Path as _Path
+                    _result = _transcribe(asr_url, language=asr_lang, output_dir=_Path("vault_output/asr_cache"))
+                    if _result.ok:
+                        st.success(f"转写完成（{len(_result.text)} 字符，后端: {_result.backend}）")
+                        st.text_area("转写结果", _result.text, height=200)
+                    else:
+                        st.error(f"转写失败: {_result.error}")
+    else:
+        st.caption("未安装 ASR 后端，请安装 `funasr`（SenseVoice）或 `faster-whisper`")
+
     paused_task_id = st.session_state.get("paused_task_id")
     if paused_task_id:
         st.markdown("---")

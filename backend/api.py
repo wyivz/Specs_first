@@ -120,3 +120,57 @@ def get_checkpoint(task_id: str) -> dict:
     if not checkpoint:
         raise HTTPException(status_code=404, detail="Checkpoint not found")
     return to_dict(checkpoint)
+
+
+# ---------------------------------------------------------------------------
+# ASR endpoints — manual-trigger only (P3)
+# ---------------------------------------------------------------------------
+
+@app.get("/asr/status")
+def asr_status() -> dict:
+    """Return which local ASR backend is available (if any)."""
+    from collectors.asr import available_backend
+
+    backend = available_backend()
+    return {
+        "available": backend is not None,
+        "backend": backend or "none",
+        "note": (
+            "Install 'funasr' for SenseVoice (recommended for Chinese) or "
+            "'faster-whisper' for multilingual Whisper support."
+            if backend is None
+            else ""
+        ),
+    }
+
+
+@app.post("/asr/transcribe")
+def asr_transcribe(payload: dict) -> dict:
+    """Transcribe audio from a video URL using the local ASR backend.
+
+    Body: { "url": "https://...", "language": "auto" | "zh" | "en" }
+
+    This endpoint is intentionally *not* wired into the default pipeline.
+    It is designed for manual, on-demand use when a video has no CC subtitles.
+    Estimated runtime: CPU ~10-30 min per hour of audio; GPU much faster.
+    """
+    from pathlib import Path as _Path
+
+    from collectors.asr import transcribe_url
+
+    url = payload.get("url", "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="'url' is required")
+    language = payload.get("language", "auto")
+    output_dir_str = payload.get("output_dir", "vault_output/asr_cache")
+
+    result = transcribe_url(url, output_dir=_Path(output_dir_str), language=language)
+    if not result.ok:
+        raise HTTPException(status_code=422, detail=result.error)
+    return {
+        "url": url,
+        "backend": result.backend,
+        "audio_path": result.audio_path,
+        "text": result.text,
+        "char_count": len(result.text),
+    }
