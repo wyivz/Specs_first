@@ -140,7 +140,7 @@ def extract_specs_from_text(text: str, source_url: str, category: str = "") -> l
             continue
         specs_by_name[name] = OfficialSpec(
             name=name,
-            value=clip(value.strip(), 120),
+            value=clip(normalize_unit_text(value.strip()), 120),
             unit="",
             source_url=source_url,
         )
@@ -168,13 +168,19 @@ def extract_specs_from_markup(markup: str, source_url: str, category: str = "") 
         if SKIP_SPEC_LABELS.search(label):
             continue
         name = normalize_spec_name(label, category)
-        specs_by_name.setdefault(name, OfficialSpec(name=name, value=clip(value, 120), unit="", source_url=source_url))
+        specs_by_name.setdefault(
+            name,
+            OfficialSpec(name=name, value=clip(normalize_unit_text(value), 120), unit="", source_url=source_url),
+        )
 
     for label, value in _extract_json_ld_pairs(markup):
         if SKIP_SPEC_LABELS.search(label):
             continue
         name = normalize_spec_name(label, category)
-        specs_by_name.setdefault(name, OfficialSpec(name=name, value=clip(value, 120), unit="", source_url=source_url))
+        specs_by_name.setdefault(
+            name,
+            OfficialSpec(name=name, value=clip(normalize_unit_text(value), 120), unit="", source_url=source_url),
+        )
     return list(specs_by_name.values())
 
 
@@ -343,11 +349,35 @@ def _extract_measurements(text: str) -> list[str]:
     seen: set[str] = set()
     measurements: list[str] = []
     for match in MEASUREMENT_PATTERN.finditer(text):
-        value = match.group(1).strip()
+        value = normalize_unit_text(match.group(1).strip())
         if value not in seen:
             seen.add(value)
             measurements.append(value)
     return measurements
+
+
+def normalize_unit_text(value: str) -> str:
+    normalized = normalize_whitespace(value)
+    substitutions = (
+        ("毫安时", "mAh"),
+        ("瓦时", "Wh"),
+        ("千瓦时", "kWh"),
+        ("毫米", "mm"),
+        ("厘米", "cm"),
+        ("米", "m"),
+        ("千克", "kg"),
+        ("克", "g"),
+        ("英寸", "inch"),
+        ("小时", "h"),
+        ("分钟", "min"),
+    )
+    for source, target in substitutions:
+        normalized = normalized.replace(source, target)
+    normalized = re.sub(r"([0-9])\s*(mm|cm|m|g|kg|mah|wh|kwh|inch|w|h|min)\b", r"\1 \2", normalized, flags=re.I)
+    normalized = re.sub(r"\bmah\b", "mAh", normalized)
+    normalized = re.sub(r"\bwh\b", "Wh", normalized)
+    normalized = re.sub(r"\bkwh\b", "kWh", normalized)
+    return normalized
 
 
 def _extract_table_pairs(markup: str) -> list[tuple[str, str]]:

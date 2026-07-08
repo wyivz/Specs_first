@@ -51,7 +51,13 @@ class FakeHttp:
                     "标价 5999 元，优惠券 500，补贴 600，到手价 4899",
                 )
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 site:taobao.com OR site:tmall.com 到手价 券后": [],
+            "Zeiss Makro-Planar T* 50mm f/2 site:taobao.com OR site:tmall.com 到手价 券后": [
+                SearchResult(
+                    "Tmall Zeiss 50mm",
+                    "https://detail.tmall.com/item.htm?id=22334455",
+                    "规格参数 详情参数",
+                )
+            ],
         }
         self.pages = {
             "https://zeiss.example/specs": """
@@ -86,6 +92,18 @@ class FakeHttp:
                 <html><body>
                 <img original="https://img10.360buyimg.com/spec-1.jpg" />
                 <table><tr><th>功耗</th><td>12W</td></tr></table>
+                </body></html>
+            """,
+            "https://detail.tmall.com/item.htm?id=22334455": """
+                <html><body>
+                <script>var desc="//h5api.m.taobao.com/h5/mtop.taobao.detail.getdesc/6.0/?id=22334455";</script>
+                <table><tr><th>电池容量</th><td>80瓦时</td></tr></table>
+                </body></html>
+            """,
+            "https://h5api.m.taobao.com/h5/mtop.taobao.detail.getdesc/6.0/?id=22334455": """
+                <html><body>
+                <table><tr><th>重量</th><td>530克</td></tr></table>
+                <img data-lazyload="https://img.alicdn.com/spec-taobao.jpg" />
                 </body></html>
             """,
         }
@@ -129,6 +147,8 @@ class RealCollectorTest(unittest.TestCase):
         self.assertIn("weight", names)
         self.assertTrue(any("parameter block" in item for item in highlights))
         self.assertTrue(any("12" in spec.value and "w" in spec.value.lower() for spec in specs))
+        self.assertTrue(any("530 g" in spec.value for spec in specs))
+        self.assertTrue(any("80 Wh" in spec.value for spec in specs))
 
 
 if __name__ == "__main__":

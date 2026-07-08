@@ -4,6 +4,7 @@ from collectors.adapters.bilibili import BilibiliAdapter
 from collectors.adapters.youtube import YouTubeAdapter
 from collectors.adapters.youtube_comments import YouTubeCommentFetcher
 from collectors.adapters.jd import JdAdapter
+from collectors.adapters.tmall_taobao import TmallTaobaoAdapter
 from collectors.browser import BrowserAuthRequired, PlaywrightCapture
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import (
@@ -278,6 +279,7 @@ class EcommerceSourceCollector:
         self.browser = browser or PlaywrightCapture()
         self.resilient = resilient or ResilientFetcher(http, self.browser, self.diagnostics)
         self.jd = JdAdapter()
+        self.tmall_taobao = TmallTaobaoAdapter()
 
     def collect(
         self,
@@ -420,7 +422,8 @@ class EcommerceSourceCollector:
             return self.jd.detail_api_urls(url, markup)
         urls = extract_desc_api_urls(markup, url)
         if platform == "Taobao/Tmall":
-            return urls[:6]
+            adapter_urls = self.tmall_taobao.detail_api_urls(url, markup)
+            return list(dict.fromkeys([*adapter_urls, *urls]))[:6]
         return urls[:3]
 
     def _fetch_detail_payloads(

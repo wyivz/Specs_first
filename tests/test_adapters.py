@@ -8,6 +8,7 @@ from backend.retry import retry_call
 from collectors.adapters.bilibili import BilibiliAdapter
 from collectors.adapters.bilibili_api_client import BilibiliApiClient
 from collectors.adapters.jd import JdAdapter
+from collectors.adapters.tmall_taobao import TmallTaobaoAdapter
 from collectors.adapters.youtube import YouTubeAdapter
 from collectors.adapters.youtube_comments import YouTubeCommentFetcher
 from collectors.credentials import BilibiliCredentials
@@ -94,6 +95,13 @@ class AdapterTest(unittest.TestCase):
         urls = adapter.detail_api_urls("https://item.jd.com/123456.html")
         self.assertTrue(any("description/channel" in url for url in urls))
         self.assertTrue(any("dx.3.cn/desc/123456" in url for url in urls))
+
+    def test_tmall_taobao_adapter_extracts_desc_urls(self) -> None:
+        adapter = TmallTaobaoAdapter()
+        markup = '<script>var x={"descUrl":"//h5api.m.taobao.com/h5/mtop.taobao.detail.getdesc/6.0/?id=123"};</script>'
+        urls = adapter.detail_api_urls("https://detail.tmall.com/item.htm?id=1234567890", markup)
+        self.assertTrue(any("taobao.detail.getdesc" in url for url in urls))
+        self.assertTrue(any("itemNumId=1234567890" in url for url in urls))
 
     def test_youtube_extracts_transcript_snippets(self) -> None:
         caption_xml = """
