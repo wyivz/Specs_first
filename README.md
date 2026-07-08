@@ -91,7 +91,7 @@ FastAPI 事件总线
 - [x] **任务断点续传（Milestone 2 骨架）**：内存/Redis Checkpoint、`PAUSED_NEED_AUTH` 挂起、`POST /tasks/{id}/resume-auth` 续传
 - [x] **Playwright 浏览器采集骨架**：电商页截图切片、验证码检测、Session 状态文件恢复
 - [x] **Streamlit HITL 续传 UI**：侧边栏「续传任务」
-- [~] **前端嵌入式浏览器窗口**：待 Milestone 2 收尾
+- [x] **前端嵌入式浏览器窗口**：验证码截图 + 点击/输入指令通过 `BrowserBridge` 中转，Streamlit 页面内实时操作，无需切换到独立浏览器窗口
 
 ### 尚未开始 / Milestone 3 进行中
 
@@ -111,12 +111,12 @@ FastAPI 事件总线
 
 跑通 FastAPI 任务管道；Gemini 吞大文本并 OCR 截图；OpenAI Strict JSON 锁死输出格式。
 
-### Milestone 2 · 人机协同断点续传（基本完成）
+### Milestone 2 · 人机协同断点续传（已完成）
 
 1. ✅ Playwright Session 状态文件保存/恢复
 2. ✅ 遇滑块时任务挂起 + Checkpoint 持久化（内存/Redis）
 3. ✅ API / Streamlit 续传入口
-4. ⬜ 前端嵌入式浏览器窗口
+4. ✅ 前端嵌入式浏览器窗口：`collectors/embedded_browser.py` 提供截图/指令中转，Streamlit 任务改为后台线程 + 轮询渲染，验证码截图与点击/输入操作全部在页面内完成
 
 ### Milestone 3 · 生产级采集（基本完成）
 
@@ -180,6 +180,11 @@ uvicorn backend.api:app --reload
 | `POST /tasks/{id}/resume-auth` | 验证码通过后续传任务 |
 | `GET /tasks/{id}/checkpoint` | 查看挂起任务断点 |
 | `GET /tasks/{id}/diagnostics` | 采集降级/错误诊断 |
+| `GET /tasks/{id}/browser/status` | 嵌入式浏览器会话状态（是否激活/已解决） |
+| `GET /tasks/{id}/browser/screenshot` | 拉取嵌入式浏览器最新截图（base64） |
+| `POST /tasks/{id}/browser/command` | 向嵌入式浏览器发送 click/type/key/scroll 指令 |
+| `GET /asr/status` | 查询本地 ASR 后端是否可用 |
+| `POST /asr/transcribe` | 手动触发本地音频转写（无字幕视频兜底） |
 
 ### 配置真实模型
 

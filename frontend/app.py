@@ -10,7 +10,9 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Install optional dependencies before running the UI: streamlit") from exc
 
 from backend.pipeline import create_pipeline
-from schemas import CellStatus, TaskEvent, TaskState, to_dict
+from backend.task_runner import task_manager
+from collectors.embedded_browser import get_bridge
+from schemas import CellStatus, TaskEvent, to_dict
 
 
 STATUS_BADGE = {
@@ -98,7 +100,57 @@ def render_evidence_cards(rows: list[dict[str, Any]]) -> None:
                     )
 
 
-def run_streaming_pipeline(
+def render_embedded_browser_panel(task_id: str) -> None:
+    """Live captcha-solving panel driven by ``collectors.embedded_browser``.
+
+    Instead of requiring the user to alt-tab into the separate headed
+    Playwright OS window, this renders the same live page as a
+    continuously-refreshed screenshot inside the Streamlit page, and relays
+    clicks/typed text back into that page via the ``BrowserBridge`` mailbox.
+    """
+    bridge = get_bridge(task_id)
+    if not bridge:
+        return
+    st.markdown("---")
+    st.subheader("🖥️ 嵌入式浏览器 — 请在下方完成验证")
+    if bridge.url:
+        st.caption(f"目标页面：{bridge.url}")
+    frame = bridge.latest_screenshot()
+    if frame:
+        st.image(frame, use_container_width=True, caption=f"实时截图 (frame #{bridge.screenshot_seq})")
+    else:
+        st.info("正在打开浏览器，等待首帧截图…")
+
+    col_x, col_y, col_click = st.columns([1, 1, 1])
+    with col_x:
+        click_x = st.number_input("点击 X 坐标", min_value=0, value=100, step=10, key=f"eb_x_{task_id}")
+    with col_y:
+        click_y = st.number_input("点击 Y 坐标", min_value=0, value=100, step=10, key=f"eb_y_{task_id}")
+    with col_click:
+        st.write("")
+        st.write("")
+        if st.button("👆 点击", use_container_width=True, key=f"eb_click_{task_id}"):
+            bridge.submit_command("click", x=click_x, y=click_y)
+
+    type_text = st.text_input("输入文字（例如验证码）", key=f"eb_text_{task_id}")
+    col_type, col_enter, col_scroll = st.columns(3)
+    with col_type:
+        if st.button("⌨️ 输入文字", use_container_width=True, key=f"eb_type_{task_id}"):
+            if type_text:
+                bridge.submit_command("type", text=type_text)
+    with col_enter:
+        if st.button("↵ 回车", use_container_width=True, key=f"eb_enter_{task_id}"):
+            bridge.submit_command("key", key="Enter")
+    with col_scroll:
+        if st.button("⬇️ 向下滚动", use_container_width=True, key=f"eb_scroll_{task_id}"):
+            bridge.submit_command("scroll", delta=400)
+
+    if bridge.error:
+        st.error(f"嵌入式浏览器错误：{bridge.error}")
+    st.caption("提示：截图约每秒刷新一次；点击/输入会在下一次刷新时生效，无需切换到其他窗口。")
+
+
+def start_background_task(
     query: str,
     category: str,
     mode: str,
@@ -106,69 +158,99 @@ def run_streaming_pipeline(
     selected_skus: list[str] | None,
     vault_path: str,
     use_browser: bool = False,
-    checkpoint=None,
 ) -> None:
-    pipeline = create_pipeline(mode=mode, source_urls=source_urls, vault_path=vault_path)
-    progress = st.progress(0, text="Starting Specs-First pipeline...")
-    log_box = st.empty()
-    matrix_box = st.empty()
-    evidence_box = st.empty()
-    output_box = st.empty()
-
-    events: list[TaskEvent] = []
-    matrix_rows: list[dict[str, Any]] = []
-    total_steps = max(len(selected_skus or ["a", "b", "c"]), 1)
-    completed_rows = 0
-
-    def on_event(event: TaskEvent) -> None:
-        nonlocal completed_rows, matrix_rows
-        events.append(event)
-        log_lines = [f"- `{event.event_type}`: {event.message}" for event in events[-12:]]
-        log_box.markdown("#### Live event stream\n" + "\n".join(log_lines))
-
-        payload = event.payload or {}
-        if event.event_type == "matrix_row_updated":
-            matrix_rows = payload.get("matrix_rows", matrix_rows)
-            completed_rows += 1
-            progress.progress(min(completed_rows / total_steps, 0.95), text=event.message)
-            with matrix_box.container():
-                st.subheader("Progressive comparison matrix")
-                render_matrix_table(matrix_rows)
-                render_evidence_cards(matrix_rows)
-        if event.event_type == "diagnostics_updated":
-            st.session_state["diagnostics"] = payload.get("records", [])
-        if event.event_type == "auth_required":
-            progress.progress(completed_rows / total_steps, text="等待人工验证...")
-            st.warning(
-                f"检测到验证码/安全检测，任务已挂起。请先在浏览器完成验证，然后点击侧边栏「续传任务」。"
-                f"\n\n目标页面：`{payload.get('pause_url', '')}`"
-            )
-        if event.event_type == "sku_failed":
-            st.error(event.message)
-        if event.event_type == "task_done":
-            progress.progress(1.0, text="Done")
-            st.session_state["diagnostics"] = payload.get("diagnostics", st.session_state.get("diagnostics", []))
-            output_box.success("Obsidian assets written.")
-            for path in payload.get("output_paths", []):
-                output_box.code(path)
-
-    result = pipeline.run(
+    task_id = task_manager.start_task(
         query=query,
         category=category,
         selected_skus=selected_skus,
         source_urls=source_urls,
-        on_event=on_event,
+        mode=mode,
+        vault_path=vault_path,
         use_browser=use_browser,
-        checkpoint=checkpoint,
     )
-    st.session_state["result"] = result
-    st.session_state["paused_task_id"] = result.task_id if result.state == TaskState.PAUSED_NEED_AUTH else None
-    with matrix_box.container():
-        st.subheader("Final comparison matrix")
-        render_matrix_table([to_dict(row) for row in result.matrix.rows])
-    with evidence_box.container():
-        st.subheader("Evidence cards")
-        render_evidence_cards([to_dict(row) for row in result.matrix.rows])
+    st.session_state["active_task_id"] = task_id
+    st.session_state["seen_event_count"] = 0
+    st.session_state["matrix_rows"] = []
+    st.session_state["events_log"] = []
+    st.session_state["total_steps"] = max(len(selected_skus or []), 1)
+    st.session_state.pop("result", None)
+    st.session_state.pop("paused_task_id", None)
+
+
+def resume_background_task(task_id: str) -> None:
+    task_manager.resume_task(task_id, use_browser=True)
+    st.session_state["active_task_id"] = task_id
+    st.session_state["seen_event_count"] = 0
+    st.session_state.setdefault("matrix_rows", [])
+    st.session_state.setdefault("events_log", [])
+    st.session_state.setdefault("total_steps", 1)
+    st.session_state.pop("paused_task_id", None)
+
+
+def render_active_task() -> bool:
+    """Poll the background task (if any) and render its live progress.
+
+    Runs the pipeline via ``backend.task_runner.task_manager`` on a
+    dedicated thread so the Streamlit script itself stays free to process
+    widget interactions on every rerun — this is what makes the embedded
+    browser panel above actually interactive instead of freezing the whole
+    page for up to 5 minutes while a captcha is pending.
+
+    Returns True while a task is still active (caller should keep polling).
+    """
+    task_id = st.session_state.get("active_task_id")
+    if not task_id:
+        return False
+
+    record = task_manager.get(task_id)
+    events: list[TaskEvent] = list(task_manager.event_bus.stream(task_id))
+    new_events = events[st.session_state.get("seen_event_count", 0):]
+    st.session_state["seen_event_count"] = len(events)
+
+    for event in new_events:
+        st.session_state["events_log"].append(f"- `{event.event_type}`: {event.message}")
+        payload = event.payload or {}
+        if event.event_type == "matrix_row_updated":
+            st.session_state["matrix_rows"] = payload.get("matrix_rows", st.session_state["matrix_rows"])
+        if event.event_type == "diagnostics_updated":
+            st.session_state["diagnostics"] = payload.get("records", [])
+        if event.event_type == "task_done":
+            st.session_state["diagnostics"] = payload.get("diagnostics", st.session_state.get("diagnostics", []))
+
+    progress_text = new_events[-1].message if new_events else "Running..."
+    total_steps = st.session_state.get("total_steps", 1)
+    completed = len(st.session_state["matrix_rows"])
+    progress_value = 1.0 if not (record and record.state == "RUNNING") else min(completed / total_steps, 0.95)
+    st.progress(progress_value, text=progress_text)
+
+    st.markdown("#### Live event stream\n" + "\n".join(st.session_state["events_log"][-12:]))
+
+    st.subheader("Progressive comparison matrix")
+    render_matrix_table(st.session_state["matrix_rows"])
+    render_evidence_cards(st.session_state["matrix_rows"])
+
+    render_embedded_browser_panel(task_id)
+
+    if not record or record.state in {"DONE", "FAILED", "PAUSED_NEED_AUTH"}:
+        st.session_state.pop("active_task_id", None)
+        if record and record.result:
+            st.session_state["result"] = record.result
+        if record and record.state == "PAUSED_NEED_AUTH":
+            st.session_state["paused_task_id"] = task_id
+            st.warning(
+                "检测到验证码/安全检测，且嵌入式浏览器未能在超时前完成验证。"
+                "任务已挂起，可在侧边栏「续传任务」重试（会重新打开嵌入式浏览器）。"
+            )
+        elif record and record.state == "FAILED":
+            st.error(f"任务失败：{record.error}")
+        else:
+            st.success("Obsidian assets written.")
+            if record and record.result:
+                for path in record.result.output_paths:
+                    st.code(str(path))
+        return False
+
+    return True
 
 
 st.set_page_config(page_title="Specs-First", layout="wide", page_icon="🔎")
@@ -217,20 +299,8 @@ with st.sidebar:
         st.markdown("---")
         st.warning(f"任务 `{paused_task_id}` 等待验证续传")
         if st.button("续传任务", use_container_width=True):
-            from backend.checkpoint import create_checkpoint_store
-
-            checkpoint = create_checkpoint_store().load(paused_task_id)
-            if checkpoint:
-                run_streaming_pipeline(
-                    query=checkpoint.query,
-                    category=checkpoint.category,
-                    mode=checkpoint.mode,
-                    source_urls=checkpoint.source_urls,
-                    selected_skus=checkpoint.selected_skus,
-                    vault_path=checkpoint.vault_path,
-                    use_browser=True,
-                    checkpoint=checkpoint,
-                )
+            resume_background_task(paused_task_id)
+            st.rerun()
 
 query = st.text_input("想对比什么？", "无线机械键盘 75%")
 category = st.text_input("品类", "Product")
@@ -259,16 +329,18 @@ else:
 
 if run_clicked:
     source_urls = [line.strip() for line in source_urls_text.splitlines() if line.strip()]
-    with st.spinner("Specs-First 正在全网脱水..."):
-        run_streaming_pipeline(
-            query=query,
-            category=category,
-            mode=mode,
-            source_urls=source_urls,
-            selected_skus=selected_skus or None,
-            vault_path=vault_path,
-            use_browser=use_browser,
-        )
+    start_background_task(
+        query=query,
+        category=category,
+        mode=mode,
+        source_urls=source_urls,
+        selected_skus=selected_skus or None,
+        vault_path=vault_path,
+        use_browser=use_browser,
+    )
+    st.rerun()
+
+still_running = render_active_task()
 
 result = st.session_state.get("result")
 diagnostics = st.session_state.get("diagnostics", [])
@@ -277,9 +349,13 @@ if diagnostics:
         for item in diagnostics[-40:]:
             st.markdown(f"- `{item.get('level', 'info')}` **{item.get('source')}** ({item.get('sku', 'all')}): {item.get('message')}")
 
-if result and not run_clicked:
+if result and not still_running:
     st.subheader("Saved result snapshot")
     render_matrix_table([to_dict(row) for row in result.matrix.rows])
     st.subheader("Obsidian output")
     for path in result.output_paths:
         st.code(str(path))
+
+if still_running:
+    time.sleep(1)
+    st.rerun()

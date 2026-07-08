@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from collectors.embedded_browser import BrowserBridge, get_or_create_bridge, remove_bridge
 from collectors.page_sanitize import AUTH_MARKERS, detect_page_blockers
 
 
@@ -162,32 +163,44 @@ class PlaywrightCapture:
         headed_browser = playwright.chromium.launch(headless=False)
         context = headed_browser.new_context(**context_kwargs)
         page = context.new_page()
+        bridge = get_or_create_bridge(task_id, url=url)
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=35_000)
 
             deadline = time.monotonic() + self.headed_timeout_seconds
             solved = False
+            last_blocker_check = 0.0
             while time.monotonic() < deadline:
-                page.wait_for_timeout(5_000)
+                self._apply_bridge_commands(page, bridge)
                 try:
-                    html = page.content()
-                    text = self._extract_main_text(page)
-                    blockers = detect_page_blockers(page.url, html, text, page.title())
-                    if not any(b.kind == "auth_or_captcha" for b in blockers):
-                        solved = True
-                        break
+                    bridge.publish_screenshot(page.screenshot(full_page=False))
                 except Exception:
-                    continue
+                    pass
+                page.wait_for_timeout(1_000)
+
+                now = time.monotonic()
+                if now - last_blocker_check >= 2.0:
+                    last_blocker_check = now
+                    try:
+                        html = page.content()
+                        text = self._extract_main_text(page)
+                        blockers = detect_page_blockers(page.url, html, text, page.title())
+                        if not any(b.kind == "auth_or_captcha" for b in blockers):
+                            solved = True
+                            break
+                    except Exception:
+                        continue
 
             context.storage_state(path=str(state_path))
             if not solved:
-                headed_browser.close()
+                bridge.mark_error(f"Captcha not solved within {self.headed_timeout_seconds}s")
                 raise BrowserAuthRequired(
                     f"Captcha not solved within {self.headed_timeout_seconds}s for {url}",
                     url=url,
                     storage_state_path=state_path,
                 )
 
+            bridge.mark_solved()
             self._dismiss_noise(page)
             page_html = page.content()
             body_text = self._extract_main_text(page)
@@ -209,7 +222,29 @@ class PlaywrightCapture:
                 storage_state_path=state_path,
             )
         finally:
+            remove_bridge(task_id)
             headed_browser.close()
+
+    @staticmethod
+    def _apply_bridge_commands(page, bridge: BrowserBridge) -> None:
+        """Replay UI-submitted click/type/key/scroll commands onto the live page.
+
+        Lets the Streamlit (or any REST) client drive this headed browser
+        via the ``BrowserBridge`` mailbox instead of requiring the user to
+        alt-tab into the separate OS window.
+        """
+        for command in bridge.drain_commands():
+            try:
+                if command.action == "click":
+                    page.mouse.click(command.kwargs.get("x", 0), command.kwargs.get("y", 0))
+                elif command.action == "type":
+                    page.keyboard.type(command.kwargs.get("text", ""), delay=30)
+                elif command.action == "key":
+                    page.keyboard.press(command.kwargs.get("key", "Enter"))
+                elif command.action == "scroll":
+                    page.mouse.wheel(0, command.kwargs.get("delta", 400))
+            except Exception:
+                continue
 
     @staticmethod
     def _notify_user_captcha(url: str) -> None:

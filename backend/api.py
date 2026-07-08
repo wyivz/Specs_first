@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 
 try:
@@ -120,6 +121,61 @@ def get_checkpoint(task_id: str) -> dict:
     if not checkpoint:
         raise HTTPException(status_code=404, detail="Checkpoint not found")
     return to_dict(checkpoint)
+
+
+# ---------------------------------------------------------------------------
+# Embedded browser control (Milestone 2 tail item) — lets a captcha that
+# triggers PlaywrightCapture's headed fallback be solved from inside the
+# web UI (screenshot + click/type relay) instead of a separate OS window.
+# ---------------------------------------------------------------------------
+
+@app.get("/tasks/{task_id}/browser/status")
+def browser_status(task_id: str) -> dict:
+    from collectors.embedded_browser import get_bridge
+
+    bridge = get_bridge(task_id)
+    if not bridge:
+        return {"active": False}
+    return {
+        "active": True,
+        "url": bridge.url,
+        "solved": bridge.is_solved,
+        "closed": bridge.is_closed,
+        "error": bridge.error,
+        "screenshot_seq": bridge.screenshot_seq,
+    }
+
+
+@app.get("/tasks/{task_id}/browser/screenshot")
+def browser_screenshot(task_id: str) -> dict:
+    from collectors.embedded_browser import get_bridge
+
+    bridge = get_bridge(task_id)
+    if not bridge:
+        raise HTTPException(status_code=404, detail="No active embedded browser session for this task")
+    frame = bridge.latest_screenshot()
+    if frame is None:
+        return {"task_id": task_id, "image_base64": "", "screenshot_seq": 0}
+    return {
+        "task_id": task_id,
+        "image_base64": base64.b64encode(frame).decode("ascii"),
+        "screenshot_seq": bridge.screenshot_seq,
+    }
+
+
+@app.post("/tasks/{task_id}/browser/command")
+def browser_command(task_id: str, payload: dict) -> dict:
+    from collectors.embedded_browser import get_bridge
+
+    bridge = get_bridge(task_id)
+    if not bridge:
+        raise HTTPException(status_code=404, detail="No active embedded browser session for this task")
+    action = payload.get("action", "")
+    if action not in {"click", "type", "key", "scroll"}:
+        raise HTTPException(status_code=400, detail="action must be one of click/type/key/scroll")
+    kwargs = {key: value for key, value in payload.items() if key != "action"}
+    bridge.submit_command(action, **kwargs)
+    return {"task_id": task_id, "queued": action}
 
 
 # ---------------------------------------------------------------------------

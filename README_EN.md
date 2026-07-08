@@ -91,7 +91,7 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 - [x] **Task checkpoint resume (Milestone 2 skeleton)**: memory/Redis checkpoints, `PAUSED_NEED_AUTH`, `POST /tasks/{id}/resume-auth`
 - [x] **Playwright browser capture skeleton**: slice screenshots, captcha detection, session restore
 - [x] **Streamlit HITL resume UI**: sidebar resume button
-- [~] **Embedded browser window**: Milestone 2 tail item
+- [x] **Embedded browser window**: captcha screenshots + click/type commands relay through a `BrowserBridge`, driven live from inside the Streamlit page — no more alt-tabbing to a separate OS window
 
 ### Not started / Milestone 3 in progress
 
@@ -111,12 +111,12 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 
 Run the FastAPI task pipeline; Gemini ingests large corpora and OCR screenshots; OpenAI Strict JSON locks output format.
 
-### Milestone 2 · HITL checkpoint resume (largely complete)
+### Milestone 2 · HITL checkpoint resume (complete)
 
 1. ✅ Playwright session state save/restore
 2. ✅ Pause on slider captcha + checkpoint persistence (memory/Redis)
 3. ✅ API / Streamlit resume entrypoints
-4. ⬜ Embedded browser window
+4. ✅ Embedded browser window: `collectors/embedded_browser.py` relays screenshots/commands; the Streamlit task now runs on a background thread with polling rerenders so captcha screenshots and click/type controls live entirely inside the page
 
 ### Milestone 3 · Production-grade collection (largely complete)
 
@@ -180,6 +180,11 @@ uvicorn backend.api:app --reload
 | `POST /tasks/{id}/resume-auth` | Resume after manual auth |
 | `GET /tasks/{id}/checkpoint` | Inspect paused checkpoint |
 | `GET /tasks/{id}/diagnostics` | Collector degradation/error diagnostics |
+| `GET /tasks/{id}/browser/status` | Embedded browser session status (active/solved) |
+| `GET /tasks/{id}/browser/screenshot` | Fetch latest embedded browser screenshot (base64) |
+| `POST /tasks/{id}/browser/command` | Send click/type/key/scroll commands to the embedded browser |
+| `GET /asr/status` | Check local ASR backend availability |
+| `POST /asr/transcribe` | Manually trigger local audio transcription fallback |
 
 ### Enable real models
 
