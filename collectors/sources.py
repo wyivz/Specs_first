@@ -363,6 +363,10 @@ class EcommerceSourceCollector:
                                 self.http,
                                 detail_url,
                                 referer=snapshot.url,
+                                browser=self.browser,
+                                task_id=task_id,
+                                storage_state_path=storage_state_path,
+                                use_browser=use_browser,
                             )
                         except PlatformAuthRequired:
                             raise
@@ -524,6 +528,10 @@ class EcommerceSourceCollector:
                         self.http,
                         detail_url,
                         referer=referer_url or detail_url,
+                        browser=self.browser,
+                        task_id=task_id,
+                        storage_state_path=storage_state_path,
+                        use_browser=use_browser,
                     )
                 except PlatformAuthRequired:
                     raise

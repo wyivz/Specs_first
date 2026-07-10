@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from backend.config import settings
+from backend.gemini_health import resolve_gemini_model
 from backend.retry import retry_call
 from backend.router_keyword import KeywordModelRouter
 from backend.router_schemas import ARBITRATION_SCHEMA, parse_json_payload
@@ -144,7 +145,7 @@ class HybridModelRouter(KeywordModelRouter):
         import google.generativeai as genai
 
         genai.configure(api_key=settings.gemini_api_key)
-        return genai.GenerativeModel(settings.gemini_model)
+        return genai.GenerativeModel(resolve_gemini_model())
 
     @contextmanager
     def _gemini_cached_content(self, corpus_text: str, system_instruction: str) -> Iterator[Any]:
@@ -170,7 +171,7 @@ class HybridModelRouter(KeywordModelRouter):
 
                 genai.configure(api_key=settings.gemini_api_key)
                 cache = caching.CachedContent.create(
-                    model=settings.gemini_model,
+                    model=resolve_gemini_model(),
                     system_instruction=system_instruction,
                     contents=[corpus_text],
                     ttl=datetime.timedelta(seconds=settings.gemini_context_cache_ttl_seconds),

@@ -42,9 +42,18 @@ class AsrTranscribeRequest(BaseModel):
     output_dir: str = "vault_output/asr_cache"
 
 
+class HealthCheckItem(BaseModel):
+    name: str
+    status: str
+    message: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class HealthResponse(BaseModel):
     status: str
     service: str
+    checked_at: str = ""
+    checks: list[HealthCheckItem] = Field(default_factory=list)
 
 
 class TaskCreateResponse(BaseModel):

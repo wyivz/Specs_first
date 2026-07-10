@@ -21,6 +21,7 @@ from backend.api_models import (
     TaskCreateResponse,
     TaskStatusResponse,
 )
+from backend.platform_health import build_platform_health
 from backend.task_runner import task_manager
 from schemas import to_dict
 
@@ -35,7 +36,21 @@ app.add_middleware(
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    return HealthResponse(status="ok", service="specs-first")
+    report = build_platform_health(probe_gemini=False)
+    return HealthResponse(
+        status=report.overall,
+        service="specs-first",
+        checked_at=report.checked_at,
+        checks=[
+            {
+                "name": item.name,
+                "status": item.status,
+                "message": item.message,
+                "details": item.details,
+            }
+            for item in report.checks
+        ],
+    )
 
 
 @app.post("/discover")

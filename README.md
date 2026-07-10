@@ -126,7 +126,7 @@ uvicorn backend.api:app --reload
 
 | 端点 | 说明 |
 |------|------|
-| `GET /health` | 健康检查 |
+| `GET /health` | 配置与凭证健康检查（Gemini 模型、Cookie 等） |
 | `POST /discover` | 发现候选 SKU |
 | `POST /tasks` | 启动对比任务 |
 | `GET /tasks/{id}` | 任务状态 |
@@ -145,7 +145,19 @@ uvicorn backend.api:app --reload
 python -m unittest discover -s tests
 ```
 
-当前：**71 项全部通过**。
+### 平台可用性冒烟（Real 模式）
+
+检查 Gemini 配置、各平台 Cookie，并对京东/淘宝/B 站/YouTube/DuckDuckGo 做最小 live 探测：
+
+```powershell
+python scripts/smoke_platforms.py
+python scripts/smoke_platforms.py --probe-gemini --output vault_output/smoke_report.json
+python scripts/smoke_platforms.py --health-only
+```
+
+报告默认写入 `vault_output/smoke_report.json`。未配置 Cookie 的平台会标记为 `skip`，不算失败。
+
+当前：**87 项单元测试全部通过**（不含 live smoke）。
 
 ---
 
@@ -158,7 +170,7 @@ python -m unittest discover -s tests
 ```env
 GEMINI_API_KEY=...
 OPENAI_API_KEY=...
-DEFAULT_GEMINI_MODEL=gemini-1.5-flash
+DEFAULT_GEMINI_MODEL=gemini-2.5-flash
 DEFAULT_OPENAI_MODEL=gpt-4o-mini
 OBSIDIAN_VAULT_PATH=./vault_output
 ```
@@ -176,7 +188,7 @@ BILIBILI_BUVID3=...
 
 ### 3. 淘宝 / 天猫（商品参数与到手价）
 
-登录 taobao.com 或 tmall.com 后，复制完整 Cookie 字符串：
+登录 taobao.com 或 tmall.com 后，复制完整 Cookie 字符串（建议包含 `_m_h5_tk`、`_m_h5_tk_enc`、`cna`、`isg`）：
 
 ```env
 TAOBAO_COOKIE=_m_h5_tk=你的token_时间戳; cookie2=...; t=...; ...
@@ -191,10 +203,21 @@ TAOBAO_M_H5_TK=你的token_时间戳
 系统会：
 
 1. 请求商品页时自动携带 Cookie
-2. 对 `mtop.taobao.detail.getdesc` / `getdetail` 等 API 计算签名
-3. token 过期或触发风控时任务挂起 → 在 Streamlit 嵌入式浏览器完成验证 → 侧边栏「续传任务」
+2. 对 `mtop.taobao.detail.getdesc` / `getdetail` 等 API 计算签名；HTTP 失败时回退到 Playwright 浏览器内 `fetch`
+3. `_m_h5_tk` 过期时自动刷新 token 并重签一次
+4. token 过期或触发风控时任务挂起 → 在 Streamlit 嵌入式浏览器完成验证 → 侧边栏「续传任务」
 
-### 4. 推荐使用方式
+### 4. 京东（到手价 / 规格）
+
+登录 jd.com 后复制 Cookie（至少 `pt_key`、`pt_pin`）。**建议使用大陆网络**。
+
+```env
+JD_COOKIE=pt_key=...; pt_pin=...; __jda=...; ...
+```
+
+系统会在 HTTP 与 Playwright 请求中自动注入 JD Cookie；价格仍可能需浏览器渲染后解析。
+
+### 5. 推荐使用方式
 
 | 步骤 | 操作 |
 |------|------|

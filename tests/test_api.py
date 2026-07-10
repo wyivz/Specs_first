@@ -17,8 +17,10 @@ class ApiTest(unittest.TestCase):
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["status"], "ok")
+        self.assertIn(payload["status"], {"ok", "degraded", "error"})
         self.assertEqual(payload["service"], "specs-first")
+        self.assertTrue(payload.get("checked_at"))
+        self.assertTrue(payload.get("checks"))
 
     def test_discover_mock_candidates(self) -> None:
         response = self.client.post("/discover", json={"query": "Zeiss 50mm", "category": "Lens", "mode": "mock"})

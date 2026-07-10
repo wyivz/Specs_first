@@ -8,11 +8,18 @@ from html import unescape
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
-from collectors.credentials import TaobaoCredentials, load_taobao_credentials
+from collectors.credentials import TaobaoCredentials, extract_m_h5_tk, load_taobao_credentials
 from collectors.extractors import ParsedPrice, build_evidence, extract_price
 from collectors.http import HttpClient, clip, html_to_text
 from collectors.platform_auth import PlatformAuthRequired, is_verification_error
 from schemas import PriceFinding
+
+MTOP_TOKEN_MARKERS = (
+    "FAIL_SYS_TOKEN_EXPIRED",
+    "FAIL_SYS_TOKEN_EMPTY",
+    "TOKEN_EXPIRED",
+    "TOKEN_EMPTY",
+)
 
 MTOP_AUTH_MARKERS = (
     "FAIL_SYS_TOKEN",
@@ -169,13 +176,48 @@ class TmallTaobaoAdapter:
         url: str,
         *,
         referer: str = "",
+        browser: Any | None = None,
+        task_id: str = "",
+        storage_state_path: str = "",
+        use_browser: bool = False,
+        _retried: bool = False,
     ) -> str:
-        headers = self.credentials.request_headers()
-        if referer:
-            headers["Referer"] = referer
-            headers["Origin"] = f"{urlparse(referer).scheme}://{urlparse(referer).netloc}"
+        if use_browser and browser is not None and referer:
+            text = self._fetch_mtop_via_browser(
+                browser,
+                product_url=referer,
+                api_url=url,
+                task_id=task_id,
+                storage_state_path=storage_state_path,
+            )
+            return self._handle_mtop_text(
+                text,
+                url=url,
+                referer=referer,
+                http=http,
+                browser=browser,
+                task_id=task_id,
+                storage_state_path=storage_state_path,
+                use_browser=True,
+                retried=_retried,
+            )
+
+        text = self._fetch_mtop_http(http, url, referer=referer)
+        return self._handle_mtop_text(
+            text,
+            url=url,
+            referer=referer,
+            http=http,
+            browser=browser,
+            task_id=task_id,
+            storage_state_path=storage_state_path,
+            use_browser=use_browser,
+            retried=_retried,
+        )
+
+    def _fetch_mtop_http(self, http: HttpClient, url: str, *, referer: str) -> str:
+        headers = self.credentials.request_headers(referer=referer or url)
         result = http.fetch(url, extra_headers=headers)
-        self.inspect_mtop_response(result.text, url=result.url or url)
         if not result.ok:
             if result.status in {401, 403, 412, 429} or is_verification_error(result.error):
                 raise PlatformAuthRequired(
@@ -185,6 +227,118 @@ class TmallTaobaoAdapter:
                 )
             return ""
         return result.text
+
+    def _fetch_mtop_via_browser(
+        self,
+        browser: Any,
+        *,
+        product_url: str,
+        api_url: str,
+        task_id: str,
+        storage_state_path: str,
+    ) -> str:
+        from pathlib import Path
+
+        return browser.fetch_in_page_context(
+            product_url,
+            api_url,
+            task_id=task_id or "mtop",
+            storage_state_path=Path(storage_state_path) if storage_state_path else None,
+        )
+
+    def _handle_mtop_text(
+        self,
+        text: str,
+        *,
+        url: str,
+        referer: str,
+        http: HttpClient,
+        browser: Any | None = None,
+        task_id: str = "",
+        storage_state_path: str = "",
+        use_browser: bool = False,
+        retried: bool = False,
+    ) -> str:
+        payload = self.parse_mtop_json(text)
+        if payload and self._is_token_error(payload) and referer and not retried:
+            self._refresh_sign_token(http, referer)
+            rebuilt = self._rebuild_signed_url(url)
+            if use_browser and browser is not None:
+                return self.fetch_mtop_payload(
+                    http,
+                    rebuilt,
+                    referer=referer,
+                    browser=browser,
+                    task_id=task_id,
+                    storage_state_path=storage_state_path,
+                    use_browser=True,
+                    _retried=True,
+                )
+            text = self._fetch_mtop_http(http, rebuilt, referer=referer)
+            return self._handle_mtop_text(
+                text,
+                url=rebuilt,
+                referer=referer,
+                http=http,
+                browser=browser,
+                task_id=task_id,
+                storage_state_path=storage_state_path,
+                use_browser=use_browser,
+                retried=True,
+            )
+
+        self.inspect_mtop_response(text, url=url)
+        if (
+            browser is not None
+            and referer
+            and not retried
+            and not use_browser
+            and (not text.strip() or (payload and self._is_token_error(payload)))
+        ):
+            return self.fetch_mtop_payload(
+                http,
+                url,
+                referer=referer,
+                browser=browser,
+                task_id=task_id,
+                storage_state_path=storage_state_path,
+                use_browser=True,
+                _retried=True,
+            )
+        return text
+
+    def _is_token_error(self, payload: dict[str, Any]) -> bool:
+        ret = payload.get("ret", [])
+        ret_text = " ".join(ret) if isinstance(ret, list) else str(ret)
+        return any(marker in ret_text for marker in MTOP_TOKEN_MARKERS)
+
+    def _refresh_sign_token(self, http: HttpClient, referer: str) -> None:
+        headers = self.credentials.request_headers(referer=referer)
+        result = http.fetch(referer, extra_headers=headers)
+        combined = " ".join(result.response_headers.values()) + " " + result.text
+        new_tk = extract_m_h5_tk(combined)
+        if new_tk:
+            self.credentials = self.credentials.with_m_h5_tk(new_tk)
+
+    def _rebuild_signed_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        api = qs.get("api", [""])[0]
+        if not api:
+            return url
+        path_parts = [part for part in parsed.path.split("/") if part]
+        version = path_parts[-1] if path_parts else "6.0"
+        data_raw = qs.get("data", [""])[0]
+        if not data_raw:
+            return url
+        from urllib.parse import unquote
+
+        try:
+            data = json.loads(unquote(data_raw))
+        except json.JSONDecodeError:
+            return url
+        host = parsed.netloc or "h5api.m.taobao.com"
+        return self.build_signed_mtop_url(api, version, data, host=host)
 
     def unwrap_desc_payload(self, payload: str) -> str:
         """Extract HTML/text from mtop getdesc JSON wrappers."""

@@ -198,7 +198,7 @@ Copy `.env.example` to `.env`:
 OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...
 DEFAULT_OPENAI_MODEL=gpt-4o-mini   # Structured Output only
-DEFAULT_GEMINI_MODEL=gemini-1.5-flash  # text ingestion + OCR
+DEFAULT_GEMINI_MODEL=gemini-2.5-flash  # text ingestion + OCR
 OBSIDIAN_VAULT_PATH=./vault_output
 SPECS_FIRST_MODE=mock
 

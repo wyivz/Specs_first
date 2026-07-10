@@ -16,7 +16,7 @@ MOBILE_UA = (
 
 DESKTOP_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 SpecsFirst/0.2"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
 
@@ -82,6 +82,7 @@ class PlaywrightCapture:
             if resolved_state.exists():
                 context_kwargs["storage_state"] = str(resolved_state)
             context = browser.new_context(**context_kwargs)
+            self._inject_platform_cookies(context, url)
             context.route("**/*", self._route_filter)
             page = context.new_page()
             try:
@@ -224,6 +225,66 @@ class PlaywrightCapture:
         finally:
             remove_bridge(task_id)
             headed_browser.close()
+
+    def fetch_in_page_context(
+        self,
+        page_url: str,
+        request_url: str,
+        *,
+        task_id: str = "api",
+        storage_state_path: Path | None = None,
+    ) -> str:
+        """Open ``page_url`` in Playwright and ``fetch`` ``request_url`` with session cookies."""
+        try:
+            from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise RuntimeError("Install playwright and run `playwright install` before browser fetches.") from exc
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        resolved_state = storage_state_path or (self.output_dir / f"{task_id}_storage_state.json")
+        user_agent = MOBILE_UA if any(host in page_url.lower() for host in self.MOBILE_HOSTS) else DESKTOP_UA
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            context_kwargs: dict = {
+                "viewport": {"width": 390, "height": 844} if user_agent == MOBILE_UA else {"width": 1365, "height": self.slice_height},
+                "user_agent": user_agent,
+                "locale": "zh-CN",
+            }
+            if resolved_state.exists():
+                context_kwargs["storage_state"] = str(resolved_state)
+            context = browser.new_context(**context_kwargs)
+            self._inject_platform_cookies(context, page_url)
+            page = context.new_page()
+            try:
+                page.goto(page_url, wait_until="domcontentloaded", timeout=35_000)
+                page.wait_for_timeout(900)
+                text = page.evaluate(
+                    """async (url) => {
+                        const resp = await fetch(url, { credentials: 'include', mode: 'cors' });
+                        return await resp.text();
+                    }""",
+                    request_url,
+                )
+                context.storage_state(path=str(resolved_state))
+                return text or ""
+            except PlaywrightTimeoutError as exc:
+                raise RuntimeError(f"Timed out while fetching {request_url} via browser") from exc
+            finally:
+                browser.close()
+
+    @staticmethod
+    def _inject_platform_cookies(context, url: str) -> None:
+        from collectors.credentials import playwright_cookies_for_url
+
+        cookies = playwright_cookies_for_url(url)
+        if not cookies:
+            return
+        try:
+            context.add_cookies(cookies)
+        except Exception:
+            pass
 
     @staticmethod
     def _apply_bridge_commands(page, bridge: BrowserBridge) -> None:

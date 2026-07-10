@@ -45,7 +45,7 @@ class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     openai_model: str = os.getenv("DEFAULT_OPENAI_MODEL", "gpt-4o-mini")
-    gemini_model: str = os.getenv("DEFAULT_GEMINI_MODEL", "gemini-1.5-flash")
+    gemini_model: str = os.getenv("DEFAULT_GEMINI_MODEL", "gemini-2.5-flash")
 
     # Gemini context caching (Phase 1/2 large-corpus ingestion): avoid
     # re-sending the same huge text on retries. Gemini requires a minimum
@@ -79,6 +79,9 @@ class Settings:
     # Taobao/Tmall cookies (never commit real values)
     taobao_cookie: str = os.getenv("TAOBAO_COOKIE", "")
     taobao_m_h5_tk: str = os.getenv("TAOBAO_M_H5_TK", "")
+
+    # JD cookies — recommended for reliable price/spec access (pt_key, pt_pin, etc.)
+    jd_cookie: str = os.getenv("JD_COOKIE", "")
 
     @property
     def has_openai(self) -> bool:
