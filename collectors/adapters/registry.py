@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+from typing import TypeVar
+
 from collectors.adapters.bilibili import BilibiliAdapter
 from collectors.adapters.jd import JdAdapter
 from collectors.adapters.tmall_taobao import TmallTaobaoAdapter
 from collectors.adapters.youtube import YouTubeAdapter
+from collectors.adapters.youtube_comments import YouTubeCommentFetcher
+from collectors.credentials import load_taobao_credentials
+from collectors.diagnostics import CollectorDiagnostics
+from collectors.http import HttpClient
+from collectors.settings import settings
+
+T = TypeVar("T")
 
 
 class AdapterRegistry:
@@ -24,13 +33,53 @@ class AdapterRegistry:
                 return adapter
         return None
 
+    def get(self, adapter_type: type[T]) -> T | None:
+        for adapter in self._adapters:
+            if isinstance(adapter, adapter_type):
+                return adapter
+        return None
 
-def create_default_registry() -> AdapterRegistry:
+    def require(self, adapter_type: type[T]) -> T:
+        adapter = self.get(adapter_type)
+        if adapter is None:
+            raise RuntimeError(f"No adapter registered for {adapter_type.__name__}")
+        return adapter
+
+    def for_platform(self, platform: str) -> object | None:
+        if platform == "JD":
+            return self.get(JdAdapter)
+        if platform == "Taobao/Tmall":
+            return self.get(TmallTaobaoAdapter)
+        if platform == "Bilibili":
+            return self.get(BilibiliAdapter)
+        if platform == "YouTube":
+            return self.get(YouTubeAdapter)
+        return None
+
+
+def create_default_registry(
+    *,
+    http: HttpClient | None = None,
+    diagnostics: CollectorDiagnostics | None = None,
+) -> AdapterRegistry:
+    http = http or HttpClient()
+    diagnostics = diagnostics or CollectorDiagnostics()
     registry = AdapterRegistry()
     registry.register(JdAdapter())
-    registry.register(TmallTaobaoAdapter())
-    registry.register(BilibiliAdapter())
-    registry.register(YouTubeAdapter())
+    registry.register(TmallTaobaoAdapter(load_taobao_credentials()))
+    registry.register(BilibiliAdapter(diagnostics=diagnostics))
+    registry.register(
+        YouTubeAdapter(
+            http,
+            diagnostics=diagnostics,
+            comment_fetcher=YouTubeCommentFetcher(
+                max_comments_per_video=settings.youtube_comment_max_per_video,
+                delay_min_seconds=settings.youtube_comment_delay_min,
+                delay_max_seconds=settings.youtube_comment_delay_max,
+                diagnostics=diagnostics,
+            ),
+        )
+    )
     return registry
 
 

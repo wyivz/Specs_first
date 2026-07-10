@@ -24,7 +24,7 @@ class BilibiliAdapter:
         diagnostics: CollectorDiagnostics | None = None,
         max_videos_per_sku: int | None = None,
     ) -> None:
-        from backend.config import settings
+        from collectors.settings import settings
 
         self.credentials = credentials or load_bilibili_credentials()
         self.rate_limiter = rate_limiter or get_rate_limiter()

@@ -65,7 +65,7 @@ class BilibiliCredentials:
 
 
 def load_bilibili_credentials() -> BilibiliCredentials:
-    from backend.config import settings
+    from collectors.settings import settings
 
     return BilibiliCredentials(
         sessdata=settings.bilibili_sessdata,
@@ -96,7 +96,7 @@ class JdCredentials:
 
 
 def load_jd_credentials() -> JdCredentials:
-    from backend.config import settings
+    from collectors.settings import settings
 
     return JdCredentials(cookie=settings.jd_cookie)
 
@@ -155,7 +155,7 @@ class TaobaoCredentials:
 
 
 def load_taobao_credentials() -> TaobaoCredentials:
-    from backend.config import settings
+    from collectors.settings import settings
 
     return TaobaoCredentials(
         cookie=settings.taobao_cookie,

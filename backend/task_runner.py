@@ -37,10 +37,14 @@ class TaskManager:
         vault_path: str | Path = "vault_output",
         model_mode: str | None = None,
     ) -> SpecsFirstPipeline:
-        collector: Collector = RealCollector(source_urls=source_urls or []) if mode == "real" else MockCollector()
+        router = create_model_router(model_mode)
+        if mode == "real":
+            collector: Collector = RealCollector(source_urls=source_urls or [], router=router)
+        else:
+            collector = MockCollector()
         return SpecsFirstPipeline(
             collector=collector,
-            router=create_model_router(model_mode),
+            router=router,
             event_bus=self.event_bus,
             vault_path=Path(vault_path),
             checkpoint_store=self.checkpoint_store,

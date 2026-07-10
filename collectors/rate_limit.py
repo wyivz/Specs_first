@@ -62,7 +62,7 @@ def platform_for_url(url: str) -> str:
 def get_rate_limiter() -> PlatformRateLimiter:
     global _default_limiter
     if _default_limiter is None:
-        from backend.config import settings
+        from collectors.settings import settings
 
         _default_limiter = PlatformRateLimiter(
             default_interval_seconds=settings.collection_min_interval_seconds,

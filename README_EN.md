@@ -66,9 +66,27 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 |-------|-------|------|
 | Frontend | Streamlit + SSE | Streaming matrix, conflict badges, evidence cards |
 | Backend | FastAPI + background threads | Task scheduling, SSE event push |
-| Collectors | HTTP + DuckDuckGo search + URL injection | Best-effort official / video / forum / e-commerce fetch |
-| Browser | Playwright (skeleton ready) | E-commerce long-page screenshots, captcha HITL pause |
-| Output | Obsidian Markdown + Dataview | Durable local assets independent of the web UI |
+| Collectors | HTTP + Playwright + AdapterRegistry | Official / video / forum / e-commerce fetch |
+| Models | Gemini + OpenAI | Text detox/OCR + structured arbitration |
+| Output | Obsidian Markdown + Dataview + CSV | Durable local assets independent of the web UI |
+
+```
+Streamlit UI
+    └── frontend/api_client.py (in-process TestClient, shared task_manager)
+            └── backend/task_runner.py
+                    └── pipeline.py → candidate_processor.py
+                            └── collectors/real.py
+                                    ├── sources/ (official · video · forum · ecommerce · injection)
+                                    └── adapters/registry.py → jd · bilibili · youtube · tmall_taobao
+                            └── model_router.py (single instance injected into RealCollector)
+                            └── obsidian/writer.py
+```
+
+**Layering notes:**
+
+- `collectors/settings.py` owns environment config; `backend/config.py` re-exports for compatibility
+- `AdapterRegistry` is wired at runtime (`for_url()` / `for_platform()`)
+- `RealCollector` receives the pipeline's `router`; collectors no longer import `backend`
 
 ---
 
@@ -83,8 +101,12 @@ Without API keys, the system falls back to a **keyword rules engine** so the moc
 - [x] **FastAPI**: `POST /tasks`, `GET /tasks/{id}/events` (SSE), `GET /result`
 - [x] **Streamlit UI**: Phase 0 SKU picker, progressive table, 🟡/🔴 conflict badges, evidence links
 - [x] **Obsidian writer**: Chinese dehydration reports + Dataview master matrix
-- [x] **Unit tests**: **71 passing** + GitHub Actions CI
+- [x] **Unit tests**: **88 passing** + GitHub Actions CI
 - [x] **Taobao/Tmall adapter**: mtop H5 signing, `TAOBAO_COOKIE` config, captcha pause + resume
+- [x] **AdapterRegistry runtime wiring** (`collectors/adapters/registry.py` → `sources/`)
+- [x] **Collector dependency inversion**: `collectors/settings.py` + router injection; collectors do not import `backend`
+- [x] **P0 health checks**: `GET /health`, `gemini_health`, `platform_health`, `scripts/smoke_platforms.py`
+- [x] **P1 collection hardening**: DDG `ddgs` fallback, JD/Taobao cookie injection, mtop 3-layer retry
 - [x] **Code modularization**: `candidate_processor`, split model routers, Pydantic API models, Streamlit `api_client`
 
 ### In progress / partial
@@ -213,7 +235,7 @@ TAOBAO_M_H5_TK=
 python -m unittest discover -s tests
 ```
 
-**71 tests** currently passing.
+**88 tests** currently passing.
 
 ---
 
@@ -221,12 +243,13 @@ python -m unittest discover -s tests
 
 ```
 Specs-first/
-├── backend/          # Pipeline, API, dual-brain router, task runner
-├── collectors/       # Mock / real collectors, HTTP, Playwright
-├── frontend/         # Streamlit UI
-├── obsidian/         # Vault writer
+├── backend/          # Pipeline, API, dual-brain router, task runner, health
+├── collectors/       # Mock/real collectors, settings, sources/, adapters/
+├── scripts/          # smoke_platforms.py
+├── frontend/         # Streamlit UI + api_client
+├── obsidian/         # Vault writer + CSV export
 ├── schemas/          # Data models and comparison matrix
-├── tests/
+├── tests/            # 88 unit/integration tests
 ├── plan.md           # Architecture plan v4.0 (Chinese)
 ├── README.md         # Chinese
 └── README_EN.md      # English (this file)

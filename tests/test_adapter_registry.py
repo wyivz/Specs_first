@@ -16,6 +16,14 @@ class AdapterRegistryTest(unittest.TestCase):
         assert tmall is not None
         self.assertTrue(tmall.supports("https://detail.tmall.com/item.htm?id=1"))
 
+    def test_get_and_for_platform(self) -> None:
+        from collectors.adapters.jd import JdAdapter
+        from collectors.adapters.tmall_taobao import TmallTaobaoAdapter
+
+        registry = create_default_registry()
+        self.assertIsInstance(registry.get(JdAdapter), JdAdapter)
+        self.assertIsInstance(registry.for_platform("Taobao/Tmall"), TmallTaobaoAdapter)
+
 
 if __name__ == "__main__":
     unittest.main()

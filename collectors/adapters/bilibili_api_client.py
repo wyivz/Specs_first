@@ -102,7 +102,7 @@ class BilibiliApiClient:
         installed. Never raises: any failure just yields an empty transcript
         so the caller degrades to comment-only evidence.
         """
-        from backend.config import settings
+        from collectors.settings import settings
 
         if not settings.bilibili_asr_fallback:
             return ""

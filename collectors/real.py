@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
+from collectors.adapters.registry import AdapterRegistry, create_default_registry
 from collectors.base import Collector
-from collectors.extractors import dedupe_evidence
-from collectors.browser import BrowserAuthRequired, PlaywrightCapture
+from collectors.browser import PlaywrightCapture
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.http import HttpClient
-from collectors.platform_auth import PlatformAuthRequired
+from collectors.protocols import SpecExtractionRouter
 from collectors.rate_limit import get_collection_guard
 from collectors.resilient_fetch import ResilientFetcher
 from collectors.sources import (
@@ -17,6 +18,7 @@ from collectors.sources import (
     UrlInjectionCollector,
     VideoSourceCollector,
 )
+from collectors.extractors import dedupe_evidence
 from schemas import EvidenceItem, OfficialSpec, PriceFinding, ProductCandidate
 
 
@@ -25,14 +27,34 @@ class RealCollector(Collector):
     source_urls: list[str] = field(default_factory=list)
     http: HttpClient = field(default_factory=HttpClient)
     diagnostics: CollectorDiagnostics = field(default_factory=CollectorDiagnostics)
+    router: SpecExtractionRouter | None = None
+    registry: AdapterRegistry | None = None
 
     def __post_init__(self) -> None:
         browser = PlaywrightCapture()
         self.resilient = ResilientFetcher(self.http, browser, self.diagnostics)
-        self.official = OfficialSourceCollector(self.http, self.diagnostics, self.resilient)
-        self.video = VideoSourceCollector(self.http, self.diagnostics, self.resilient)
+        registry = self.registry or create_default_registry(http=self.http, diagnostics=self.diagnostics)
+        self.official = OfficialSourceCollector(
+            self.http,
+            self.diagnostics,
+            self.resilient,
+            router=self.router,
+        )
+        self.video = VideoSourceCollector(
+            self.http,
+            self.diagnostics,
+            self.resilient,
+            registry=registry,
+        )
         self.forum = ForumSourceCollector(self.http, self.diagnostics, self.resilient)
-        self.ecommerce = EcommerceSourceCollector(self.http, self.diagnostics, browser, self.resilient)
+        self.ecommerce = EcommerceSourceCollector(
+            self.http,
+            self.diagnostics,
+            browser,
+            self.resilient,
+            registry=registry,
+            router=self.router,
+        )
         self.injected = UrlInjectionCollector(self.http, self.diagnostics, self.resilient)
 
     def discover_candidates(self, query: str, category: str) -> list[ProductCandidate]:
@@ -129,5 +151,5 @@ class RealCollector(Collector):
             )
             return sorted(prices, key=lambda item: item.final_price)[:5]
 
-    def diagnostics_report(self) -> list[dict]:
+    def diagnostics_report(self) -> list[dict[str, Any]]:
         return self.diagnostics.to_dicts()
