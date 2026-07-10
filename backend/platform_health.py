@@ -8,7 +8,7 @@ from typing import Any
 
 from backend.config import settings
 from backend.gemini_health import RECOMMENDED_GEMINI_MODEL, build_gemini_health, resolve_gemini_model
-from collectors.credentials import load_bilibili_credentials, load_jd_credentials, load_taobao_credentials
+from collectors.credentials import load_bilibili_credentials, load_jd_credentials, load_reddit_credentials, load_taobao_credentials
 
 __all__ = [
     "CheckResult",
@@ -157,6 +157,23 @@ def check_jd_credentials() -> CheckResult:
     )
 
 
+def check_reddit_credentials() -> CheckResult:
+    creds = load_reddit_credentials()
+    if creds.configured:
+        return CheckResult(
+            name="reddit_credentials",
+            status="ok",
+            message="Reddit session cookies configured; forum search includes Reddit",
+            details={"recommended": ["reddit_session", "token_v2"]},
+        )
+    return CheckResult(
+        name="reddit_credentials",
+        status="skip",
+        message="Reddit cookies not set; auto forum search skips Reddit (paste thread URLs still work)",
+        details={"optional": ["REDDIT_COOKIE"]},
+    )
+
+
 def check_collector_mode() -> CheckResult:
     mode = settings.default_mode.strip().lower() or "mock"
     if mode == "real":
@@ -189,6 +206,7 @@ def build_platform_health(*, probe_gemini: bool = False) -> PlatformHealthReport
         check_bilibili_credentials(),
         check_taobao_credentials(),
         check_jd_credentials(),
+        check_reddit_credentials(),
         check_collector_mode(),
     ]
     return PlatformHealthReport(

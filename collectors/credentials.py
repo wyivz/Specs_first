@@ -102,6 +102,38 @@ def load_jd_credentials() -> JdCredentials:
 
 
 @dataclass(frozen=True)
+class RedditCredentials:
+    """Reddit session cookies for authenticated forum reads.
+
+    Copy the full Cookie header from browser DevTools while logged in to
+    reddit.com. Typical fields include ``reddit_session`` and ``token_v2``.
+    Without cookies, auto ``site:reddit.com`` search is skipped; pasted
+    thread URLs still work when Playwright is enabled.
+    """
+
+    cookie: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.cookie.strip())
+
+    def request_headers(self) -> dict[str, str]:
+        cookie = self.cookie.strip()
+        if not cookie:
+            return {}
+        return {"Cookie": cookie}
+
+    def playwright_cookies(self) -> list[dict[str, str]]:
+        return parse_cookie_header(self.cookie, ".reddit.com")
+
+
+def load_reddit_credentials() -> RedditCredentials:
+    from collectors.settings import settings
+
+    return RedditCredentials(cookie=settings.reddit_cookie)
+
+
+@dataclass(frozen=True)
 class TaobaoCredentials:
     """Taobao/Tmall session cookies for mtop H5 API signing.
 
@@ -171,6 +203,8 @@ def request_headers_for_url(url: str, *, referer: str = "") -> dict[str, str]:
         creds = load_taobao_credentials()
         if creds.configured:
             return creds.request_headers(referer=referer or url)
+    if "reddit.com" in lower:
+        return load_reddit_credentials().request_headers()
     return {}
 
 
@@ -182,4 +216,8 @@ def playwright_cookies_for_url(url: str) -> list[dict[str, str]]:
         creds = load_taobao_credentials()
         if creds.configured:
             return creds.playwright_cookies(url)
+    if "reddit.com" in lower:
+        creds = load_reddit_credentials()
+        if creds.configured:
+            return creds.playwright_cookies()
     return []

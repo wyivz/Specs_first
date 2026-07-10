@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+import unittest
+from unittest.mock import MagicMock, patch
+
+from collectors.credentials import RedditCredentials, load_reddit_credentials, request_headers_for_url
+from collectors.sources.forum import ForumSourceCollector
+from schemas.category_profile import forum_search_queries
+
+
+class ForumSearchQueriesTest(unittest.TestCase):
+    def test_reddit_excluded_by_default(self) -> None:
+        queries = forum_search_queries("Sony 50mm")
+        platforms = [platform for platform, _ in queries]
+        self.assertEqual(platforms, ["Chiphell"])
+
+    def test_reddit_included_when_enabled(self) -> None:
+        queries = forum_search_queries("Sony 50mm", include_reddit=True)
+        platforms = [platform for platform, _ in queries]
+        self.assertEqual(platforms, ["Chiphell", "Reddit"])
+
+
+class RedditCredentialsTest(unittest.TestCase):
+    def test_reddit_credentials_headers(self) -> None:
+        creds = RedditCredentials(cookie="reddit_session=abc; token_v2=xyz")
+        self.assertTrue(creds.configured)
+        self.assertIn("Cookie", creds.request_headers())
+
+    @patch("collectors.credentials.load_reddit_credentials")
+    def test_request_headers_for_reddit(self, load_reddit) -> None:
+        load_reddit.return_value = RedditCredentials(cookie="reddit_session=abc")
+        headers = request_headers_for_url("https://www.reddit.com/r/SonyAlpha/comments/abc/")
+        self.assertIn("Cookie", headers)
+
+
+class ForumSourceCollectorRedditTest(unittest.TestCase):
+    def test_skips_reddit_search_without_cookie(self) -> None:
+        http = MagicMock()
+        http.search.return_value = []
+        collector = ForumSourceCollector(http)
+        with patch("collectors.sources.forum.load_reddit_credentials") as load_reddit:
+            load_reddit.return_value = RedditCredentials()
+            collector.collect(
+                type("Candidate", (), {"sku": "Sony 50mm"})(),  # type: ignore[arg-type]
+            )
+        search_queries = [call.args[0] for call in http.search.call_args_list]
+        self.assertTrue(all("reddit.com" not in query for query in search_queries))
+
+    def test_includes_reddit_search_with_cookie(self) -> None:
+        http = MagicMock()
+        http.search.return_value = []
+        collector = ForumSourceCollector(http)
+        with patch("collectors.sources.forum.load_reddit_credentials") as load_reddit:
+            load_reddit.return_value = RedditCredentials(cookie="reddit_session=abc")
+            collector.collect(
+                type("Candidate", (), {"sku": "Sony 50mm"})(),  # type: ignore[arg-type]
+            )
+        search_queries = [call.args[0] for call in http.search.call_args_list]
+        self.assertTrue(any("reddit.com" in query for query in search_queries))
+
+    @patch("collectors.sources.forum.load_reddit_credentials")
+    def test_load_reddit_credentials_from_settings(self, load_reddit) -> None:
+        with patch("collectors.settings.settings") as mock_settings:
+            mock_settings.reddit_cookie = "reddit_session=from_env"
+            creds = load_reddit_credentials()
+        self.assertTrue(creds.configured)
+        self.assertIn("reddit_session=from_env", creds.cookie)
+
+
+if __name__ == "__main__":
+    unittest.main()

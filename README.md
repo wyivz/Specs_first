@@ -232,7 +232,23 @@ JD_COOKIE=pt_key=...; pt_pin=...; __jda=...; ...
 
 系统会在 HTTP 与 Playwright 请求中自动注入 JD Cookie；价格仍可能需浏览器渲染后解析。
 
-### 5. 推荐使用方式
+### 5. Reddit（可选，论坛证据）
+
+登录 reddit.com 后从 DevTools 复制 Cookie（通常含 `reddit_session`、`token_v2`）：
+
+```env
+REDDIT_COOKIE=reddit_session=...; token_v2=...
+```
+
+| 配置状态 | 行为 |
+|----------|------|
+| 未配置 | 自动 `site:reddit.com` 搜索**跳过**（不空跑） |
+| 已配置 | 论坛搜索包含 Reddit，且 Reddit URL 自动走 Playwright + Cookie |
+| 任意状态 | **Source URLs** 粘贴 Reddit 帖子链接仍可用（建议勾选 Playwright） |
+
+Cookie 过期后需重新复制；遇登录墙可走嵌入式浏览器续传。
+
+### 6. 推荐使用方式
 
 | 步骤 | 操作 |
 |------|------|
@@ -312,8 +328,9 @@ vault_output/
 | P0 | 维护淘宝 Cookie | 过期后重新复制；失败看诊断区 |
 | P1 | Gemini/OpenAI 实调 | 配 Key 后对比关键词降级效果 |
 | P1 | 常用品类别名补充 | `schemas/category_profile.py` |
+| P2 | B 站启动探测 + health 增强 | 降低 WBI 403 |
 | P2 | YouTube PoToken / InnerTube | 恢复字幕证据 |
-| P2 | Reddit 从搜索剔除 | 避免空跑 |
+| P2 | Reddit 评论结构化解析（`RedditAdapter`） | 在 Cookie 启用后提升证据质量 |
 
 ### 上云时再考虑
 

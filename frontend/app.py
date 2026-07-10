@@ -111,7 +111,15 @@ def render_embedded_browser_panel(task_id: str) -> None:
     if not bridge:
         return
     st.markdown("---")
-    st.subheader("🖥️ 嵌入式浏览器 — 请在下方完成验证")
+    st.subheader("🖥️ 嵌入式浏览器 — 验证码辅助")
+    if bridge.url and any(host in bridge.url.lower() for host in ("taobao.com", "tmall.com")):
+        st.error(
+            "淘宝/天猫 **滑块验证** 请在任务栏弹出的 **Chrome/Edge 窗口** 里用鼠标拖动完成；"
+            "下方截图仅供预览，点坐标无法可靠拖动滑块（易出现 error:CQAE0a）。"
+            "若多次失败：用日常浏览器打开同一商品页完成验证 → 更新 `.env` 的 `TAOBAO_COOKIE` → 侧边栏续传。"
+        )
+    else:
+        st.caption("请在任务栏找到弹出的浏览器窗口完成验证；下方为实时截图预览。")
     if bridge.url:
         st.caption(f"目标页面：{bridge.url}")
     frame = bridge.latest_screenshot()
@@ -230,8 +238,9 @@ def render_active_task() -> bool:
         if status["state"] == "PAUSED_NEED_AUTH":
             st.session_state["paused_task_id"] = task_id
             st.warning(
-                "检测到验证码/安全检测，且嵌入式浏览器未能在超时前完成验证。"
-                "任务已挂起，可在侧边栏「续传任务」重试（会重新打开嵌入式浏览器）。"
+                "检测到验证码/安全检测，任务已挂起。"
+                "淘宝/天猫请优先在弹出的 Chrome/Edge 窗口拖动滑块，或更新 TAOBAO_COOKIE 后续传；"
+                "其他站点可在侧边栏点击「续传任务」。"
             )
         elif status["state"] == "FAILED":
             st.error(f"任务失败：{status.get('error', '')}")

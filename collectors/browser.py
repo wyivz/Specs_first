@@ -16,8 +16,30 @@ MOBILE_UA = (
 
 DESKTOP_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
+TAOBAO_HOSTS = ("taobao.com", "tmall.com")
+
+
+def _launch_browser(playwright, *, headless: bool, prefer_system_browser: bool = False):
+    """Launch Playwright browser; headed captcha flow prefers installed Chrome/Edge."""
+    launch_kwargs: dict = {"headless": headless}
+    if prefer_system_browser:
+        for channel in ("chrome", "msedge"):
+            try:
+                return playwright.chromium.launch(channel=channel, **launch_kwargs)
+            except Exception:
+                continue
+    return playwright.chromium.launch(**launch_kwargs)
+
+
+def _headed_captcha_viewport(url: str, slice_height: int) -> tuple[str, dict]:
+    """Use desktop layout for headed captcha so Taobao/JD pages match a normal browser."""
+    lower = url.lower()
+    if any(host in lower for host in PlaywrightCapture.HEADED_CAPTCHA_HOSTS):
+        return DESKTOP_UA, {"width": 1365, "height": max(slice_height, 900)}
+    return MOBILE_UA, {"width": 390, "height": 844}
 
 
 @dataclass(frozen=True)
@@ -73,7 +95,7 @@ class PlaywrightCapture:
         user_agent = MOBILE_UA if any(host in url.lower() for host in self.MOBILE_HOSTS) else DESKTOP_UA
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = _launch_browser(playwright, headless=True)
             context_kwargs: dict = {
                 "viewport": {"width": 390, "height": 844} if user_agent == MOBILE_UA else {"width": 1365, "height": self.slice_height},
                 "user_agent": user_agent,
@@ -153,16 +175,18 @@ class PlaywrightCapture:
         BrowserAuthRequired if the user does not solve it in time.
         """
         self._notify_user_captcha(url)
+        user_agent, viewport = _headed_captcha_viewport(url, self.slice_height)
         context_kwargs: dict = {
-            "viewport": {"width": 390, "height": 844} if user_agent == MOBILE_UA else {"width": 1365, "height": self.slice_height},
+            "viewport": viewport,
             "user_agent": user_agent,
             "locale": "zh-CN",
         }
         if state_path.exists():
             context_kwargs["storage_state"] = str(state_path)
 
-        headed_browser = playwright.chromium.launch(headless=False)
+        headed_browser = _launch_browser(playwright, headless=False, prefer_system_browser=True)
         context = headed_browser.new_context(**context_kwargs)
+        self._inject_platform_cookies(context, url)
         page = context.new_page()
         bridge = get_or_create_bridge(task_id, url=url)
         try:
@@ -246,7 +270,7 @@ class PlaywrightCapture:
         user_agent = MOBILE_UA if any(host in page_url.lower() for host in self.MOBILE_HOSTS) else DESKTOP_UA
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = _launch_browser(playwright, headless=True)
             context_kwargs: dict = {
                 "viewport": {"width": 390, "height": 844} if user_agent == MOBILE_UA else {"width": 1365, "height": self.slice_height},
                 "user_agent": user_agent,
@@ -298,6 +322,15 @@ class PlaywrightCapture:
             try:
                 if command.action == "click":
                     page.mouse.click(command.kwargs.get("x", 0), command.kwargs.get("y", 0))
+                elif command.action == "drag":
+                    start_x = command.kwargs.get("start_x", 0)
+                    start_y = command.kwargs.get("start_y", 0)
+                    end_x = command.kwargs.get("end_x", start_x)
+                    end_y = command.kwargs.get("end_y", start_y)
+                    page.mouse.move(start_x, start_y)
+                    page.mouse.down()
+                    page.mouse.move(end_x, end_y, steps=command.kwargs.get("steps", 24))
+                    page.mouse.up()
                 elif command.action == "type":
                     page.keyboard.type(command.kwargs.get("text", ""), delay=30)
                 elif command.action == "key":
@@ -312,9 +345,18 @@ class PlaywrightCapture:
         """Emit a desktop notification / beep so the user knows to look at the browser."""
         import sys
 
+        lower = url.lower()
+        taobao_hint = ""
+        if any(host in lower for host in TAOBAO_HOSTS):
+            taobao_hint = (
+                "\n淘宝/天猫滑块必须在【弹出的 Chrome/Edge 窗口】里用鼠标拖动完成，"
+                "Streamlit 嵌入式截图无法拖动滑块（会出现 error:CQAE0a）。"
+                "若反复失败：请用日常浏览器打开商品页过验证后，更新 .env 中的 TAOBAO_COOKIE。\n"
+            )
         msg = (
             f"\n[Specs-First] Captcha detected on {url}\n"
-            "A headed browser has opened — please solve the verification challenge.\n"
+            "A headed browser window should open — solve the challenge there with your mouse.\n"
+            f"{taobao_hint}"
             "Waiting up to 5 minutes...\n"
         )
         print(msg, flush=True)

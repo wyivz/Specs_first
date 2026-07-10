@@ -385,11 +385,13 @@ def video_search_queries(sku: str) -> list[tuple[str, str]]:
     ]
 
 
-def forum_search_queries(sku: str) -> list[tuple[str, str]]:
-    return [
+def forum_search_queries(sku: str, *, include_reddit: bool = False) -> list[tuple[str, str]]:
+    queries: list[tuple[str, str]] = [
         ("Chiphell", f"{sku} site:chiphell.com 缺点 品控 翻车 问题 体验"),
-        ("Reddit", f"{sku} site:reddit.com defect issue quality problem review"),
     ]
+    if include_reddit:
+        queries.append(("Reddit", f"{sku} site:reddit.com defect issue quality problem review"))
+    return queries
 
 
 def ecommerce_search_queries(sku: str) -> list[tuple[str, str]]:

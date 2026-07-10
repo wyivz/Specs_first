@@ -81,6 +81,9 @@ class Settings:
 
     jd_cookie: str = os.getenv("JD_COOKIE", "")
 
+    # Reddit session cookies — required for auto forum search on reddit.com
+    reddit_cookie: str = os.getenv("REDDIT_COOKIE", "")
+
     @property
     def has_openai(self) -> bool:
         return bool(self.openai_api_key)

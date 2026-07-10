@@ -23,7 +23,7 @@ SITE_STRATEGIES: tuple[SiteStrategy, ...] = (
     SiteStrategy("youtube.com", "browser_first", min_chars=80),
     SiteStrategy("youtu.be", "browser_first", min_chars=80),
     SiteStrategy("chiphell.com", "http_first", min_chars=80),
-    SiteStrategy("reddit.com", "http_first", min_chars=80),
+    SiteStrategy("reddit.com", "browser_first", min_chars=80),
 )
 
 

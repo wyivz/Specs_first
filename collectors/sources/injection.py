@@ -32,7 +32,7 @@ class UrlInjectionCollector:
             page = self.resilient.fetch(
                 url,
                 task_id=task_id,
-                use_browser=use_browser,
+                use_browser=use_browser or "reddit.com" in url.lower(),
                 storage_state_path=storage_state_path,
                 sku=sku,
             )
@@ -55,7 +55,7 @@ class UrlInjectionCollector:
             page = self.resilient.fetch(
                 url,
                 task_id=task_id,
-                use_browser=use_browser,
+                use_browser=use_browser or "reddit.com" in url.lower(),
                 storage_state_path=storage_state_path,
             )
             if not page.ok and not page.markup:
