@@ -8,7 +8,13 @@ from typing import Any
 
 from backend.config import settings
 from backend.gemini_health import RECOMMENDED_GEMINI_MODEL, build_gemini_health, resolve_gemini_model
-from collectors.credentials import load_bilibili_credentials, load_jd_credentials, load_reddit_credentials, load_taobao_credentials
+from collectors.credentials import (
+    load_bilibili_credentials,
+    load_jd_credentials,
+    load_reddit_credentials,
+    load_taobao_credentials,
+    load_youtube_credentials,
+)
 
 __all__ = [
     "CheckResult",
@@ -157,6 +163,30 @@ def check_jd_credentials() -> CheckResult:
     )
 
 
+def check_youtube_credentials() -> CheckResult:
+    creds = load_youtube_credentials()
+    if creds.configured:
+        return CheckResult(
+            name="youtube_credentials",
+            status="ok",
+            message="YouTube session cookies configured for browser transcript fetches",
+            details={"browser_transcript": settings.youtube_browser_transcript},
+        )
+    if settings.youtube_browser_transcript:
+        return CheckResult(
+            name="youtube_credentials",
+            status="warn",
+            message="YouTube cookies missing; browser transcript may still work but PoToken success is lower",
+            details={"optional": ["YOUTUBE_COOKIE"], "browser_transcript": True},
+        )
+    return CheckResult(
+        name="youtube_credentials",
+        status="skip",
+        message="YouTube browser transcript disabled (YOUTUBE_BROWSER_TRANSCRIPT=false)",
+        details={"browser_transcript": False},
+    )
+
+
 def check_reddit_credentials() -> CheckResult:
     creds = load_reddit_credentials()
     if creds.configured:
@@ -206,6 +236,7 @@ def build_platform_health(*, probe_gemini: bool = False) -> PlatformHealthReport
         check_bilibili_credentials(),
         check_taobao_credentials(),
         check_jd_credentials(),
+        check_youtube_credentials(),
         check_reddit_credentials(),
         check_collector_mode(),
     ]

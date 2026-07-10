@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""One-shot real-mode comparison for local validation."""
+"""One-shot real-mode comparison for local validation.
+
+By default this relies on automatic search (DDG + platform adapters) from the
+selected SKU — same as the Streamlit/API pipeline. Optional SOURCE_URLS in .env
+only add extra pinned pages; they are not required.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -15,32 +21,41 @@ from backend.model_router import create_model_router
 from backend.pipeline import SpecsFirstPipeline
 from collectors.real import RealCollector
 
-SOURCE_URLS = [
-    "https://item.jd.com/100012043978.html",
-    "https://detail.tmall.com/item.htm?id=520813140663",
-    "https://www.bilibili.com/video/BV1GJ411x7h7",
-]
 
-QUERY = "Sony FE 50mm f1.2 GM"
-CATEGORY = "Lens"
-SELECTED_SKUS = ["Sony FE 50mm f/1.2 GM Lens (Sony E)"]
+def _optional_source_urls() -> list[str]:
+    """Optional pinned URLs — augmentation only, not the primary discovery path."""
+    raw = os.getenv("OPTIONAL_SOURCE_URLS", "").strip()
+    if not raw:
+        return []
+    parts: list[str] = []
+    for line in raw.replace(",", "\n").splitlines():
+        url = line.strip()
+        if url:
+            parts.append(url)
+    return parts
+
+
+QUERY = os.getenv("LIVE_QUERY", "Sony FE 50mm f1.2 GM")
+CATEGORY = os.getenv("LIVE_CATEGORY", "Lens")
+SELECTED_SKUS = [os.getenv("LIVE_SKU", "Sony FE 50mm f/1.2 GM Lens (Sony E)")]
 
 
 def main() -> int:
+    source_urls = _optional_source_urls()
     router = create_model_router()
-    collector = RealCollector(source_urls=SOURCE_URLS, router=router)
+    collector = RealCollector(source_urls=source_urls, router=router)
     pipeline = SpecsFirstPipeline(collector=collector, router=router, vault_path=Path("vault_output"))
 
     print("Starting real comparison...", flush=True)
     print("Query:", QUERY)
-    print("Source URLs:", len(SOURCE_URLS))
+    print("Discovery: automatic search from SKU (Source URLs optional:", len(source_urls), ")")
     print("Selected SKU:", SELECTED_SKUS[0])
 
     result = pipeline.run(
         query=QUERY,
         category=CATEGORY,
         selected_skus=SELECTED_SKUS,
-        source_urls=SOURCE_URLS,
+        source_urls=source_urls,
         use_browser=True,
         task_id="live-comparison-20260710",
     )

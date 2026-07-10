@@ -63,6 +63,11 @@ class Settings:
     youtube_comment_delay_min: float = _float_env("YOUTUBE_COMMENT_DELAY_MIN", 1.0)
     youtube_comment_delay_max: float = _float_env("YOUTUBE_COMMENT_DELAY_MAX", 3.0)
     youtube_comment_max_per_video: int = _int_env("YOUTUBE_COMMENT_MAX_PER_VIDEO", 20)
+    youtube_asr_fallback: bool = os.getenv("YOUTUBE_ASR_FALLBACK", "false").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
     bilibili_max_videos_per_sku: int = _int_env("BILIBILI_MAX_VIDEOS_PER_SKU", 2)
     bilibili_max_comments_per_video: int = _int_env("BILIBILI_MAX_COMMENTS_PER_VIDEO", 50)
     bilibili_asr_fallback: bool = os.getenv("BILIBILI_ASR_FALLBACK", "true").strip().lower() not in {
@@ -81,8 +86,32 @@ class Settings:
 
     jd_cookie: str = os.getenv("JD_COOKIE", "")
 
+    # YouTube cookies — optional; improves transcript/PoToken success in browser fetches
+    youtube_cookie: str = os.getenv("YOUTUBE_COOKIE", "")
+    youtube_browser_transcript: bool = os.getenv("YOUTUBE_BROWSER_TRANSCRIPT", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
     # Reddit session cookies — required for auto forum search on reddit.com
     reddit_cookie: str = os.getenv("REDDIT_COOKIE", "")
+
+    # Smoke / probe defaults (override in .env; leave Bilibili empty to skip API smoke)
+    smoke_jd_url: str = os.getenv("SMOKE_JD_URL", "https://item.jd.com/100012043978.html")
+    smoke_taobao_item_id: str = os.getenv("SMOKE_TAOBAO_ITEM_ID", "520813140663")
+    smoke_bilibili_bvid: str = os.getenv("SMOKE_BILIBILI_BVID", "")
+    smoke_youtube_url: str = os.getenv(
+        "SMOKE_YOUTUBE_URL",
+        "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+    )
+
+    collection_trace_enabled: bool = os.getenv("COLLECTION_TRACE", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    collection_trace_dir: Path = Path(os.getenv("COLLECTION_TRACE_DIR", "vault_output"))
 
     @property
     def has_openai(self) -> bool:

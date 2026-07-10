@@ -26,18 +26,20 @@ if str(ROOT) not in sys.path:
 
 from backend.platform_health import build_platform_health, write_health_report  # noqa: E402
 from collectors.adapters.bilibili_api_client import BilibiliApiClient  # noqa: E402
+from collectors.adapters.bilibili_guard import is_blocked_bvid  # noqa: E402
 from collectors.adapters.jd import JdAdapter  # noqa: E402
 from collectors.adapters.tmall_taobao import TmallTaobaoAdapter  # noqa: E402
 from collectors.adapters.youtube import YouTubeAdapter  # noqa: E402
 from collectors.credentials import load_bilibili_credentials, load_taobao_credentials  # noqa: E402
 from collectors.http import HttpClient  # noqa: E402
 from collectors.platform_auth import PlatformAuthRequired  # noqa: E402
+from collectors.settings import settings  # noqa: E402
 
 # Stable public pages used only for connectivity / parsing smoke tests.
-_SMOKE_JD_URL = "https://item.jd.com/100012043978.html"
-_SMOKE_TAOBAO_ITEM_ID = "520813140663"
-_SMOKE_BILIBILI_BVID = "BV1GJ411x7h7"
-_SMOKE_YOUTUBE_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+_SMOKE_JD_URL = settings.smoke_jd_url
+_SMOKE_TAOBAO_ITEM_ID = settings.smoke_taobao_item_id
+_SMOKE_BILIBILI_BVID = settings.smoke_bilibili_bvid.strip()
+_SMOKE_YOUTUBE_URL = settings.smoke_youtube_url
 _SMOKE_DDG_QUERY = "site:jd.com 手机"
 
 
@@ -100,13 +102,22 @@ def probe_jd_page() -> SmokeProbe:
     markup = http.fetch(url).text
     has_title = "jd.com" in markup.lower() or len(markup) > 1000
     sku = adapter._extract_sku_id(url, markup)  # noqa: SLF001 — smoke script
+    mgets_price = None
+    if sku:
+        parsed = adapter.fetch_price_from_mgets(http, sku)
+        if parsed:
+            mgets_price = parsed.final_price
     if not has_title:
         return SmokeProbe("jd_page", "fail", "JD page markup looks empty or blocked", {"url": url})
+    message = f"JD product page reachable (sku={sku or 'unknown'}"
+    if mgets_price is not None:
+        message += f", mgets_price={mgets_price}"
+    message += ")"
     return SmokeProbe(
         "jd_page",
         "pass",
-        f"JD product page reachable (sku={sku or 'unknown'})",
-        {"url": url, "sku": sku},
+        message,
+        {"url": url, "sku": sku, "mgets_price": mgets_price},
     )
 
 
@@ -158,6 +169,20 @@ def probe_taobao_mtop() -> SmokeProbe:
 
 
 def probe_bilibili_api() -> SmokeProbe:
+    if not _SMOKE_BILIBILI_BVID:
+        return SmokeProbe(
+            "bilibili_api",
+            "skip",
+            "Set SMOKE_BILIBILI_BVID in .env to a real product-review BV (not the Rick Roll placeholder)",
+            {},
+        )
+    if is_blocked_bvid(_SMOKE_BILIBILI_BVID):
+        return SmokeProbe(
+            "bilibili_api",
+            "skip",
+            f"SMOKE_BILIBILI_BVID {_SMOKE_BILIBILI_BVID} is a blocked placeholder; set a real review BV",
+            {"bvid": _SMOKE_BILIBILI_BVID},
+        )
     creds = load_bilibili_credentials()
     if not creds.configured:
         return SmokeProbe("bilibili_api", "skip", "Bilibili cookies not configured", {"bvid": _SMOKE_BILIBILI_BVID})
@@ -208,7 +233,7 @@ def probe_youtube_transcript() -> SmokeProbe:
             "youtube_transcript",
             "pass",
             f"transcript available ({len(transcript)} chars)",
-            {"video_id": video_id},
+            {"video_id": video_id, "path": "http_or_browser"},
         )
     if html_comments:
         return SmokeProbe(
@@ -220,7 +245,7 @@ def probe_youtube_transcript() -> SmokeProbe:
     return SmokeProbe(
         "youtube_transcript",
         "fail",
-        "no transcript and no HTML comment snippets (PoToken / IP block likely)",
+        "no transcript and no HTML comment snippets (install Playwright; set YOUTUBE_COOKIE if PoToken persists)",
         {"video_id": video_id},
     )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from collectors.adapters.bilibili_guard import is_blocked_bvid, is_rickroll_title
 from collectors.credentials import BilibiliCredentials
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.http import clip
@@ -193,15 +194,51 @@ class BilibiliApiClient:
                 ) from exc
             return []
 
+    def fetch_video_title(self, bvid: str) -> str:
+        if not bvid or not self.credentials.configured:
+            return ""
+        try:
+            from bilibili_api import sync, video
+
+            credential = self.credentials.to_credential()
+            video_obj = video.Video(bvid=bvid, credential=credential)
+            self.rate_limiter.wait("bilibili")  # type: ignore[union-attr]
+            info = sync.sync(video_obj.get_info())
+            return str(info.get("title") or "").strip()
+        except Exception as exc:
+            self._record("bilibili", f"title API failed for {bvid}: {exc}", level="warning")
+            return ""
+
     def collect_api_evidence(self, url: str, *, confidence: float = 0.68) -> list[EvidenceItem]:
         from collectors.extractors import build_evidence
 
         bvid = self.extract_bvid(url)
         if not bvid:
             return []
+        if is_blocked_bvid(bvid):
+            self._record(
+                "bilibili",
+                f"Blocked BVID {bvid}: known non-product placeholder (paste a real product review BV)",
+                level="warning",
+            )
+            return []
 
         evidence: list[EvidenceItem] = []
+        title = self.fetch_video_title(bvid)
+        if title and is_rickroll_title(title):
+            self._record(
+                "bilibili",
+                f"BVID {bvid} title looks like meme/rickroll ({title[:80]}); skipping API evidence",
+                level="warning",
+            )
+            return []
         subtitle = self.fetch_subtitle_text(bvid)
+        comment_texts = self.fetch_comment_texts(bvid)
+        self._record(
+            "bilibili",
+            f"API fetch bvid={bvid} title={title[:80] if title else '-'} subtitle_len={len(subtitle)} comments={len(comment_texts)}",
+            level="info",
+        )
         if subtitle:
             for index, snippet in enumerate(self._review_snippets(subtitle)[:8]):
                 evidence.append(
@@ -215,7 +252,6 @@ class BilibiliApiClient:
                     )
                 )
 
-        comment_texts = self.fetch_comment_texts(bvid)
         for index, text in enumerate(self._select_comment_snippets(comment_texts)[:8]):
             evidence.append(
                 build_evidence(

@@ -5,7 +5,7 @@ import re
 from urllib.parse import parse_qs, urlparse
 
 from collectors.extractors import ParsedPrice, build_evidence, extract_price
-from collectors.http import clip, html_to_text
+from collectors.http import HttpClient, clip, html_to_text
 from schemas import EvidenceItem, PriceFinding
 
 
@@ -50,25 +50,84 @@ class JdAdapter:
     def extract_price(self, markup: str) -> ParsedPrice | None:
         text = html_to_text(markup)
         parsed = extract_price(text)
+        explicit_final = self._extract_explicit_final_price(markup)
         script_prices = self._extract_script_prices(markup)
-        if script_prices and parsed:
-            final = min(script_prices + [parsed.final_price])
-            return ParsedPrice(
-                list_price=max(parsed.list_price, final),
-                coupon_discount=parsed.coupon_discount,
-                subsidy_discount=parsed.subsidy_discount,
-                cross_store_discount=parsed.cross_store_discount,
-                final_price=final,
-            )
+        if explicit_final is not None:
+            list_price = max(script_prices + [explicit_final, parsed.list_price if parsed else explicit_final])
+            return ParsedPrice(list_price, 0, 0, 0, explicit_final)
         if script_prices:
-            final = min(script_prices)
-            return ParsedPrice(final, 0, 0, 0, final)
+            final = self._pick_main_script_price(script_prices)
+            list_price = max(script_prices + [final])
+            if parsed and parsed.final_price >= final * 0.5:
+                return ParsedPrice(
+                    max(parsed.list_price, list_price),
+                    parsed.coupon_discount,
+                    parsed.subsidy_discount,
+                    parsed.cross_store_discount,
+                    parsed.final_price,
+                )
+            return ParsedPrice(list_price, 0, 0, 0, final)
         return parsed
 
-    def build_price_finding(self, url: str, markup: str, platform: str = "JD") -> PriceFinding | None:
-        parsed = self.extract_price(markup)
-        if not parsed:
+    def fetch_price_from_mgets(self, http: HttpClient, sku_id: str) -> ParsedPrice | None:
+        if not sku_id:
             return None
+        from collectors.credentials import load_jd_credentials
+
+        url = f"https://p.3.cn/prices/mgets?skuIds=J_{sku_id}"
+        result = http.fetch(url, extra_headers=load_jd_credentials().request_headers())
+        if not result.ok or not result.text.strip():
+            return None
+        try:
+            payload = json.loads(result.text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, list) or not payload:
+            return None
+        item = payload[0]
+        if not isinstance(item, dict):
+            return None
+        final = self._to_price(item.get("p"))
+        original = self._to_price(item.get("op")) or final
+        if final is None:
+            return None
+        list_price = max(original, final)
+        return ParsedPrice(list_price, max(0.0, list_price - final), 0, 0, final)
+
+    def build_price_finding(
+        self,
+        url: str,
+        markup: str,
+        platform: str = "JD",
+        *,
+        http: HttpClient | None = None,
+        trace=None,
+        sku: str = "",
+    ) -> PriceFinding | None:
+        sku_id = self._extract_sku_id(url, markup)
+        parsed = None
+        source = "html"
+        if http and sku_id:
+            parsed = self.fetch_price_from_mgets(http, sku_id)
+            if parsed:
+                source = "mgets"
+        if not parsed:
+            parsed = self.extract_price(markup)
+            source = "html"
+        if not parsed:
+            if trace:
+                trace.log_price(platform, url, source="none", detail="no price parsed", sku=sku)
+            return None
+        if trace:
+            trace.log_price(
+                platform,
+                url,
+                source=source,
+                list_price=parsed.list_price,
+                final_price=parsed.final_price,
+                detail=f"sku_id={sku_id or '-'}",
+                sku=sku,
+            )
         text = clip(html_to_text(markup), 360)
         evidence = build_evidence(
             platform=platform,
@@ -133,6 +192,52 @@ class JdAdapter:
             for item in node:
                 values.extend(self._walk_json_prices(item))
         return values
+
+    def _extract_explicit_final_price(self, markup: str) -> float | None:
+        for pattern in (
+            re.compile(r"到手价\D{0,12}([0-9]{2,6}(?:\.[0-9]{1,2})?)"),
+            re.compile(r"券后价\D{0,12}([0-9]{2,6}(?:\.[0-9]{1,2})?)"),
+        ):
+            values: list[float] = []
+            for match in pattern.finditer(markup):
+                value = self._to_price(match.group(1))
+                if value is not None:
+                    values.append(value)
+            if values:
+                return max(values)
+        candidates: list[float] = []
+        for pattern in (
+            re.compile(r'"finalPrice"\s*:\s*"?([0-9]+(?:\.[0-9]{1,2})?)"?', re.I),
+            re.compile(r'"jdPrice"\s*:\s*"?([0-9]+(?:\.[0-9]{1,2})?)"?', re.I),
+        ):
+            for match in pattern.finditer(markup):
+                value = self._to_price(match.group(1))
+                if value is not None:
+                    candidates.append(value)
+        if candidates:
+            return max(candidates)
+        return None
+
+    def _pick_main_script_price(self, prices: list[float]) -> float:
+        if not prices:
+            return 0.0
+        if len(prices) == 1:
+            return prices[0]
+        # Avoid picking accessory/noise prices far below the main cluster.
+        sorted_prices = sorted(prices)
+        return sorted_prices[-1]
+
+    @staticmethod
+    def _to_price(raw: object) -> float | None:
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if 1 <= value <= 1_000_000 and not (1900 <= value <= 2099):
+            return value
+        return None
 
     def _extract_sku_id(self, product_url: str, markup: str = "") -> str:
         match = re.search(r"item\.jd\.com/(\d+)\.html", product_url, re.I)

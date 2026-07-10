@@ -4,6 +4,7 @@ from collectors.adapters.jd import JdAdapter
 from collectors.adapters.registry import AdapterRegistry, create_default_registry
 from collectors.adapters.tmall_taobao import TmallTaobaoAdapter
 from collectors.browser import BrowserAuthRequired, PlaywrightCapture
+from collectors.collection_trace import CollectionTrace, create_collection_trace
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import (
     build_evidence,
@@ -48,9 +49,13 @@ class EcommerceSourceCollector:
         task_id: str = "",
         use_browser: bool = False,
         storage_state_path: str = "",
+        trace: CollectionTrace | None = None,
     ) -> list[PriceFinding]:
         findings: list[PriceFinding] = []
+        active_trace = trace or self.resilient.trace
         for platform, query in ecommerce_search_queries(candidate.sku):
+            if active_trace:
+                active_trace.log("ecommerce", f"search platform={platform} query={query}", sku=candidate.sku)
             for result in self.http.search(query, max_results=5):
                 adapter = self.registry.for_platform(platform)
                 if adapter is not None and hasattr(adapter, "normalize_url"):
@@ -77,7 +82,14 @@ class EcommerceSourceCollector:
                 screenshot_paths = list(snapshot.screenshot_paths)
                 combined_text = f"{combined_text} {snapshot.text}"
                 if platform == "JD" and snapshot.markup:
-                    jd_finding = self.jd.build_price_finding(snapshot.url, snapshot.markup, platform="JD")
+                    jd_finding = self.jd.build_price_finding(
+                        snapshot.url,
+                        snapshot.markup,
+                        platform="JD",
+                        http=self.http,
+                        trace=active_trace,
+                        sku=candidate.sku,
+                    )
                     if jd_finding:
                         findings.append(
                             PriceFinding(
@@ -157,6 +169,14 @@ class EcommerceSourceCollector:
                     )
                 parsed = extract_price(combined_text)
                 if not parsed:
+                    if active_trace:
+                        active_trace.log_price(
+                            platform,
+                            snapshot.url,
+                            source="text",
+                            detail="no price parsed",
+                            sku=candidate.sku,
+                        )
                     self.diagnostics.record(
                         platform,
                         f"no price parsed for {target_url}",
@@ -164,6 +184,15 @@ class EcommerceSourceCollector:
                         sku=candidate.sku,
                     )
                     continue
+                if active_trace:
+                    active_trace.log_price(
+                        platform,
+                        snapshot.url,
+                        source=f"text-{snapshot.method}",
+                        list_price=parsed.list_price,
+                        final_price=parsed.final_price,
+                        sku=candidate.sku,
+                    )
                 evidence = build_evidence(
                     platform=platform_from_url(target_url) or platform,
                     url=snapshot.url,

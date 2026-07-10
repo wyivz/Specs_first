@@ -4,8 +4,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from collectors.browser import BrowserAuthRequired, PlaywrightCapture
+from collectors.collection_trace import CollectionTrace
 from collectors.diagnostics import CollectorDiagnostics
-from collectors.http import FetchResult, HttpClient
+from collectors.http import FetchResult, HttpClient, clip
 from collectors.page_sanitize import PageBlocker, SanitizedPage, is_usable_page, sanitize_html
 from collectors.site_strategy import SiteStrategy, strategy_for_url
 
@@ -38,6 +39,7 @@ class ResilientFetcher:
     http: HttpClient
     browser: PlaywrightCapture | None = None
     diagnostics: CollectorDiagnostics | None = None
+    trace: CollectionTrace | None = None
     site_strategies: tuple[SiteStrategy, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -54,6 +56,8 @@ class ResilientFetcher:
         sku: str = "",
         min_chars: int = 80,
     ) -> PageSnapshot:
+        if self.trace:
+            self.trace.log("fetch", f"start url={url} strategy={strategy_for_url(url).mode}", sku=sku)
         if not url.startswith("http"):
             return PageSnapshot(
                 url=url,
@@ -70,6 +74,7 @@ class ResilientFetcher:
         http_snapshot = self._fetch_http(url)
         needs_escalation = self._needs_browser_escalation(http_snapshot, strategy)
         if http_snapshot.ok and not needs_escalation:
+            self._log_snapshot(http_snapshot, sku=sku)
             return http_snapshot
         if needs_escalation and self.browser is not None:
             force_browser = True
@@ -81,6 +86,7 @@ class ResilientFetcher:
 
         if not force_browser:
             if http_snapshot.ok and not needs_escalation:
+                self._log_snapshot(http_snapshot, sku=sku)
                 return http_snapshot
             self.diagnostics.record(
                 "fetch",
@@ -88,6 +94,7 @@ class ResilientFetcher:
                 level="info",
                 sku=sku,
             )
+            self._log_snapshot(http_snapshot, sku=sku)
             return http_snapshot
 
         try:
@@ -98,6 +105,7 @@ class ResilientFetcher:
                 sku=sku,
             )
             if browser_snapshot.ok:
+                self._log_snapshot(browser_snapshot, sku=sku)
                 return browser_snapshot
             if http_snapshot.markup:
                 self.diagnostics.record(
@@ -106,7 +114,9 @@ class ResilientFetcher:
                     level="warning",
                     sku=sku,
                 )
+                self._log_snapshot(http_snapshot, sku=sku)
                 return http_snapshot
+            self._log_snapshot(browser_snapshot, sku=sku)
             return browser_snapshot
         except BrowserAuthRequired:
             raise
@@ -117,7 +127,30 @@ class ResilientFetcher:
                 level="warning",
                 sku=sku,
             )
+            self._log_snapshot(http_snapshot, sku=sku)
             return http_snapshot
+
+    def _log_snapshot(self, snapshot: PageSnapshot, *, sku: str = "") -> None:
+        if not self.trace:
+            return
+        preview = clip(snapshot.text, 180)
+        self.trace.log_fetch(
+            snapshot.url,
+            method=snapshot.method,
+            status=snapshot.status,
+            ok=snapshot.ok,
+            text_len=len(snapshot.text),
+            preview=preview,
+            sku=sku,
+            error=snapshot.error,
+        )
+        if snapshot.blockers:
+            self.trace.log(
+                "fetch",
+                f"blockers={[f'{b.kind}:{b.detail}' for b in snapshot.blockers]}",
+                sku=sku,
+                level="warning",
+            )
 
     def _fetch_http(self, url: str) -> PageSnapshot:
         from collectors.credentials import request_headers_for_url

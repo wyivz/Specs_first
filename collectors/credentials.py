@@ -195,6 +195,35 @@ def load_taobao_credentials() -> TaobaoCredentials:
     )
 
 
+@dataclass(frozen=True)
+class YouTubeCredentials:
+    """YouTube session cookies for Playwright in-page caption fetches (PoToken path)."""
+
+    cookie: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.cookie.strip())
+
+    def request_headers(self) -> dict[str, str]:
+        cookie = self.cookie.strip()
+        if not cookie:
+            return {}
+        return {"Cookie": cookie}
+
+    def playwright_cookies(self) -> list[dict[str, str]]:
+        cookies = parse_cookie_header(self.cookie, ".youtube.com")
+        if cookies:
+            return cookies
+        return parse_cookie_header(self.cookie, ".google.com")
+
+
+def load_youtube_credentials() -> YouTubeCredentials:
+    from collectors.settings import settings
+
+    return YouTubeCredentials(cookie=settings.youtube_cookie)
+
+
 def request_headers_for_url(url: str, *, referer: str = "") -> dict[str, str]:
     lower = url.lower()
     if "jd.com" in lower or "jd.hk" in lower:
@@ -205,6 +234,8 @@ def request_headers_for_url(url: str, *, referer: str = "") -> dict[str, str]:
             return creds.request_headers(referer=referer or url)
     if "reddit.com" in lower:
         return load_reddit_credentials().request_headers()
+    if "youtube.com" in lower or "youtu.be" in lower:
+        return load_youtube_credentials().request_headers()
     return {}
 
 
@@ -218,6 +249,10 @@ def playwright_cookies_for_url(url: str) -> list[dict[str, str]]:
             return creds.playwright_cookies(url)
     if "reddit.com" in lower:
         creds = load_reddit_credentials()
+        if creds.configured:
+            return creds.playwright_cookies()
+    if "youtube.com" in lower or "youtu.be" in lower:
+        creds = load_youtube_credentials()
         if creds.configured:
             return creds.playwright_cookies()
     return []

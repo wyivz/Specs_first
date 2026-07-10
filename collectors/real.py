@@ -6,6 +6,7 @@ from typing import Any
 from collectors.adapters.registry import AdapterRegistry, create_default_registry
 from collectors.base import Collector
 from collectors.browser import PlaywrightCapture
+from collectors.collection_trace import create_collection_trace
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.http import HttpClient
 from collectors.protocols import SpecExtractionRouter
@@ -57,6 +58,15 @@ class RealCollector(Collector):
         )
         self.injected = UrlInjectionCollector(self.http, self.diagnostics, self.resilient)
 
+    def _trace_context(self, task_id: str):
+        trace = create_collection_trace(self.diagnostics, task_id=task_id)
+        previous = self.resilient.trace
+        self.resilient.trace = trace
+        return trace, previous
+
+    def _restore_trace(self, previous) -> None:
+        self.resilient.trace = previous
+
     def discover_candidates(self, query: str, category: str) -> list[ProductCandidate]:
         return self.official.discover_candidates(query, category)
 
@@ -95,33 +105,41 @@ class RealCollector(Collector):
         storage_state_path: str = "",
     ) -> list[EvidenceItem]:
         with get_collection_guard():
-            evidence = []
-            evidence.extend(
-                self.video.collect(
-                    candidate,
-                    task_id=task_id,
-                    use_browser=use_browser,
-                    storage_state_path=storage_state_path,
+            trace, previous = self._trace_context(task_id)
+            try:
+                if trace:
+                    trace.log("collect", f"real_world_corpus sku={candidate.sku}", sku=candidate.sku)
+                evidence = []
+                evidence.extend(
+                    self.video.collect(
+                        candidate,
+                        task_id=task_id,
+                        use_browser=use_browser,
+                        storage_state_path=storage_state_path,
+                    )
                 )
-            )
-            evidence.extend(
-                self.forum.collect(
-                    candidate,
-                    task_id=task_id,
-                    use_browser=use_browser,
-                    storage_state_path=storage_state_path,
+                evidence.extend(
+                    self.forum.collect(
+                        candidate,
+                        task_id=task_id,
+                        use_browser=use_browser,
+                        storage_state_path=storage_state_path,
+                    )
                 )
-            )
-            evidence.extend(
-                self.injected.collect_evidence(
-                    self.source_urls,
-                    task_id=task_id,
-                    use_browser=use_browser,
-                    storage_state_path=storage_state_path,
-                    sku=candidate.sku,
+                evidence.extend(
+                    self.injected.collect_evidence(
+                        self.source_urls,
+                        task_id=task_id,
+                        use_browser=use_browser,
+                        storage_state_path=storage_state_path,
+                        sku=candidate.sku,
+                    )
                 )
-            )
-            return dedupe_evidence(evidence)
+                if trace:
+                    trace.log("collect", f"real_world_corpus done evidence={len(evidence)}", sku=candidate.sku)
+                return dedupe_evidence(evidence)
+            finally:
+                self._restore_trace(previous)
 
     def collect_prices(
         self,
@@ -132,24 +150,35 @@ class RealCollector(Collector):
         storage_state_path: str = "",
     ) -> list[PriceFinding]:
         with get_collection_guard():
-            prices = []
-            prices.extend(
-                self.ecommerce.collect(
-                    candidate,
-                    task_id=task_id,
-                    use_browser=use_browser,
-                    storage_state_path=storage_state_path,
+            trace, previous = self._trace_context(task_id)
+            try:
+                if trace:
+                    trace.log("collect", f"prices sku={candidate.sku}", sku=candidate.sku)
+                prices = []
+                prices.extend(
+                    self.ecommerce.collect(
+                        candidate,
+                        task_id=task_id,
+                        use_browser=use_browser,
+                        storage_state_path=storage_state_path,
+                        trace=trace,
+                    )
                 )
-            )
-            prices.extend(
-                self.injected.collect_prices(
-                    self.source_urls,
-                    task_id=task_id,
-                    use_browser=use_browser,
-                    storage_state_path=storage_state_path,
+                prices.extend(
+                    self.injected.collect_prices(
+                        self.source_urls,
+                        task_id=task_id,
+                        use_browser=use_browser,
+                        storage_state_path=storage_state_path,
+                        trace=trace,
+                        sku=candidate.sku,
+                    )
                 )
-            )
-            return sorted(prices, key=lambda item: item.final_price)[:5]
+                if trace:
+                    trace.log("collect", f"prices done count={len(prices)}", sku=candidate.sku)
+                return sorted(prices, key=lambda item: item.final_price)[:5]
+            finally:
+                self._restore_trace(previous)
 
     def diagnostics_report(self) -> list[dict[str, Any]]:
         return self.diagnostics.to_dicts()

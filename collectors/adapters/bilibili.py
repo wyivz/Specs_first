@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from collectors.adapters.bilibili_api_client import BilibiliApiClient
+from collectors.adapters.bilibili_guard import is_blocked_bvid, is_rickroll_title
 from collectors.credentials import BilibiliCredentials, load_bilibili_credentials
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import build_evidence, evidence_from_page
@@ -70,6 +71,15 @@ class BilibiliAdapter:
             )
 
         if self._api_client and self._api_video_budget > 0 and BilibiliApiClient.extract_bvid(url):
+            bvid = BilibiliApiClient.extract_bvid(url)
+            if is_blocked_bvid(bvid):
+                if self.diagnostics:
+                    self.diagnostics.record(
+                        "bilibili",
+                        f"Skipped blocked/honeypot BVID {bvid} (e.g. 镇站之宝 Rick Roll placeholder — paste a real review URL)",
+                        level="warning",
+                    )
+                return evidence
             self._api_video_budget -= 1
             try:
                 evidence.extend(self._api_client.collect_api_evidence(url, confidence=confidence + 0.04))

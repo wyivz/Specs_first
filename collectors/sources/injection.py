@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collectors.adapters.jd import JdAdapter
+from collectors.collection_trace import CollectionTrace
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import build_evidence, dedupe_evidence, evidence_from_page, extract_price, platform_from_url
 from collectors.http import HttpClient, clip
@@ -17,6 +19,7 @@ class UrlInjectionCollector:
         self.http = http
         self.diagnostics = diagnostics or CollectorDiagnostics()
         self.resilient = resilient or ResilientFetcher(http, diagnostics=self.diagnostics)
+        self.jd = JdAdapter()
 
     def collect_evidence(
         self,
@@ -49,20 +52,47 @@ class UrlInjectionCollector:
         task_id: str = "",
         use_browser: bool = False,
         storage_state_path: str = "",
+        trace: CollectionTrace | None = None,
+        sku: str = "",
     ) -> list[PriceFinding]:
         prices: list[PriceFinding] = []
+        active_trace = trace or self.resilient.trace
         for url in urls:
+            if active_trace:
+                active_trace.log("injection", f"price url={url}", sku=sku)
             page = self.resilient.fetch(
                 url,
                 task_id=task_id,
                 use_browser=use_browser or "reddit.com" in url.lower(),
                 storage_state_path=storage_state_path,
+                sku=sku,
             )
             if not page.ok and not page.markup:
                 continue
+            if self.jd.supports(page.url) and page.markup:
+                jd_finding = self.jd.build_price_finding(
+                    page.url,
+                    page.markup,
+                    platform="JD",
+                    http=self.http,
+                    trace=active_trace,
+                    sku=sku,
+                )
+                if jd_finding:
+                    prices.append(jd_finding)
+                    continue
             parsed = extract_price(page.text)
             if not parsed:
                 continue
+            if active_trace:
+                active_trace.log_price(
+                    platform_from_url(page.url),
+                    page.url,
+                    source=f"text-{page.method}",
+                    list_price=parsed.list_price,
+                    final_price=parsed.final_price,
+                    sku=sku,
+                )
             evidence = build_evidence(
                 platform=platform_from_url(page.url),
                 url=page.url,

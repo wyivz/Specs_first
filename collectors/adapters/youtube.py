@@ -113,124 +113,406 @@ class YouTubeAdapter:
         resolved_id = video_id or self.extract_video_id(url)
         if not resolved_id:
             return ""
-        player = self._extract_embedded_json(markup, "ytInitialPlayerResponse") if markup else None
-        if player is None:
-            page = self.http.fetch(url)
-            if not page.ok:
-                return self._fetch_transcript_fallback(resolved_id, preferred_languages)
-            player = self._extract_embedded_json(page.text, "ytInitialPlayerResponse")
-        if not player:
-            return self._fetch_transcript_fallback(resolved_id, preferred_languages)
-        tracks = (
-            player.get("captions", {})
-            .get("playerCaptionsTracklistRenderer", {})
-            .get("captionTracks", [])
-        )
-        if not tracks:
-            return self._fetch_transcript_fallback(resolved_id, preferred_languages)
-        track = self._pick_caption_track(tracks, preferred_languages)
-        if not track:
-            return ""
-        caption_url = track.get("baseUrl") or ""
-        if not caption_url:
-            return ""
-        if "fmt=" not in caption_url:
-            separator = "&" if "?" in caption_url else "?"
-            caption_url = f"{caption_url}{separator}fmt=srv3"
-        # YouTube enforces PoToken for URLs containing &exp=xpe — the timedtext
-        # endpoint returns an empty 200 body in that case.  We detect it early
-        # and skip straight to the transcript-api fallback.
-        if "&exp=xpe" in caption_url:
-            if self.diagnostics:
-                self.diagnostics.record(
-                    "youtube",
-                    f"captionTrack for {resolved_id} requires PoToken (&exp=xpe); "
-                    "falling back to youtube-transcript-api",
-                    level="info",
+        watch_url = f"https://www.youtube.com/watch?v={resolved_id}"
+        player = self._load_player_response(watch_url, markup=markup)
+        if player:
+            tracks = (
+                player.get("captions", {})
+                .get("playerCaptionsTracklistRenderer", {})
+                .get("captionTracks", [])
+            )
+            if tracks:
+                transcript = self._fetch_transcript_from_tracks(
+                    tracks,
+                    watch_url=watch_url,
+                    video_id=resolved_id,
+                    preferred_languages=preferred_languages,
                 )
-            return self._fetch_transcript_fallback(resolved_id, preferred_languages)
-        result = self.http.fetch(caption_url)
-        if not result.ok:
-            return self._fetch_transcript_fallback(resolved_id, preferred_languages)
-        transcript = self._parse_caption_payload(result.text)
+                if transcript:
+                    return transcript
+        browser_transcript = self._fetch_transcript_via_browser(
+            watch_url,
+            resolved_id,
+            preferred_languages,
+        )
+        if browser_transcript:
+            return browser_transcript
+        return self._fetch_transcript_fallback(resolved_id, preferred_languages, watch_url=watch_url)
+
+    def _load_player_response(self, watch_url: str, *, markup: str = "") -> dict | None:
+        player = self._extract_embedded_json(markup, "ytInitialPlayerResponse") if markup else None
+        if player is not None:
+            return player
+        page = self.http.fetch(watch_url, platform="youtube")
+        if not page.ok:
+            return None
+        return self._extract_embedded_json(page.text, "ytInitialPlayerResponse")
+
+    def _fetch_transcript_from_tracks(
+        self,
+        tracks: list[dict],
+        *,
+        watch_url: str,
+        video_id: str,
+        preferred_languages: tuple[str, ...],
+    ) -> str:
+        ordered_tracks = self._order_caption_tracks(tracks, preferred_languages)
+        for track in ordered_tracks:
+            transcript = self._download_caption_track(track, watch_url)
+            if transcript:
+                if self.diagnostics:
+                    code = track.get("languageCode") or "unknown"
+                    kind = track.get("kind") or "standard"
+                    self.diagnostics.record(
+                        "youtube",
+                        f"captionTrack ok for {video_id}: lang={code} kind={kind} len={len(transcript)}",
+                        level="info",
+                    )
+                return transcript
+            if "&exp=xpe" in (track.get("baseUrl") or ""):
+                if self.diagnostics:
+                    self.diagnostics.record(
+                        "youtube",
+                        f"captionTrack for {video_id} requires PoToken (&exp=xpe); trying other tracks",
+                        level="info",
+                    )
+        for track in ordered_tracks:
+            if not track.get("isTranslatable"):
+                continue
+            for language in preferred_languages:
+                tlang = self._youtube_tlang(language)
+                if not tlang:
+                    continue
+                translated = dict(track)
+                base_url = track.get("baseUrl") or ""
+                if not base_url:
+                    continue
+                separator = "&" if "?" in base_url else "?"
+                translated["baseUrl"] = f"{base_url}{separator}tlang={tlang}"
+                transcript = self._download_caption_track(translated, watch_url)
+                if transcript:
+                    if self.diagnostics:
+                        self.diagnostics.record(
+                            "youtube",
+                            f"translated caption ok for {video_id}: tlang={tlang} len={len(transcript)}",
+                            level="info",
+                        )
+                    return transcript
+        return ""
+
+    def _fetch_transcript_via_browser(
+        self,
+        watch_url: str,
+        video_id: str,
+        preferred_languages: tuple[str, ...],
+    ) -> str:
+        from collectors.settings import settings
+
+        if not settings.youtube_browser_transcript:
+            return ""
+        try:
+            from collectors.adapters.youtube_transcript_browser import (
+                fetch_caption_payloads_in_browser,
+                select_browser_transcript,
+            )
+        except ImportError:
+            return ""
+
+        self.rate_limiter.wait("youtube")
+        try:
+            payloads = fetch_caption_payloads_in_browser(watch_url)
+        except Exception as exc:
+            self._record_transcript_info(video_id, f"browser transcript session failed for {video_id}: {exc}")
+            return ""
+
+        if not payloads:
+            self._record_transcript_info(video_id, f"browser transcript returned no payloads for {video_id}")
+            return ""
+
+        transcript = select_browser_transcript(
+            payloads,
+            preferred_languages,
+            parse_payload=self._parse_caption_payload,
+            language_matches=self._language_matches_track_code,
+        )
         if transcript:
+            self._record_transcript_info(
+                video_id,
+                f"browser transcript ok for {video_id}: len={len(transcript)} payloads={len(payloads)}",
+            )
             return transcript
-        return self._fetch_transcript_fallback(resolved_id, preferred_languages)
+        self._record_transcript_info(video_id, f"browser transcript payloads unparsable for {video_id}")
+        return ""
+
+    def _language_matches_track_code(self, track_code: str, language: str) -> bool:
+        return self._language_matches_track({"languageCode": track_code}, language)
+
+    def _download_caption_track(self, track: dict, watch_url: str) -> str:
+        caption_url = track.get("baseUrl") or ""
+        if not caption_url or "&exp=xpe" in caption_url:
+            return ""
+        headers = {
+            "Referer": watch_url,
+            "Origin": "https://www.youtube.com",
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
+        }
+        formats: tuple[str | None, ...] = ("json3", "srv3", "vtt", None)
+        for fmt in formats:
+            request_url = self._caption_url_with_fmt(caption_url, fmt)
+            result = self.http.fetch(request_url, platform="youtube", extra_headers=headers)
+            if not result.ok or not result.text.strip():
+                continue
+            transcript = self._parse_caption_payload(result.text)
+            if transcript:
+                return transcript
+        return ""
+
+    @staticmethod
+    def _caption_url_with_fmt(caption_url: str, fmt: str | None) -> str:
+        if fmt is None:
+            return caption_url
+        if re.search(r"(?:^|[?&])fmt=", caption_url):
+            return re.sub(r"(?:^|[?&])fmt=[^&]+", f"fmt={fmt}", caption_url, count=1)
+        separator = "&" if "?" in caption_url else "?"
+        return f"{caption_url}{separator}fmt={fmt}"
 
     def _fetch_transcript_fallback(
         self,
         video_id: str,
         preferred_languages: tuple[str, ...],
+        *,
+        watch_url: str = "",
     ) -> str:
         try:
-            from youtube_transcript_api import (
-                YouTubeTranscriptApi,
+            from youtube_transcript_api import YouTubeTranscriptApi
+            from youtube_transcript_api._errors import (
+                IpBlocked,
+                NoTranscriptFound,
                 PoTokenRequired,
                 RequestBlocked,
-                IpBlocked,
                 TranscriptsDisabled,
-                NoTranscriptFound,
+                TranslationLanguageNotAvailable,
                 VideoUnavailable,
             )
         except ImportError:
-            return ""
+            return self._maybe_asr_fallback(watch_url or f"https://www.youtube.com/watch?v={video_id}", video_id)
+
         self.rate_limiter.wait("youtube")
+        api = YouTubeTranscriptApi()
+        languages = list(dict.fromkeys([*preferred_languages, "en"]))
+
         try:
-            languages = list(preferred_languages) + ["en"]
-            fetched = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+            fetched = api.fetch(video_id, languages=languages)
+            text = self._transcript_items_to_text(fetched)
+            if text:
+                return text
+        except NoTranscriptFound:
+            pass
+        except (PoTokenRequired, RequestBlocked, IpBlocked) as exc:
+            self._record_transcript_info(video_id, f"transcript-api blocked for {video_id}: {exc}")
+            browser_transcript = self._fetch_transcript_via_browser(watch_url or f"https://www.youtube.com/watch?v={video_id}", video_id, preferred_languages)
+            if browser_transcript:
+                return browser_transcript
+            return self._maybe_asr_fallback(
+                watch_url or f"https://www.youtube.com/watch?v={video_id}",
+                video_id,
+            )
+        except (TranscriptsDisabled, VideoUnavailable):
+            return self._maybe_asr_fallback(
+                watch_url or f"https://www.youtube.com/watch?v={video_id}",
+                video_id,
+            )
+        except Exception as exc:
+            self._record_transcript_info(video_id, f"transcript-api fetch failed for {video_id}: {exc}")
+
+        try:
+            transcript_list = api.list(video_id)
+        except (PoTokenRequired, RequestBlocked, IpBlocked) as exc:
+            self._record_transcript_info(video_id, f"transcript-api list blocked for {video_id}: {exc}")
+            browser_transcript = self._fetch_transcript_via_browser(watch_url or f"https://www.youtube.com/watch?v={video_id}", video_id, preferred_languages)
+            if browser_transcript:
+                return browser_transcript
+            return self._maybe_asr_fallback(
+                watch_url or f"https://www.youtube.com/watch?v={video_id}",
+                video_id,
+            )
+        except (TranscriptsDisabled, VideoUnavailable):
+            return self._maybe_asr_fallback(
+                watch_url or f"https://www.youtube.com/watch?v={video_id}",
+                video_id,
+            )
+        except Exception as exc:
+            self._record_transcript_info(video_id, f"transcript-api list failed for {video_id}: {exc}")
+            return self._maybe_asr_fallback(
+                watch_url or f"https://www.youtube.com/watch?v={video_id}",
+                video_id,
+            )
+
+        try:
+            transcript = transcript_list.find_transcript(languages)
+        except NoTranscriptFound:
+            transcript = next(iter(transcript_list), None)
+
+        if transcript is not None:
+            text = self._fetch_transcript_object(transcript, video_id)
+            if text:
+                return text
+
+        for candidate in transcript_list:
+            text = self._fetch_transcript_object(candidate, video_id)
+            if text:
+                return text
+
+        for candidate in transcript_list:
+            if not candidate.is_translatable:
+                continue
+            for language in preferred_languages:
+                tlang = self._youtube_tlang(language)
+                if not tlang:
+                    continue
+                try:
+                    translated = candidate.translate(tlang)
+                except TranslationLanguageNotAvailable:
+                    continue
+                text = self._fetch_transcript_object(translated, video_id)
+                if text:
+                    self._record_transcript_info(video_id, f"transcript-api translated to {tlang} for {video_id}")
+                    return text
+
+        return self._maybe_asr_fallback(
+            watch_url or f"https://www.youtube.com/watch?v={video_id}",
+            video_id,
+        )
+
+    def _fetch_transcript_object(self, transcript: object, video_id: str) -> str:
+        try:
+            from youtube_transcript_api._errors import PoTokenRequired
+
+            fetched = transcript.fetch()  # type: ignore[attr-defined]
         except PoTokenRequired:
-            if self.diagnostics:
-                self.diagnostics.record(
-                    "youtube",
-                    f"transcript-api: PoToken required for {video_id} (YouTube bot-detection); "
-                    "transcript unavailable without a residential IP",
-                    level="info",
-                )
-            return ""
-        except (RequestBlocked, IpBlocked) as exc:
-            if self.diagnostics:
-                self.diagnostics.record(
-                    "youtube",
-                    f"transcript-api: IP blocked for {video_id}: {exc}",
-                    level="info",
-                )
-            return ""
-        except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
             return ""
         except Exception as exc:
-            if self.diagnostics:
-                self.diagnostics.record(
-                    "youtube",
-                    f"transcript-api fallback failed for {video_id}: {exc}",
-                    level="info",
-                )
+            self._record_transcript_info(video_id, f"transcript-api track fetch failed for {video_id}: {exc}")
             return ""
-        parts = [item.get("text", "").strip() for item in fetched if item.get("text")]
+        return self._transcript_items_to_text(fetched)
+
+    def _transcript_items_to_text(self, fetched: object) -> str:
+        parts: list[str] = []
+        for item in fetched:  # type: ignore[operator]
+            text = getattr(item, "text", None)
+            if text is None and isinstance(item, dict):
+                text = item.get("text")
+            text = str(text or "").strip()
+            if text:
+                parts.append(text)
         return clip(" ".join(parts), 12000)
 
+    def _maybe_asr_fallback(self, watch_url: str, video_id: str) -> str:
+        from collectors.settings import settings
+
+        if not settings.youtube_asr_fallback or not watch_url:
+            return ""
+        try:
+            from collectors.asr import available_backend, transcribe_url
+        except ImportError:
+            return ""
+        if not available_backend():
+            self._record_transcript_info(
+                video_id,
+                "no captions and no local ASR backend installed; skipping YouTube transcript",
+            )
+            return ""
+        self._record_transcript_info(video_id, f"falling back to local ASR for {video_id}")
+        result = transcribe_url(watch_url, language="auto")
+        if result.ok and result.text.strip():
+            return clip(result.text.strip(), 12000)
+        if result.error:
+            self._record_transcript_info(video_id, f"ASR fallback failed for {video_id}: {result.error}")
+        return ""
+
+    def _record_transcript_info(self, video_id: str, message: str) -> None:
+        if self.diagnostics:
+            self.diagnostics.record("youtube", message, level="info")
+
+    def _order_caption_tracks(
+        self,
+        tracks: list[dict],
+        preferred_languages: tuple[str, ...],
+    ) -> list[dict]:
+        manual = [track for track in tracks if (track.get("kind") or "").lower() != "asr"]
+        generated = [track for track in tracks if (track.get("kind") or "").lower() == "asr"]
+        ordered: list[dict] = []
+        seen: set[str] = set()
+        for pool in (manual, generated):
+            for language in preferred_languages:
+                for track in pool:
+                    track_id = track.get("baseUrl") or track.get("languageCode") or ""
+                    if track_id in seen:
+                        continue
+                    if self._language_matches_track(track, language):
+                        ordered.append(track)
+                        seen.add(track_id)
+        for track in tracks:
+            track_id = track.get("baseUrl") or track.get("languageCode") or ""
+            if track_id not in seen:
+                ordered.append(track)
+                seen.add(track_id)
+        return ordered
+
+    def _language_matches_track(self, track: dict, language: str) -> bool:
+        code = (track.get("languageCode") or "").lower()
+        target = language.lower()
+        if code == target or code.startswith(f"{target}-"):
+            return True
+        vss = (track.get("vssId") or "").lower()
+        if target == "zh" and (vss.startswith(".zh") or "zh" in vss):
+            return True
+        return target in vss
+
+    @staticmethod
+    def _youtube_tlang(language: str) -> str:
+        normalized = language.lower()
+        mapping = {
+            "zh": "zh-Hans",
+            "zh-hans": "zh-Hans",
+            "zh-cn": "zh-Hans",
+            "zh-hant": "zh-Hant",
+            "zh-tw": "zh-Hant",
+            "en": "en",
+            "ja": "ja",
+        }
+        return mapping.get(normalized, language if len(language) >= 2 else "")
+
     def _pick_caption_track(self, tracks: list[dict], preferred_languages: tuple[str, ...]) -> dict | None:
-        for language in preferred_languages:
-            for track in tracks:
-                code = (track.get("languageCode") or "").lower()
-                if code == language.lower() or code.startswith(language.lower()):
-                    return track
-        return tracks[0] if tracks else None
+        ordered = self._order_caption_tracks(tracks, preferred_languages)
+        return ordered[0] if ordered else None
 
     def _parse_caption_payload(self, payload: str) -> str:
         payload = payload.strip()
         if not payload:
             return ""
+        if payload.startswith("WEBVTT"):
+            parts: list[str] = []
+            for line in payload.splitlines():
+                line = line.strip()
+                if not line or line == "WEBVTT" or "-->" in line or line.isdigit():
+                    continue
+                if re.match(r"^\d{2}:\d{2}:\d{2}\.", line):
+                    continue
+                parts.append(html.unescape(line))
+            return clip(" ".join(parts), 12000)
         if payload.startswith("{"):
             try:
                 data = json.loads(payload)
             except json.JSONDecodeError:
                 return ""
             events = data.get("events") or []
-            parts: list[str] = []
+            parts = []
             for event in events:
                 for segment in event.get("segs") or []:
                     text = segment.get("utf8") or ""
-                    if text.strip():
+                    if text.strip() and text.strip() != "\n":
                         parts.append(text)
             return clip(" ".join(parts), 12000)
         try:
