@@ -6,11 +6,7 @@ from collectors.extractors import dedupe_evidence, evidence_from_page, evidence_
 from collectors.http import HttpClient
 from collectors.resilient_fetch import ResilientFetcher
 from schemas import EvidenceItem, ProductCandidate
-from schemas.category_profile import forum_search_queries
-
-
-def _reddit_browser_enabled(url: str, use_browser: bool) -> bool:
-    return use_browser or "reddit.com" in url.lower()
+from schemas.category_profile import forum_search_queries, rank_search_results_for_reviews
 
 
 class ForumSourceCollector:
@@ -35,15 +31,17 @@ class ForumSourceCollector:
         evidence: list[EvidenceItem] = []
         include_reddit = load_reddit_credentials().configured
         for platform, query in forum_search_queries(candidate.sku, include_reddit=include_reddit):
-            for result in self.http.search(query, max_results=8):
+            ranked = rank_search_results_for_reviews(self.http.search(query, max_results=8))
+            for result in ranked:
                 search_evidence = evidence_from_search_result(platform, result, confidence=0.57)
                 if search_evidence:
                     evidence.append(search_evidence)
+                # Reddit/Chiphell: HTTP(+Cookie) first; only escalate when caller opts in
+                # or resilient_fetch decides the HTTP payload is weak/blocked.
                 page = self.resilient.fetch(
                     result.url,
                     task_id=task_id,
-                    use_browser=_reddit_browser_enabled(result.url, use_browser)
-                    or "chiphell.com" in result.url.lower(),
+                    use_browser=use_browser,
                     storage_state_path=storage_state_path,
                     sku=candidate.sku,
                 )

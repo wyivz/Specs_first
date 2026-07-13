@@ -9,7 +9,7 @@ from collectors.http import HttpClient
 from collectors.platform_auth import PlatformAuthRequired
 from collectors.resilient_fetch import ResilientFetcher
 from schemas import EvidenceItem, ProductCandidate
-from schemas.category_profile import video_search_queries
+from schemas.category_profile import rank_search_results_for_reviews, video_search_queries
 
 
 class VideoSourceCollector:
@@ -39,7 +39,8 @@ class VideoSourceCollector:
         evidence: list[EvidenceItem] = []
         self.bilibili.reset_api_budget()
         for platform, query in video_search_queries(candidate.sku):
-            for result in self.http.search(query, max_results=6):
+            ranked = rank_search_results_for_reviews(self.http.search(query, max_results=6))
+            for result in ranked:
                 search_evidence = evidence_from_search_result(platform, result, confidence=0.52)
                 if search_evidence:
                     evidence.append(search_evidence)

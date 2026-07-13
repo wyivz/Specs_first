@@ -385,6 +385,42 @@ def video_search_queries(sku: str) -> list[tuple[str, str]]:
     ]
 
 
+_REVIEW_RANK_TOKENS: tuple[str, ...] = (
+    "评测",
+    "缺点",
+    "翻车",
+    "劝退",
+    "问题",
+    "对比",
+    "体验",
+    "开箱",
+    "review",
+    "vs",
+    "problem",
+    "issue",
+    "defect",
+    "cons",
+    "disappoint",
+)
+
+
+def rank_search_results_for_reviews(results: list) -> list:
+    """Prefer search hits whose title/snippet look like reviews or defect reports.
+
+    Stable for equal scores: original relative order is preserved via enumerate.
+    """
+
+    def score(index_and_result: tuple[int, object]) -> tuple[int, int]:
+        index, result = index_and_result
+        title = str(getattr(result, "title", "") or "")
+        snippet = str(getattr(result, "snippet", "") or "")
+        text = f"{title} {snippet}".lower()
+        hits = sum(1 for token in _REVIEW_RANK_TOKENS if token.lower() in text)
+        return (-hits, index)
+
+    return [item for _, item in sorted(enumerate(results), key=score)]
+
+
 def forum_search_queries(sku: str, *, include_reddit: bool = False) -> list[tuple[str, str]]:
     queries: list[tuple[str, str]] = [
         ("Chiphell", f"{sku} site:chiphell.com 缺点 品控 翻车 问题 体验"),

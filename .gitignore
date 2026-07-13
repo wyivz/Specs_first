@@ -11,3 +11,6 @@ dist/
 build/
 vault_output/
 .cursor/
+# Local agent handoff notes — keep private, do not publish
+HANDOFF.md
+HANDOFF*.md

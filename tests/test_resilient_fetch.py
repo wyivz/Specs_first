@@ -111,6 +111,30 @@ class ResilientFetcherTest(unittest.TestCase):
         self.assertEqual(snapshot.method, "http")
         self.assertEqual(browser.calls, [])
 
+    def test_reddit_keeps_http_when_cookie_page_is_usable(self) -> None:
+        html = (
+            "<html><body><h1>r/SonyAlpha</h1><p>"
+            "Sample variation and sticky focus ring reported by multiple owners after "
+            "long-term use. Quality control issues and soft corners wide open."
+            "</p></body></html>"
+        )
+        browser = FakeBrowser(
+            BrowserCapture(
+                url="https://www.reddit.com/r/SonyAlpha/comments/abc/",
+                screenshot_paths=[],
+                page_text="browser should not run",
+                page_html="<html><body>browser</body></html>",
+            )
+        )
+        fetcher = ResilientFetcher(
+            FakeHttp({"https://www.reddit.com/r/SonyAlpha/comments/abc/": html}),  # type: ignore[arg-type]
+            browser=browser,  # type: ignore[arg-type]
+        )
+        snapshot = fetcher.fetch("https://www.reddit.com/r/SonyAlpha/comments/abc/")
+        self.assertEqual(snapshot.method, "http")
+        self.assertIn("sticky focus ring", snapshot.text)
+        self.assertEqual(browser.calls, [])
+
     def test_api_first_domain_escalates_when_http_payload_too_short(self) -> None:
         short_html = "<html><body>ok</body></html>"
         browser = FakeBrowser(

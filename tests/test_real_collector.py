@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
 from backend.pipeline import SpecsFirstPipeline
+from collectors.browser import BrowserCapture
 from collectors.http import FetchResult, SearchResult
 from collectors.real import RealCollector
 
@@ -118,10 +120,41 @@ class FakeHttp:
         return FetchResult(url=url, status=200, text=text, content_type="text/html")
 
 
+class StubBrowser:
+    """Avoid launching Playwright in unit tests; echo FakeHttp page bodies."""
+
+    def __init__(self, pages: dict[str, str]) -> None:
+        self.pages = pages
+        self.calls: list[str] = []
+
+    def capture_page_slices(
+        self,
+        url: str,
+        task_id: str = "manual",
+        storage_state_path: Path | None = None,
+    ) -> BrowserCapture:
+        self.calls.append(url)
+        html = self.pages.get(url, f"<html><body>stub capture for {url}</body></html>")
+        text = re.sub(r"<[^>]+>", " ", html)
+        return BrowserCapture(url=url, screenshot_paths=[], page_text=text, page_html=html)
+
+    def fetch_in_page_context(
+        self,
+        page_url: str,
+        request_url: str,
+        *,
+        task_id: str = "api",
+        storage_state_path: Path | None = None,
+    ) -> str:
+        self.calls.append(request_url)
+        return self.pages.get(request_url) or self.pages.get(page_url) or ""
+
+
 class RealCollectorTest(unittest.TestCase):
     def test_real_collector_pipeline_with_fake_http(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            collector = RealCollector(http=FakeHttp())  # type: ignore[arg-type]
+            fake = FakeHttp()
+            collector = RealCollector(http=fake, browser=StubBrowser(fake.pages))  # type: ignore[arg-type]
             result = SpecsFirstPipeline(collector=collector, vault_path=Path(tmp)).run("Zeiss 50mm", "Lens")
 
             self.assertEqual(result.state, "DONE")
@@ -140,7 +173,7 @@ class RealCollectorTest(unittest.TestCase):
                 "规格参数 详情参数",
             )
         ]
-        collector = RealCollector(http=fake)  # type: ignore[arg-type]
+        collector = RealCollector(http=fake, browser=StubBrowser(fake.pages))  # type: ignore[arg-type]
         candidate = collector.discover_candidates("Zeiss 50mm", "Lens")[0]
         specs, highlights = collector.collect_official_specs(candidate)
         names = {spec.name for spec in specs}

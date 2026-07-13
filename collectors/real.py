@@ -30,9 +30,11 @@ class RealCollector(Collector):
     diagnostics: CollectorDiagnostics = field(default_factory=CollectorDiagnostics)
     router: SpecExtractionRouter | None = None
     registry: AdapterRegistry | None = None
+    browser: Any | None = None
 
     def __post_init__(self) -> None:
-        browser = PlaywrightCapture()
+        browser = self.browser if self.browser is not None else PlaywrightCapture()
+        self.browser = browser
         self.resilient = ResilientFetcher(self.http, browser, self.diagnostics)
         registry = self.registry or create_default_registry(http=self.http, diagnostics=self.diagnostics)
         self.official = OfficialSourceCollector(

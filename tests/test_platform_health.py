@@ -64,12 +64,16 @@ class PlatformHealthTest(unittest.TestCase):
         self.assertIn("bilibili_credentials", names)
 
     def test_check_gemini_model_warns_on_retired_config(self) -> None:
+        # check_gemini_model reads platform_health.settings; build_gemini_health
+        # reads gemini_health.settings — both must be patched to the same mock.
         with patch("backend.gemini_health.settings") as mock_settings:
             mock_settings.gemini_model = "gemini-1.5-flash"
             mock_settings.has_gemini = True
-            result = check_gemini_model()
+            with patch("backend.platform_health.settings", mock_settings):
+                result = check_gemini_model()
         self.assertEqual(result.status, "warn")
         self.assertEqual(result.details["effective_model"], RECOMMENDED_GEMINI_MODEL)
+        self.assertEqual(result.details["configured_model"], "gemini-1.5-flash")
 
 
 if __name__ == "__main__":

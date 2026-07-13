@@ -85,7 +85,7 @@ Streamlit UI
 - [x] Obsidian + Dataview + CSV 导出
 - [x] **P0 健康检查**：`GET /health`、`gemini_health`、`platform_health`、`scripts/smoke_platforms.py`
 - [x] **P1 采集加固**：DDG `ddgs` 回退、JD/淘宝 Cookie 注入、mtop 三层回退
-- [x] **单元测试 88 项** + GitHub Actions CI（`.github/workflows/test.yml`）
+- [x] **单元测试 113 项** + GitHub Actions CI（`.github/workflows/test.yml`）
 
 ### 部分完成
 
@@ -172,7 +172,7 @@ python scripts/smoke_platforms.py --health-only
 
 报告默认写入 `vault_output/smoke_report.json`。未配置 Cookie 的平台会标记为 `skip`，不算失败。
 
-当前：**88 项单元测试全部通过**（不含 live smoke）。
+当前：**113 项单元测试全部通过**（不含 live smoke）。
 
 ---
 
@@ -253,12 +253,12 @@ Cookie 过期后需重新复制；遇登录墙可走嵌入式浏览器续传。
 | 步骤 | 操作 |
 |------|------|
 | 1 | Streamlit 选 `real`，勾选「启用 Playwright」 |
-| 2 | 在 **Source URLs** 粘贴商品链接（每行一个） |
+| 2 | **Source URLs 可选**：留空则按 SKU 自动搜索；有已知直链时再粘贴（更稳） |
 | 3 | 选品类（镜头/手机/键盘等） |
 | 4 | 点击「开始对比」 |
 | 5 | 遇验证码在页面内浏览器完成验证后续传 |
 
-> **提示**：贴链接比自动搜索更稳；Cookie 过期后需重新从浏览器复制更新。
+> **提示**：Real 模式默认按 SKU 自动搜索，Source URLs 仅为可选补充；贴直链通常更稳。Cookie 过期后需重新从浏览器复制更新。
 
 ---
 
@@ -295,7 +295,7 @@ Specs-first/
 │   └── api_client.py            # 进程内 TestClient
 ├── obsidian/                    # Vault 写入 + CSV
 ├── schemas/                     # 数据模型 + 品类模板
-├── tests/                       # 88 项单元/集成测试
+├── tests/                       # 113 项单元/集成测试
 └── .github/workflows/test.yml   # CI
 ```
 
@@ -330,7 +330,7 @@ vault_output/
 | P1 | 常用品类别名补充 | `schemas/category_profile.py` |
 | P2 | B 站启动探测 + health 增强 | 降低 WBI 403 |
 | P2 | YouTube PoToken / InnerTube | 恢复字幕证据 |
-| P2 | Reddit 评论结构化解析（`RedditAdapter`） | 在 Cookie 启用后提升证据质量 |
+| P2 | Reddit HTTP 优先 + 评论结构化 | Cookie 启用后 HTTP 可读则不强制升浏览器；证据质量仍可加深 |
 
 ### 上云时再考虑
 

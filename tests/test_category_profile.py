@@ -3,9 +3,11 @@ from __future__ import annotations
 import unittest
 
 from collectors.extractors import extract_specs_from_text
+from collectors.http import SearchResult
 from schemas.category_profile import (
     canonical_slots,
     normalize_spec_name,
+    rank_search_results_for_reviews,
     resolve_category_key,
     slugify_spec_name,
     video_search_queries,
@@ -23,6 +25,16 @@ class CategoryProfileTest(unittest.TestCase):
         self.assertIn("YouTube", queries)
         self.assertNotIn("紫边", queries["Bilibili"])
         self.assertNotIn("chromatic", queries["YouTube"].lower())
+
+    def test_rank_search_results_prefers_review_and_defect_titles(self) -> None:
+        results = [
+            SearchResult("官方宣传片 开箱仪式", "https://www.bilibili.com/video/BVa", "品牌活动"),
+            SearchResult("深度评测：缺点与翻车点汇总", "https://www.bilibili.com/video/BVb", "劝退理由"),
+            SearchResult("开箱上手体验", "https://www.bilibili.com/video/BVc", "外观介绍"),
+        ]
+        ranked = rank_search_results_for_reviews(results)
+        self.assertEqual(ranked[0].url, "https://www.bilibili.com/video/BVb")
+        self.assertIn("评测", ranked[0].title)
 
     def test_extract_specs_from_generic_labels(self) -> None:
         text = "参数A: 50mm\n参数B: f/2\n重量: 530g\n参数C: 6 groups / 8 elements"

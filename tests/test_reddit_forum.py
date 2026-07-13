@@ -66,6 +66,37 @@ class ForumSourceCollectorRedditTest(unittest.TestCase):
         self.assertTrue(creds.configured)
         self.assertIn("reddit_session=from_env", creds.cookie)
 
+    def test_reddit_http_usable_page_skips_browser(self) -> None:
+        from collectors.browser import BrowserCapture
+        from collectors.http import FetchResult
+        from collectors.resilient_fetch import ResilientFetcher
+        from collectors.site_strategy import strategy_for_url
+
+        self.assertEqual(strategy_for_url("https://www.reddit.com/r/x/comments/1/").mode, "http_first")
+
+        class _Http:
+            def fetch(self, url, *, platform="", extra_headers=None):
+                body = (
+                    "<html><body><article>"
+                    + ("quality control sticky ring sample variation. " * 8)
+                    + "</article></body></html>"
+                )
+                return FetchResult(url=url, status=200, text=body, content_type="text/html")
+
+        class _Browser:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def capture_page_slices(self, url, task_id="manual", storage_state_path=None):
+                self.calls.append(url)
+                return BrowserCapture(url=url, screenshot_paths=[], page_text="browser", page_html="<html></html>")
+
+        browser = _Browser()
+        fetcher = ResilientFetcher(_Http(), browser=browser)  # type: ignore[arg-type]
+        snapshot = fetcher.fetch("https://www.reddit.com/r/SonyAlpha/comments/abc/")
+        self.assertEqual(snapshot.method, "http")
+        self.assertEqual(browser.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -264,7 +264,15 @@ with st.sidebar:
     mode = st.selectbox("Collector mode", ["mock", "real"], help="mock 使用内置演示 SKU；real 会联网抓取")
     use_browser = st.checkbox("启用 Playwright 浏览器采集", value=False, help="real 模式下用于复杂页面；遇验证码会挂起任务")
     vault_path = st.text_input("Obsidian vault path", "vault_output")
-    source_urls_text = st.text_area("Source URLs (optional)", "", placeholder="每行一个 URL，用于定点注入证据/价格")
+    source_urls_text = st.text_area(
+        "Source URLs（可选）",
+        "",
+        placeholder="每行一个 URL；留空即可，Real 模式会按 SKU 自动搜索官网/评测/电商",
+        help=(
+            "可选补充：粘贴已知商品页、评测视频或论坛帖。留空时 Real 模式仍会按 SKU "
+            "自动搜索 B 站/YouTube/京东/淘宝等；贴直链通常更稳。"
+        ),
+    )
     st.markdown("---")
     st.markdown("**双脑模式**")
     st.markdown("- **Gemini**：Phase 1/2/3 文本吞噬 + OCR")
@@ -332,7 +340,10 @@ if st.session_state["candidates"]:
     default = options[:3]
     selected_skus = st.multiselect("Selected SKUs", options, default=default)
 else:
-    st.info("可直接点击「开始对比」运行 mock 演示；或先发现候选 SKU。")
+    st.info(
+        "可直接点击「开始对比」：mock 跑演示；real 按查询/勾选 SKU **自动搜索**证据与价格"
+        "（侧边栏 Source URLs 可选，用于定点补充）。也可先「发现候选 SKU」再勾选。"
+    )
 
 if run_clicked:
     source_urls = [line.strip() for line in source_urls_text.splitlines() if line.strip()]
