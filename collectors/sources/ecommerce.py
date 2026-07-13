@@ -18,6 +18,7 @@ from collectors.http import HttpClient, clip
 from collectors.platform_auth import PlatformAuthRequired
 from collectors.protocols import SpecExtractionRouter
 from collectors.resilient_fetch import ResilientFetcher
+from collectors.url_guards import is_noisy_ecommerce_url
 from schemas import OfficialSpec, PriceFinding, ProductCandidate
 from schemas.category_profile import ecommerce_search_queries
 
@@ -62,23 +63,46 @@ class EcommerceSourceCollector:
                     target_url = adapter.normalize_url(result.url)
                 else:
                     target_url = result.url
+                if not self._is_product_result(platform, target_url, result.url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip non-product ecommerce url: {result.url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    continue
                 combined_text = f"{result.title}. {result.snippet}"
                 try:
                     snapshot = self.resilient.fetch(
                         target_url,
                         task_id=task_id,
-                        use_browser=use_browser or platform in {"JD", "Taobao/Tmall"},
+                        use_browser=use_browser,
                         storage_state_path=storage_state_path,
                         sku=candidate.sku,
                     )
-                except (BrowserAuthRequired, PlatformAuthRequired):
-                    raise
-                if platform == "Taobao/Tmall":
-                    self.tmall_taobao.maybe_raise_page_auth(
-                        snapshot.text,
-                        snapshot.page.blockers,
-                        snapshot.url,
+                except Exception as exc:
+                    if not self._soft_skip_auth(platform, target_url, exc, candidate.sku):
+                        raise
+                    continue
+                if not self._final_url_is_product(platform, target_url, snapshot.url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip redirected non-product page: {target_url} -> {snapshot.url}",
+                        level="warning",
+                        sku=candidate.sku,
                     )
+                    continue
+                try:
+                    if platform == "Taobao/Tmall":
+                        self.tmall_taobao.maybe_raise_page_auth(
+                            snapshot.text,
+                            snapshot.page.blockers,
+                            snapshot.url,
+                        )
+                except PlatformAuthRequired as exc:
+                    if not self._soft_skip_auth(platform, snapshot.url or target_url, exc, candidate.sku):
+                        raise
+                    continue
                 screenshot_paths = list(snapshot.screenshot_paths)
                 combined_text = f"{combined_text} {snapshot.text}"
                 if platform == "JD" and snapshot.markup:
@@ -233,22 +257,46 @@ class EcommerceSourceCollector:
                     target_url = adapter.normalize_url(result.url)
                 else:
                     target_url = result.url
+                if not self._is_product_result(platform, target_url, result.url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip non-product ecommerce url: {result.url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    continue
                 try:
                     snapshot = self.resilient.fetch(
                         target_url,
                         task_id=task_id,
-                        use_browser=use_browser or platform == "Taobao/Tmall",
+                        # JD prefers HTTP(+Cookie)/mgets; only escalate when page is weak.
+                        use_browser=use_browser if platform != "JD" else False,
                         storage_state_path=storage_state_path,
                         sku=candidate.sku,
                     )
-                except (BrowserAuthRequired, PlatformAuthRequired):
-                    raise
-                if platform == "Taobao/Tmall":
-                    self.tmall_taobao.maybe_raise_page_auth(
-                        snapshot.text,
-                        snapshot.page.blockers,
-                        snapshot.url,
+                except Exception as exc:
+                    if not self._soft_skip_auth(platform, target_url, exc, candidate.sku):
+                        raise
+                    continue
+                if not self._final_url_is_product(platform, target_url, snapshot.url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip redirected non-product page: {target_url} -> {snapshot.url}",
+                        level="warning",
+                        sku=candidate.sku,
                     )
+                    continue
+                try:
+                    if platform == "Taobao/Tmall":
+                        self.tmall_taobao.maybe_raise_page_auth(
+                            snapshot.text,
+                            snapshot.page.blockers,
+                            snapshot.url,
+                        )
+                except PlatformAuthRequired as exc:
+                    if not self._soft_skip_auth(platform, snapshot.url or target_url, exc, candidate.sku):
+                        raise
+                    continue
                 if not snapshot.markup:
                     continue
                 detail_api_urls = self._detail_api_urls_for_platform(platform, snapshot.url, snapshot.markup)
@@ -266,9 +314,7 @@ class EcommerceSourceCollector:
                 for spec in extracted:
                     specs_by_name.setdefault(spec.name, spec)
                 detail_images = extract_detail_image_urls(merged_markup)
-                if detail_images and len(highlights) < 3:
-                    highlights.append(f"{platform} detail images: {len(detail_images)}")
-                if self.router is not None:
+                if self.router is not None and use_browser:
                     image_specs, image_highlights = self.router.extract_official_specs_from_images(
                         candidate.sku,
                         detail_images,
@@ -280,9 +326,72 @@ class EcommerceSourceCollector:
                     for item in image_highlights:
                         if item not in highlights and len(highlights) < 5:
                             highlights.append(item)
-                if specs_by_name and len(highlights) < 5:
-                    highlights.append(f"{platform} parameter block captured")
+                # Capture metadata belongs in diagnostics, not product highlights.
+                if detail_images:
+                    self.diagnostics.record(
+                        platform,
+                        f"detail images captured: {len(detail_images)}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                if specs_by_name:
+                    self.diagnostics.record(
+                        platform,
+                        "parameter block captured",
+                        level="info",
+                        sku=candidate.sku,
+                    )
         return list(specs_by_name.values()), highlights
+
+    def _is_product_result(self, platform: str, normalized_url: str, raw_url: str = "") -> bool:
+        if is_noisy_ecommerce_url(normalized_url) or is_noisy_ecommerce_url(raw_url):
+            return False
+        adapter = self.registry.for_platform(platform)
+        if adapter is not None and hasattr(adapter, "is_product_url"):
+            return bool(adapter.is_product_url(normalized_url) or adapter.is_product_url(raw_url))
+        lower = f"{normalized_url} {raw_url}".lower()
+        if platform == "JD":
+            return "item.jd.com/" in lower or "item.m.jd.com/" in lower
+        if platform == "Taobao/Tmall":
+            return "item.taobao.com/" in lower or "detail.tmall.com/" in lower
+        return bool(normalized_url.startswith("http"))
+
+    def _final_url_is_product(self, platform: str, requested_url: str, final_url: str) -> bool:
+        """Reject login/homepage redirects that keep the requested item URL only in history."""
+        if not final_url:
+            return True
+        if final_url.rstrip("/") == requested_url.rstrip("/"):
+            return True
+        return self._is_product_result(platform, final_url, requested_url)
+
+    def _soft_skip_auth(self, platform: str, url: str, exc: Exception, sku: str) -> bool:
+        """Return True when the caller should continue instead of pausing the pipeline.
+
+        - PlatformAuthRequired (mtop/session): always soft-skip; JD can still succeed.
+        - Taobao/Tmall BrowserAuthRequired: soft-skip (slider is flaky in CLI; update Cookie).
+        - Non-product BrowserAuthRequired: soft-skip.
+        - JD product BrowserAuthRequired: do NOT soft-skip (Streamlit HITL still needed).
+        """
+        if isinstance(exc, PlatformAuthRequired):
+            self.diagnostics.record(
+                platform,
+                f"soft-skip platform auth for {url}: {exc}",
+                level="warning",
+                sku=sku,
+            )
+            return True
+        if isinstance(exc, BrowserAuthRequired):
+            pause_url = getattr(exc, "url", "") or url
+            if platform == "Taobao/Tmall" or not self._is_product_result(platform, pause_url, url):
+                self.diagnostics.record(
+                    platform,
+                    f"soft-skip browser auth for {pause_url}: {exc}",
+                    level="warning",
+                    sku=sku,
+                )
+                return True
+            return False
+        return False
 
     def _detail_api_urls_for_platform(self, platform: str, url: str, markup: str) -> list[str]:
         if platform == "JD":
@@ -317,8 +426,9 @@ class EcommerceSourceCollector:
                         storage_state_path=storage_state_path,
                         use_browser=use_browser,
                     )
-                except PlatformAuthRequired:
-                    raise
+                except PlatformAuthRequired as exc:
+                    self._soft_skip_auth(platform, detail_url, exc, sku)
+                    continue
                 if raw:
                     payloads.append(self._unwrap_detail_payload(platform, raw))
                 continue
@@ -330,8 +440,10 @@ class EcommerceSourceCollector:
                     storage_state_path=storage_state_path,
                     sku=sku,
                 )
-            except (BrowserAuthRequired, PlatformAuthRequired):
-                raise
+            except Exception as exc:
+                if not self._soft_skip_auth(platform, detail_url, exc, sku):
+                    raise
+                continue
             raw = snapshot.markup or snapshot.text
             if raw:
                 payloads.append(self._unwrap_detail_payload(platform, raw))

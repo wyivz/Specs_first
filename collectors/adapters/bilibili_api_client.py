@@ -268,7 +268,7 @@ class BilibiliApiClient:
     def _select_comment_snippets(self, comments: list[str]) -> list[str]:
         hints = re.compile("|".join(real_world_issue_patterns() + review_content_patterns()), re.I)
         matched = [comment for comment in comments if hints.search(comment)]
-        return matched or comments
+        return matched
 
     def _review_snippets(self, text: str) -> list[str]:
         hints = re.compile("|".join(real_world_issue_patterns() + review_content_patterns()), re.I)

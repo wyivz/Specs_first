@@ -9,6 +9,7 @@ from collectors.extractors import (
 from collectors.http import HttpClient, SearchResult, clip, extract_title
 from collectors.protocols import SpecExtractionRouter
 from collectors.resilient_fetch import ResilientFetcher
+from collectors.url_guards import is_noisy_ecommerce_url
 from schemas import OfficialSpec, ProductCandidate
 
 
@@ -64,11 +65,12 @@ class OfficialSourceCollector:
         task_id: str = "",
         use_browser: bool = False,
         storage_state_path: str = "",
+        extra_urls: list[str] | None = None,
     ) -> tuple[list[OfficialSpec], list[str]]:
-        urls = [candidate.source_url]
+        urls = [*(extra_urls or []), candidate.source_url]
         urls.extend(
             result.url
-            for result in self.http.search(f"{candidate.sku} official specifications manual", max_results=5)
+            for result in self.http.search(f"{candidate.sku} official specifications", max_results=5)
             if self._looks_relevant(result)
         )
 
@@ -78,6 +80,14 @@ class OfficialSourceCollector:
         for url in dict.fromkeys(urls):
             if not url.startswith("http"):
                 continue
+            if is_noisy_ecommerce_url(url):
+                self.diagnostics.record(
+                    "official",
+                    f"skip noisy ecommerce url during official fetch: {url}",
+                    level="info",
+                    sku=candidate.sku,
+                )
+                continue
             snapshot = self.resilient.fetch(
                 url,
                 task_id=task_id,
@@ -85,6 +95,14 @@ class OfficialSourceCollector:
                 storage_state_path=storage_state_path,
                 sku=candidate.sku,
             )
+            if is_noisy_ecommerce_url(snapshot.url):
+                self.diagnostics.record(
+                    "official",
+                    f"skip redirected noisy ecommerce page: {url} -> {snapshot.url}",
+                    level="info",
+                    sku=candidate.sku,
+                )
+                continue
             if not snapshot.ok:
                 self.diagnostics.record(
                     "official",
@@ -124,5 +142,7 @@ class OfficialSourceCollector:
         return list(specs_by_name.values()), highlights
 
     def _looks_relevant(self, result: SearchResult) -> bool:
-        combined = f"{result.title} {result.snippet}".lower()
-        return any(hint in combined for hint in self.OFFICIAL_HINTS) or result.url.startswith("http")
+        if is_noisy_ecommerce_url(result.url):
+            return False
+        combined = f"{result.title} {result.snippet} {result.url}".lower()
+        return any(hint in combined for hint in self.OFFICIAL_HINTS)

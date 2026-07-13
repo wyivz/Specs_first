@@ -147,15 +147,27 @@ class KeywordModelRouter:
         based on the actual product context and spec names.
         """
         warnings: list[ConflictWarning] = []
-        spec_names = [spec.name for spec in (official_specs or [])]
+        named = [spec.name for spec in (official_specs or [])]
+        preferred = (
+            "weight",
+            "max_aperture",
+            "focal_length",
+            "mount",
+            "filter_diameter",
+            "battery_capacity",
+            "screen_size",
+            "chipset",
+        )
+        junk_tokens = ("举报", "维权", "许可", "京东", "违法", "经营")
+        related_default = next((name for name in preferred if name in named), None)
+        if related_default is None:
+            related_default = next(
+                (name for name in named if not any(tok in name for tok in junk_tokens)),
+                named[0] if named else "general_spec",
+            )
         
         for finding in findings:
-            # Generic arbitration: map findings to related spec fields when possible
-            # Otherwise, create a general warning
-            
-            related_field = "parameter_a" if spec_names else "general_spec"
-            if spec_names:
-                related_field = spec_names[0]
+            related_field = related_default
 
             title_lower = finding.title.lower()
             if any(term in title_lower for term in ["defect", "quality", "performance", "control", "thermal", "battery"]):

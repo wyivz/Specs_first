@@ -64,6 +64,14 @@ class PlaywrightCapture:
     MOBILE_HOSTS = ("jd.com", "jd.hk", "taobao.com", "tmall.com")
     # Hosts where we attempt to solve captchas via headed browser before pausing
     HEADED_CAPTCHA_HOSTS = ("jd.com", "jd.hk", "taobao.com", "tmall.com")
+    PRODUCT_URL_HINTS = (
+        "item.jd.com/",
+        "item.m.jd.com/",
+        "npcitem.jd.hk/",
+        "item.taobao.com/",
+        "detail.tmall.com/",
+        "detail.tmall.hk/",
+    )
 
     def __init__(
         self,
@@ -76,6 +84,11 @@ class PlaywrightCapture:
         self.slice_height = slice_height
         self.headed_fallback = headed_fallback
         self.headed_timeout_seconds = headed_timeout_seconds
+
+    @classmethod
+    def is_ecommerce_product_url(cls, url: str) -> bool:
+        lower = (url or "").lower()
+        return any(hint in lower for hint in cls.PRODUCT_URL_HINTS)
 
     def capture_page_slices(
         self,
@@ -116,8 +129,13 @@ class PlaywrightCapture:
                 blockers = detect_page_blockers(url, page_html, body_text, page.title())
                 if any(blocker.kind == "auth_or_captcha" for blocker in blockers):
                     context.storage_state(path=str(resolved_state))
-                    # For supported hosts, try to solve the captcha in a
-                    # visible headed browser before fully pausing the pipeline.
+                    # Only pause / open headed captcha for real product pages.
+                    # Search junk (campus.jd.com, music.jd.com, brand indexes) must not
+                    # hijack the pipeline with a fake "solve captcha" window.
+                    if not self.is_ecommerce_product_url(url) and not self.is_ecommerce_product_url(page.url):
+                        raise RuntimeError(
+                            f"Non-product ecommerce page looks blocked; skipping headed captcha: {page.url or url}"
+                        )
                     needs_headed = self.headed_fallback and any(
                         host in url.lower() for host in self.HEADED_CAPTCHA_HOSTS
                     )
@@ -358,6 +376,7 @@ class PlaywrightCapture:
             "A headed browser window should open — solve the challenge there with your mouse.\n"
             f"{taobao_hint}"
             "Waiting up to 5 minutes...\n"
+            "Note: non-product JD pages (campus/music/brand) are skipped automatically in current builds.\n"
         )
         print(msg, flush=True)
         try:

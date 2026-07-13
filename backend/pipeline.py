@@ -346,11 +346,12 @@ class SpecsFirstPipeline:
         self._emit(
             task_id,
             "auth_required",
-            f"Authentication required before continuing price capture for {candidate.sku}",
+            f"Authentication required before continuing for {candidate.sku}",
             TaskState.PAUSED_NEED_AUTH,
             {
                 "sku": candidate.sku,
                 "pause_url": exc.url,
+                "pause_reason": str(exc),
                 "storage_state_path": checkpoint.storage_state_path,
             },
             on_event,
@@ -400,10 +401,70 @@ class SpecsFirstPipeline:
         candidates: list[ProductCandidate],
         selected_skus: list[str] | None,
     ) -> list[ProductCandidate]:
-        if selected_skus:
-            wanted = set(selected_skus)
-            return [candidate for candidate in candidates if candidate.sku in wanted]
-        return candidates[:3]
+        if not selected_skus:
+            return candidates[:3]
+
+        wanted = {sku for sku in selected_skus if sku.strip()}
+        exact = [candidate for candidate in candidates if candidate.sku in wanted]
+        if exact:
+            return _dedupe_candidates(exact)
+
+        # Exact after normalization (e.g. "SEL50F12GM" == "sel50f12gm").
+        wanted_norm = [self._normalize_sku(sku) for sku in wanted]
+        wanted_norm_set = {item for item in wanted_norm if item}
+        normalized_exact = [
+            candidate
+            for candidate in candidates
+            if self._normalize_sku(candidate.sku) in wanted_norm_set
+        ]
+        if normalized_exact:
+            return _dedupe_candidates(normalized_exact)
+
+        # Live search titles drift (e.g. "f/1.2" vs "F1.2"); allow normalized contains,
+        # but prefer shorter titles so model codes beat long marketplace headlines.
+        fuzzy: list[ProductCandidate] = []
+        for candidate in candidates:
+            key = self._normalize_sku(candidate.sku)
+            if any(
+                (needle and len(needle) >= 8 and (needle in key or key in needle))
+                for needle in wanted_norm
+            ):
+                fuzzy.append(candidate)
+        if fuzzy:
+            fuzzy.sort(key=lambda item: len(item.sku))
+            return _dedupe_candidates(fuzzy)[:3]
+
+        # Prefer stable model codes when the preferred marketing title was not found.
+        code_hits = [
+            candidate
+            for candidate in candidates
+            if any(
+                token.isascii() and token.isalnum() and len(token) >= 6 and token.upper() in candidate.sku.upper()
+                for sku in wanted
+                for token in sku.replace("/", " ").split()
+            )
+        ]
+        if code_hits:
+            return _dedupe_candidates(code_hits)[:3]
+
+        # Last resort: keep a compact model-code SKU label when search titles drifted.
+        compact = [sku for sku in wanted if sku.replace("-", "").isalnum() and 6 <= len(sku) <= 32]
+        if compact and candidates:
+            base = candidates[0]
+            return [
+                ProductCandidate(
+                    sku=compact[0],
+                    brand=base.brand,
+                    category=base.category,
+                    source_url=base.source_url,
+                    confidence=max(0.4, base.confidence * 0.9),
+                )
+            ]
+        return candidates[:1]
+
+    @staticmethod
+    def _normalize_sku(value: str) -> str:
+        return "".join(ch for ch in value.casefold() if ch.isalnum())
 
     def _emit(
         self,
@@ -418,6 +479,18 @@ class SpecsFirstPipeline:
         self.event_bus.publish(event)
         if on_event:
             on_event(event)
+
+
+def _dedupe_candidates(candidates: list[ProductCandidate]) -> list[ProductCandidate]:
+    seen: set[str] = set()
+    unique: list[ProductCandidate] = []
+    for candidate in candidates:
+        key = candidate.sku.strip().casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
 
 
 def run_mock_demo() -> TaskResult:

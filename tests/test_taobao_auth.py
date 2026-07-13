@@ -10,7 +10,7 @@ from collectors.sources import EcommerceSourceCollector
 
 
 class TaobaoEcommerceIntegrationTest(unittest.TestCase):
-    def test_fetch_detail_payloads_raises_on_mtop_auth_error(self) -> None:
+    def test_fetch_detail_payloads_soft_skips_mtop_auth_error(self) -> None:
         credentials = TaobaoCredentials(cookie="_m_h5_tk=abc123_token_part_1700; cookie2=1")
         adapter = TmallTaobaoAdapter(credentials)
         signed_url = adapter.build_signed_mtop_url(
@@ -32,16 +32,19 @@ class TaobaoEcommerceIntegrationTest(unittest.TestCase):
 
         collector = EcommerceSourceCollector(FakeHttp())
         collector.tmall_taobao = adapter
-        with self.assertRaises(PlatformAuthRequired):
-            collector._fetch_detail_payloads(
-                [signed_url],
-                platform="Taobao/Tmall",
-                referer_url="https://detail.tmall.com/item.htm?id=123",
-                task_id="t1",
-                use_browser=False,
-                storage_state_path="",
-                sku="demo",
-            )
+        payloads = collector._fetch_detail_payloads(
+            [signed_url],
+            platform="Taobao/Tmall",
+            referer_url="https://detail.tmall.com/item.htm?id=123",
+            task_id="t1",
+            use_browser=False,
+            storage_state_path="",
+            sku="demo",
+        )
+        self.assertEqual(payloads, [])
+        self.assertTrue(
+            any("soft-skip platform auth" in record.message for record in collector.diagnostics.records)
+        )
 
 
 if __name__ == "__main__":

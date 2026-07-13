@@ -153,12 +153,21 @@ class CandidateProcessor:
             }
             raise
         except PlatformAuthRequired as exc:
-            exc.in_progress_payload = {
-                "official_specs": [to_dict(spec) for spec in official_specs],
-                "highlights": highlights,
-                "findings": [to_dict(finding) for finding in findings],
-            }
-            raise
+            # Soft-degrade: Taobao mtop/session failures should not freeze the whole run.
+            if hasattr(self.collector, "diagnostics"):
+                self.collector.diagnostics.record(
+                    "price",
+                    f"price stage soft-skip auth for {candidate.sku}: {exc}",
+                    level="warning",
+                    sku=candidate.sku,
+                )
+            self.emit(
+                "price_degraded",
+                f"Price auth soft-skipped for {candidate.sku}; continuing with available evidence",
+                TaskState.RUNNING,
+                {"sku": candidate.sku, "error": str(exc)},
+            )
+            return []
         except Exception as exc:
             if hasattr(self.collector, "diagnostics"):
                 self.collector.diagnostics.record(

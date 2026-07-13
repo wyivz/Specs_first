@@ -21,6 +21,25 @@ SKIP_TAGS = {
     "form",
 }
 
+# Self-closing / void tags must not raise skip_depth — they never emit end tags,
+# and a single noisy <input class="...nav..."> was wiping entire Sony spec pages.
+VOID_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
+
 NOISE_CLASS_HINTS = re.compile(
     r"(nav|menu|footer|sidebar|advert|ads|cookie|banner|popup|modal|captcha|slider|toolbar|breadcrumb)",
     re.I,
@@ -34,12 +53,13 @@ AUTH_MARKERS = [
     "are you a robot",
     "access denied",
     "security check",
-    "验证",
-    "滑块",
+    "验证码",
+    "滑块验证",
+    "滑动验证",
     "安全检测",
+    "安全验证",
     "人机验证",
-    "请登录",
-    "登录后",
+    "请完成安全验证",
     "sign in to continue",
 ]
 
@@ -112,6 +132,8 @@ def extract_readable_text(markup: str) -> str:
             id_value = attrs_dict.get("id") or ""
             hidden = attrs_dict.get("aria-hidden") == "true" or attrs_dict.get("hidden") is not None
             if hidden or NOISE_CLASS_HINTS.search(f"{class_value} {id_value}") or tag in SKIP_TAGS:
+                if tag in VOID_TAGS:
+                    return
                 self._skip_stack.append(tag)
                 self._skip_depth += 1
                 return

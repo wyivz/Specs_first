@@ -17,15 +17,38 @@ class JdAdapter:
         re.compile(r"到手价\D{0,12}([0-9]{2,6}(?:\.[0-9]{1,2})?)"),
         re.compile(r"券后价\D{0,12}([0-9]{2,6}(?:\.[0-9]{1,2})?)"),
     ]
+    PRODUCT_URL_RE = re.compile(
+        r"https?://(?:item\.m\.jd\.com|item\.jd\.com|npcitem\.jd\.hk)/(\d+)(?:\.html)?",
+        re.I,
+    )
+    NOISE_HOST_HINTS = (
+        "campus.jd.com",
+        "music.jd.com",
+        "ir.jd.com",
+        "club.jd.com",
+        "passport.jd.com",
+        "search.jd.com",
+        "jd.com/brand/",
+        "jd.com/jiage/",
+        "jd.com/hprm/",
+    )
 
     def supports(self, url: str) -> bool:
         lower = url.lower()
         return "jd.com" in lower or "jd.hk" in lower
 
+    def is_product_url(self, url: str) -> bool:
+        if not url or "{keyword}" in url or "{" in url:
+            return False
+        lower = url.lower()
+        if any(hint in lower for hint in self.NOISE_HOST_HINTS):
+            return False
+        return bool(self.PRODUCT_URL_RE.search(url))
+
     def normalize_url(self, url: str) -> str:
         if not self.supports(url):
             return url
-        match = re.search(r"item\.jd\.com/(\d+)\.html", url)
+        match = self.PRODUCT_URL_RE.search(url)
         if match:
             return f"https://item.jd.com/{match.group(1)}.html"
         return url

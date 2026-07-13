@@ -52,7 +52,10 @@ CATEGORY_TEMPLATES: dict[str, CategoryTemplate] = {
         aliases={
             "focal length": "focal_length",
             "焦距": "focal_length",
+            "maximum aperture": "max_aperture",
+            "max aperture": "max_aperture",
             "aperture": "max_aperture",
+            "最大光圈": "max_aperture",
             "光圈": "max_aperture",
             "optical structure": "optical_structure",
             "镜片结构": "optical_structure",
@@ -372,6 +375,9 @@ def normalize_spec_name(label: str, category: str = "") -> str:
     template = CATEGORY_TEMPLATES.get(resolve_category_key(category))
     if template:
         lowered = label.strip().lower()
+        # Do not let bare "aperture" alias capture Minimum Aperture (F).
+        if "minimum aperture" in lowered or "最小光圈" in lowered:
+            return slugify_spec_name(label)
         for alias, canonical in template.aliases.items():
             if alias in lowered:
                 return canonical
@@ -431,9 +437,11 @@ def forum_search_queries(sku: str, *, include_reddit: bool = False) -> list[tupl
 
 
 def ecommerce_search_queries(sku: str) -> list[tuple[str, str]]:
+    # Prefer product hosts — bare site:jd.com / site:taobao.com returns campus,
+    # music, brand and price-index junk that used to trigger false captcha pauses.
     return [
-        ("JD", f"{sku} site:jd.com 到手价 优惠券 百亿补贴"),
-        ("Taobao/Tmall", f"{sku} site:taobao.com OR site:tmall.com 到手价 券后"),
+        ("JD", f"{sku} site:item.jd.com"),
+        ("Taobao/Tmall", f"{sku} (site:detail.tmall.com OR site:item.taobao.com)"),
     ]
 
 
@@ -442,13 +450,14 @@ def real_world_issue_patterns() -> list[str]:
     return [
         r"缺陷|故障|损坏|broken|defect|fail(?:ure|ed)?",
         r"品控|质量问题|quality control|sample variation|unit variation",
-        r"卡顿|延迟|lag|slow|unresponsive|sticky",
+        r"卡顿|延迟|lag|slow|unresponsive|sticky|sticks?",
         r"噪音|异响|noise|rattle|buzz",
         r"过热|overheat|thermal|温度",
         r"续航|battery life|standby drain",
         r"虚标|夸大|misleading|overpromise",
         r"劝退|翻车|regret|disappoint|avoid",
         r"售后|warranty|support|repair",
+        r"紫边|色散|fringing|chromatic|aberration|flare|鬼影",
     ]
 
 

@@ -52,6 +52,7 @@ class YouTubeAdapter:
         markup: str,
         *,
         confidence: float = 0.6,
+        use_browser: bool = True,
     ) -> list[EvidenceItem]:
         if not self.supports(url):
             return []
@@ -59,7 +60,12 @@ class YouTubeAdapter:
         watch_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else url
         evidence = evidence_from_page("YouTube", watch_url, markup, confidence=confidence - 0.08)
 
-        transcript = self.fetch_transcript(watch_url, markup=markup, video_id=video_id)
+        transcript = self.fetch_transcript(
+            watch_url,
+            markup=markup,
+            video_id=video_id,
+            allow_browser=use_browser,
+        )
         for index, snippet in enumerate(self._review_snippets(transcript)[:8]):
             evidence.append(
                 build_evidence(
@@ -86,20 +92,22 @@ class YouTubeAdapter:
                 )
             )
 
-        api_comments = self.comment_fetcher.fetch_comment_texts(watch_url, video_id=video_id)
-        for index, snippet in enumerate(self.comment_fetcher.select_review_comments(api_comments)[:6]):
-            if any(existing.excerpt[:80] == snippet[:80] for existing in evidence):
-                continue
-            evidence.append(
-                build_evidence(
-                    platform="YouTube",
-                    url=watch_url,
-                    author="youtube_comment",
-                    locator=f"api-comment-{index + 1}",
-                    excerpt=snippet,
-                    confidence=max(0.58, confidence - 0.04),
+        # Comment downloader has no hard timeout and can stall Phase 2 for minutes.
+        if use_browser:
+            api_comments = self.comment_fetcher.fetch_comment_texts(watch_url, video_id=video_id)
+            for index, snippet in enumerate(self.comment_fetcher.select_review_comments(api_comments)[:6]):
+                if any(existing.excerpt[:80] == snippet[:80] for existing in evidence):
+                    continue
+                evidence.append(
+                    build_evidence(
+                        platform="YouTube",
+                        url=watch_url,
+                        author="youtube_comment",
+                        locator=f"api-comment-{index + 1}",
+                        excerpt=snippet,
+                        confidence=max(0.58, confidence - 0.04),
+                    )
                 )
-            )
         return evidence
 
     def fetch_transcript(
@@ -109,6 +117,7 @@ class YouTubeAdapter:
         markup: str = "",
         video_id: str = "",
         preferred_languages: tuple[str, ...] = ("zh", "zh-Hans", "zh-Hant", "en"),
+        allow_browser: bool = True,
     ) -> str:
         resolved_id = video_id or self.extract_video_id(url)
         if not resolved_id:
@@ -130,14 +139,20 @@ class YouTubeAdapter:
                 )
                 if transcript:
                     return transcript
-        browser_transcript = self._fetch_transcript_via_browser(
-            watch_url,
+        if allow_browser:
+            browser_transcript = self._fetch_transcript_via_browser(
+                watch_url,
+                resolved_id,
+                preferred_languages,
+            )
+            if browser_transcript:
+                return browser_transcript
+        return self._fetch_transcript_fallback(
             resolved_id,
             preferred_languages,
+            watch_url=watch_url,
+            allow_browser=allow_browser,
         )
-        if browser_transcript:
-            return browser_transcript
-        return self._fetch_transcript_fallback(resolved_id, preferred_languages, watch_url=watch_url)
 
     def _load_player_response(self, watch_url: str, *, markup: str = "") -> dict | None:
         player = self._extract_embedded_json(markup, "ytInitialPlayerResponse") if markup else None
@@ -283,6 +298,7 @@ class YouTubeAdapter:
         preferred_languages: tuple[str, ...],
         *,
         watch_url: str = "",
+        allow_browser: bool = True,
     ) -> str:
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
@@ -311,9 +327,14 @@ class YouTubeAdapter:
             pass
         except (PoTokenRequired, RequestBlocked, IpBlocked) as exc:
             self._record_transcript_info(video_id, f"transcript-api blocked for {video_id}: {exc}")
-            browser_transcript = self._fetch_transcript_via_browser(watch_url or f"https://www.youtube.com/watch?v={video_id}", video_id, preferred_languages)
-            if browser_transcript:
-                return browser_transcript
+            if allow_browser:
+                browser_transcript = self._fetch_transcript_via_browser(
+                    watch_url or f"https://www.youtube.com/watch?v={video_id}",
+                    video_id,
+                    preferred_languages,
+                )
+                if browser_transcript:
+                    return browser_transcript
             return self._maybe_asr_fallback(
                 watch_url or f"https://www.youtube.com/watch?v={video_id}",
                 video_id,
@@ -330,9 +351,14 @@ class YouTubeAdapter:
             transcript_list = api.list(video_id)
         except (PoTokenRequired, RequestBlocked, IpBlocked) as exc:
             self._record_transcript_info(video_id, f"transcript-api list blocked for {video_id}: {exc}")
-            browser_transcript = self._fetch_transcript_via_browser(watch_url or f"https://www.youtube.com/watch?v={video_id}", video_id, preferred_languages)
-            if browser_transcript:
-                return browser_transcript
+            if allow_browser:
+                browser_transcript = self._fetch_transcript_via_browser(
+                    watch_url or f"https://www.youtube.com/watch?v={video_id}",
+                    video_id,
+                    preferred_languages,
+                )
+                if browser_transcript:
+                    return browser_transcript
             return self._maybe_asr_fallback(
                 watch_url or f"https://www.youtube.com/watch?v={video_id}",
                 video_id,
@@ -532,8 +558,8 @@ class YouTubeAdapter:
                 snippets.append(sentence)
         if snippets:
             return snippets
-        chunks = [clip(chunk, 360) for chunk in re.split(r"\s{2,}", transcript) if len(chunk.strip()) >= 40]
-        return chunks[:6]
+        # Do not fall back to arbitrary transcript chunks — they are often unrelated.
+        return []
 
     def _extract_comment_snippets(self, markup: str) -> list[str]:
         data = self._extract_embedded_json(markup, "ytInitialData")

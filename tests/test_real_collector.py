@@ -46,14 +46,14 @@ class FakeHttp:
                 )
             ],
             "Zeiss Makro-Planar T* 50mm f/2 site:reddit.com defect issue quality problem review": [],
-            "Zeiss Makro-Planar T* 50mm f/2 site:jd.com 到手价 优惠券 百亿补贴": [
+            "Zeiss Makro-Planar T* 50mm f/2 site:item.jd.com": [
                 SearchResult(
                     "JD Zeiss 50mm",
-                    "https://item.jd.com/mock-zeiss.html",
+                    "https://item.jd.com/100010708487.html",
                     "标价 5999 元，优惠券 500，补贴 600，到手价 4899",
                 )
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 site:taobao.com OR site:tmall.com 到手价 券后": [
+            "Zeiss Makro-Planar T* 50mm f/2 (site:detail.tmall.com OR site:item.taobao.com)": [
                 SearchResult(
                     "Tmall Zeiss 50mm",
                     "https://detail.tmall.com/item.htm?id=22334455",
@@ -79,8 +79,8 @@ class FakeHttp:
                 <transcript><text start="0" dur="2">There is obvious purple fringing wide open.</text></transcript>
             """,
             "https://www.chiphell.com/thread-mock.html": "第887楼：产品质量问题，个体差异明显，疑似品控翻车。",
-            "https://item.jd.com/mock-zeiss.html": "标价 5999 元，优惠券 500，补贴 600，到手价 4899",
-            "https://item.jd.com/mock-specs.html": """
+            "https://item.jd.com/100010708487.html": "标价 5999 元，优惠券 500，补贴 600，到手价 4899",
+            "https://item.jd.com/100010708488.html": """
                 <html><body>
                 <script>window.__descApi="//api.m.jd.com/getdesc?sku=123"</script>
                 <table>
@@ -166,10 +166,10 @@ class RealCollectorTest(unittest.TestCase):
 
     def test_ecommerce_parameter_block_is_ingested_before_price(self) -> None:
         fake = FakeHttp()
-        fake.searches["Zeiss Makro-Planar T* 50mm f/2 site:jd.com 到手价 优惠券 百亿补贴"] = [
+        fake.searches["Zeiss Makro-Planar T* 50mm f/2 site:item.jd.com"] = [
             SearchResult(
                 "JD Zeiss 50mm parameter page",
-                "https://item.jd.com/mock-specs.html",
+                "https://item.jd.com/100010708488.html",
                 "规格参数 详情参数",
             )
         ]
@@ -178,7 +178,6 @@ class RealCollectorTest(unittest.TestCase):
         specs, highlights = collector.collect_official_specs(candidate)
         names = {spec.name for spec in specs}
         self.assertIn("weight", names)
-        self.assertTrue(any("parameter block" in item for item in highlights))
         self.assertTrue(any("12" in spec.value and "w" in spec.value.lower() for spec in specs))
         self.assertTrue(any("530 g" in spec.value for spec in specs))
         self.assertTrue(any("80 Wh" in spec.value for spec in specs))

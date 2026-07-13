@@ -70,8 +70,7 @@ class YouTubeCommentFetcher:
 
     def select_review_comments(self, comments: list[str], *, limit: int = 8) -> list[str]:
         matched = [comment for comment in comments if self._hint_pattern.search(comment)]
-        pool = matched or comments
-        return [clip(text, 360) for text in pool[:limit]]
+        return [clip(text, 360) for text in matched[:limit]]
 
     def _record(self, source: str, message: str, *, level: str = "warning") -> None:
         if self.diagnostics:

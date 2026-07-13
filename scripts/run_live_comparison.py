@@ -26,7 +26,11 @@ def _optional_source_urls() -> list[str]:
     """Optional pinned URLs — augmentation only, not the primary discovery path."""
     raw = os.getenv("OPTIONAL_SOURCE_URLS", "").strip()
     if not raw:
-        return []
+        # Stable defaults for local SEL50F12GM validation when env is empty.
+        return [
+            "https://www.sony.com/electronics/support/lenses-e-mount-lenses/sel50f12gm/specifications",
+            "https://item.jd.com/100010708487.html",
+        ]
     parts: list[str] = []
     for line in raw.replace(",", "\n").splitlines():
         url = line.strip()
@@ -37,28 +41,48 @@ def _optional_source_urls() -> list[str]:
 
 QUERY = os.getenv("LIVE_QUERY", "Sony FE 50mm f1.2 GM")
 CATEGORY = os.getenv("LIVE_CATEGORY", "Lens")
-SELECTED_SKUS = [os.getenv("LIVE_SKU", "Sony FE 50mm f/1.2 GM Lens (Sony E)")]
+# Prefer model code — marketing titles from DDG drift and used to select 0 SKUs.
+SELECTED_SKUS = [os.getenv("LIVE_SKU", "SEL50F12GM").strip()]
+USE_BROWSER = os.getenv("LIVE_USE_BROWSER", "false").strip().lower() in {"1", "true", "yes"}
+MODEL_MODE = os.getenv("LIVE_MODEL_MODE", "").strip() or None
 
 
 def main() -> int:
     source_urls = _optional_source_urls()
-    router = create_model_router()
+    router = create_model_router(MODEL_MODE)
     collector = RealCollector(source_urls=source_urls, router=router)
     pipeline = SpecsFirstPipeline(collector=collector, router=router, vault_path=Path("vault_output"))
 
     print("Starting real comparison...", flush=True)
-    print("Query:", QUERY)
-    print("Discovery: automatic search from SKU (Source URLs optional:", len(source_urls), ")")
-    print("Selected SKU:", SELECTED_SKUS[0])
+    print("Query:", QUERY, flush=True)
+    print("Discovery: automatic search from SKU (Source URLs optional:", len(source_urls), ")", flush=True)
+    print("Selected SKU:", SELECTED_SKUS[0] or "(auto top candidates)", flush=True)
+    print("use_browser:", USE_BROWSER, flush=True)
+    print("model_mode:", MODEL_MODE or "default", flush=True)
+
+    def _on_event(event) -> None:
+        print(f"[{event.state.value}] {event.event_type}: {event.message}", flush=True)
 
     result = pipeline.run(
         query=QUERY,
         category=CATEGORY,
-        selected_skus=SELECTED_SKUS,
+        selected_skus=[sku for sku in SELECTED_SKUS if sku] or None,
         source_urls=source_urls,
-        use_browser=True,
-        task_id="live-comparison-20260710",
+        use_browser=USE_BROWSER,
+        task_id=f"live-comparison-{os.getenv('LIVE_TASK_SUFFIX', 'local')}",
+        on_event=_on_event,
     )
+
+    pause_events = [
+        {
+            "type": e.event_type,
+            "message": e.message,
+            "state": e.state.value,
+            "payload": e.payload,
+        }
+        for e in result.events
+        if e.event_type in {"auth_required", "price_degraded", "sku_failed"}
+    ]
 
     report = {
         "state": result.state.value,
@@ -67,6 +91,7 @@ def main() -> int:
         "assets": [],
         "output_paths": [str(p) for p in result.output_paths],
         "diagnostics": result.diagnostics,
+        "pause_or_degraded": pause_events,
         "events_tail": [
             {"type": e.event_type, "message": e.message, "state": e.state.value}
             for e in result.events[-15:]
@@ -83,8 +108,10 @@ def main() -> int:
                 "findings_count": len(asset.real_world_findings),
                 "finding_samples": [
                     {
-                        "platform": f.platform,
-                        "summary": f.summary[:120],
+                        "title": f.title,
+                        "summary": (f.detail or f.title)[:120],
+                        "severity": f.severity.value if hasattr(f.severity, "value") else str(f.severity),
+                        "evidence_platform": f.evidence[0].platform if f.evidence else "",
                         "evidence_url": f.evidence[0].url if f.evidence else "",
                     }
                     for f in asset.real_world_findings[:5]
@@ -103,16 +130,21 @@ def main() -> int:
     out = Path("vault_output/live_run_report.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("\n=== RESULT ===")
-    print("state:", result.state.value)
-    print("assets:", len(result.assets))
+    print("\n=== RESULT ===", flush=True)
+    print("state:", result.state.value, flush=True)
+    print("assets:", len(result.assets), flush=True)
     for asset in result.assets:
         print(
             f"  {asset.sku}: specs={len(asset.official_specs)} "
-            f"findings={len(asset.real_world_findings)} prices={len(asset.prices)}"
+            f"findings={len(asset.real_world_findings)} prices={len(asset.prices)}",
+            flush=True,
         )
-    print("report:", out)
-    print("vault files:", len(result.output_paths))
+    if pause_events:
+        print("pause/degraded:", flush=True)
+        for item in pause_events[-5:]:
+            print(" -", item.get("type"), item.get("message"), item.get("payload"), flush=True)
+    print("report:", out, flush=True)
+    print("vault files:", len(result.output_paths), flush=True)
     return 0 if result.state.value == "DONE" else 1
 
 

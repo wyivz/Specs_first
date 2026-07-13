@@ -90,6 +90,15 @@ class AdapterTest(unittest.TestCase):
             adapter.normalize_url("https://item.jd.com/123456.html?foo=1"),
             "https://item.jd.com/123456.html",
         )
+        self.assertTrue(adapter.is_product_url("https://item.jd.com/123456.html"))
+        self.assertFalse(adapter.is_product_url("https://campus.jd.com/"))
+        self.assertFalse(adapter.is_product_url("https://music.jd.com/8_0_desc_0_0_1_15.html?key={keyword}"))
+        self.assertFalse(adapter.is_product_url("https://www.jd.com/brand/abc.html"))
+
+    def test_tmall_is_product_url(self) -> None:
+        adapter = TmallTaobaoAdapter()
+        self.assertTrue(adapter.is_product_url("https://detail.tmall.com/item.htm?id=1234567890"))
+        self.assertFalse(adapter.is_product_url("https://world.taobao.com/lang/en-us/item/abc.htm"))
 
     def test_jd_detail_api_urls_include_desc_endpoints(self) -> None:
         adapter = JdAdapter()

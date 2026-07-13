@@ -50,7 +50,14 @@ class BilibiliAdapter:
         self._api_video_budget = self.max_videos_per_sku
         self._logged_missing_credentials = False
 
-    def extract_evidence(self, url: str, markup: str, confidence: float = 0.62) -> list[EvidenceItem]:
+    def extract_evidence(
+        self,
+        url: str,
+        markup: str,
+        confidence: float = 0.62,
+        *,
+        use_browser: bool = True,
+    ) -> list[EvidenceItem]:
         if not self.supports(url):
             return []
         evidence = evidence_from_page("Bilibili", url, markup, confidence=confidence)
@@ -70,7 +77,12 @@ class BilibiliAdapter:
                 )
             )
 
-        if self._api_client and self._api_video_budget > 0 and BilibiliApiClient.extract_bvid(url):
+        if (
+            use_browser
+            and self._api_client
+            and self._api_video_budget > 0
+            and BilibiliApiClient.extract_bvid(url)
+        ):
             bvid = BilibiliApiClient.extract_bvid(url)
             if is_blocked_bvid(bvid):
                 if self.diagnostics:

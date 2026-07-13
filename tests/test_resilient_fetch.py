@@ -74,7 +74,7 @@ class ResilientFetcherTest(unittest.TestCase):
             FakeHttp({"https://item.jd.com/123.html": blocked}),  # type: ignore[arg-type]
             browser=browser,  # type: ignore[arg-type]
         )
-        snapshot = fetcher.fetch("https://item.jd.com/123.html", task_id="task-1")
+        snapshot = fetcher.fetch("https://item.jd.com/123.html", task_id="task-1", use_browser=True)
         self.assertEqual(snapshot.method, "browser")
         self.assertIn("12999", snapshot.text)
         self.assertEqual(browser.calls, ["https://item.jd.com/123.html"])
@@ -158,9 +158,27 @@ class ResilientFetcherTest(unittest.TestCase):
             FakeHttp({"https://detail.tmall.com/item.htm?id=1": short_html}),  # type: ignore[arg-type]
             browser=browser,  # type: ignore[arg-type]
         )
-        snapshot = fetcher.fetch("https://detail.tmall.com/item.htm?id=1", task_id="task-2")
+        snapshot = fetcher.fetch("https://detail.tmall.com/item.htm?id=1", task_id="task-2", use_browser=True)
         self.assertIn(snapshot.method, {"browser", "http"})
         self.assertEqual(browser.calls, ["https://detail.tmall.com/item.htm?id=1"])
+
+    def test_http_only_mode_never_escalates_to_browser(self) -> None:
+        short = "<html><body>too short</body></html>"
+        browser = FakeBrowser(
+            BrowserCapture(
+                url="https://www.youtube.com/watch?v=abc",
+                screenshot_paths=[],
+                page_text="browser should not run",
+                page_html="<html><body>browser</body></html>",
+            )
+        )
+        fetcher = ResilientFetcher(
+            FakeHttp({"https://www.youtube.com/watch?v=abc": short}),  # type: ignore[arg-type]
+            browser=browser,  # type: ignore[arg-type]
+        )
+        snapshot = fetcher.fetch("https://www.youtube.com/watch?v=abc", use_browser=False)
+        self.assertEqual(snapshot.method, "http")
+        self.assertEqual(browser.calls, [])
 
     def test_invalid_url_returns_error(self) -> None:
         fetcher = ResilientFetcher(FakeHttp({}))  # type: ignore[arg-type]

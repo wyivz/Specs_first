@@ -91,11 +91,13 @@ class RealCollector(Collector):
             task_id=task_id,
             use_browser=use_browser,
             storage_state_path=storage_state_path,
+            extra_urls=self.source_urls,
         )
-        merged: dict[str, OfficialSpec] = {spec.name: spec for spec in ecommerce_specs}
-        for spec in official_specs:
+        merged: dict[str, OfficialSpec] = {spec.name: spec for spec in official_specs}
+        for spec in ecommerce_specs:
             merged.setdefault(spec.name, spec)
-        highlights = [*ecommerce_highlights, *official_highlights]
+        # Prefer official/manufacturer highlights over empty ecommerce metadata.
+        highlights = [*official_highlights, *ecommerce_highlights]
         return list(merged.values()), highlights[:5]
 
     def collect_real_world_corpus(

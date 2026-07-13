@@ -20,10 +20,30 @@ KEY_VALUE_SPEC_PATTERN = re.compile(
     r"(?:^|[\n;|])\s*([A-Za-z0-9\u4e00-\u9fff][^:：\n|]{1,48}?)\s*[:：]\s*([^\n;|]{1,120})",
     re.M,
 )
+# Sony support / many manufacturer pages use heading + value without a colon.
+ADJACENT_SPEC_PATTERN = re.compile(
+    r"\b("
+    r"Focal Length(?:\s*\([^)]*\))?|"
+    r"Maximum aperture(?:\s*\([^)]*\))?|"
+    r"Minimum Aperture(?:\s*\([^)]*\))?|"
+    r"Filter Diameter(?:\s*\([^)]*\))?|"
+    r"Minimum Focus Distance|"
+    r"Weight|"
+    r"Mount|"
+    r"焦距|最大光圈|滤镜口径|最近对焦距离|重量|卡口"
+    r")\s+("
+    r"Sony\s+E-mount|"
+    r"[0-9]+(?:\.[0-9]+)?\s+oz\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*g\s*\)|"
+    r"[0-9]+(?:\.[0-9]+)?\s+ft\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*m\s*\)|"
+    r"[0-9]+(?:\.[0-9]+)?(?:\s*(?:mm|cm|m|g|kg|oz|ft)\b)?"
+    r")",
+    re.I,
+)
 MEASUREMENT_PATTERN = re.compile(
     r"\b([0-9]+(?:\.[0-9]+)?\s*(?:mm|cm|m|g|kg|gb|tb|hz|w|mah|inch|英寸|克|千克|毫米|厘米|米|%))\b",
     re.I,
 )
+APERTURE_PATTERN = re.compile(r"\bf\s*/\s*([0-9]+(?:\.[0-9]+)?)\b", re.I)
 TABLE_ROW_PATTERN = re.compile(r"<tr[^>]*>\s*(.*?)\s*</tr>", re.I | re.S)
 TABLE_CELL_PATTERN = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.I | re.S)
 DETAIL_IMAGE_PATTERN = re.compile(
@@ -32,9 +52,26 @@ DETAIL_IMAGE_PATTERN = re.compile(
 )
 DESC_API_PATTERN = re.compile(r"""["']((?:https?:)?//[^"']*(?:getdesc|desc|description)[^"']*)["']""", re.I)
 SKIP_SPEC_LABELS = re.compile(
-    r"(copyright|cookie|login|javascript|function|window|price|价格|购买|cart|subscribe)",
+    r"("
+    r"copyright|cookie|login|javascript|function|window|price|价格|购买|cart|subscribe|"
+    r"违法|举报|维权|许可证|经营许可|京东首页|可信网站|扫黄|适老化|消费者维权|"
+    r"网络警察|互联网举报|免费注册|我的订单|增值电信"
+    r")",
     re.I,
 )
+# Measurement backfill must match slot semantics — bare "0.4 m" must not fill max_aperture.
+_SLOT_VALUE_COMPAT: dict[str, re.Pattern[str]] = {
+    "focal_length": re.compile(r"\bmm\b", re.I),
+    "max_aperture": re.compile(r"^f\s*/\s*[0-9]+(?:\.[0-9]+)?$", re.I),
+    "optical_structure": re.compile(r"(?:group|element|组|片|/)", re.I),
+    "filter_diameter": re.compile(r"\bmm\b", re.I),
+    "weight": re.compile(r"\b(?:g|kg)\b", re.I),
+    "min_focus_distance": re.compile(r"\b(?:m|cm|mm)\b", re.I),
+    "screen_size": re.compile(r"\b(?:inch|英寸|mm)\b", re.I),
+    "battery_capacity": re.compile(r"\b(?:mah|wh|kwh|mah)\b", re.I),
+    "ram": re.compile(r"\b(?:gb|tb)\b", re.I),
+    "storage": re.compile(r"\b(?:gb|tb)\b", re.I),
+}
 
 NEGATIVE_PATTERNS = real_world_issue_patterns()
 REVIEW_PATTERNS = review_content_patterns()
@@ -133,31 +170,83 @@ def extract_specs_from_text(text: str, source_url: str, category: str = "") -> l
     """
     specs_by_name: dict[str, OfficialSpec] = {}
     for label, value in _extract_key_value_pairs(text):
-        if SKIP_SPEC_LABELS.search(label):
-            continue
-        name = normalize_spec_name(label, category)
-        if name in specs_by_name:
-            continue
-        specs_by_name[name] = OfficialSpec(
-            name=name,
-            value=clip(normalize_unit_text(value.strip()), 120),
-            unit="",
-            source_url=source_url,
-        )
+        _store_spec(specs_by_name, label, value, source_url, category)
+    for label, value in _extract_adjacent_spec_pairs(text):
+        _store_spec(specs_by_name, label, value, source_url, category)
+
+    # Prefer explicit f-numbers for aperture before any measurement backfill.
+    if "max_aperture" not in specs_by_name:
+        aperture = APERTURE_PATTERN.search(text)
+        if aperture:
+            specs_by_name["max_aperture"] = OfficialSpec(
+                name="max_aperture",
+                value=f"f/{aperture.group(1)}",
+                unit="",
+                source_url=source_url,
+            )
 
     slots = canonical_slots(category)
-    slot_index = 0
     for measurement in _extract_measurements(text):
-        while slot_index < len(slots) and slots[slot_index] in specs_by_name:
-            slot_index += 1
-        if slot_index >= len(slots):
-            break
-        slot = slots[slot_index]
         if any(spec.value == measurement for spec in specs_by_name.values()):
             continue
-        specs_by_name[slot] = OfficialSpec(name=slot, value=measurement, unit="", source_url=source_url)
-        slot_index += 1
+        for slot in slots:
+            if slot in specs_by_name:
+                continue
+            if not _measurement_fits_slot(slot, measurement):
+                continue
+            specs_by_name[slot] = OfficialSpec(name=slot, value=measurement, unit="", source_url=source_url)
+            break
     return list(specs_by_name.values())
+
+
+def _store_spec(
+    specs_by_name: dict[str, OfficialSpec],
+    label: str,
+    value: str,
+    source_url: str,
+    category: str,
+) -> None:
+    if SKIP_SPEC_LABELS.search(label):
+        return
+    # Prefer full-frame focal length over APS-C equivalent labels.
+    if re.search(r"equivalent|aps-c|35\s*mm\s*equivalent", label, re.I):
+        return
+    # Sony lists both max and min aperture; never map minimum aperture -> max_aperture.
+    if re.search(r"minimum\s+aperture|最小光圈", label, re.I):
+        return
+    name = normalize_spec_name(label, category)
+    if name in specs_by_name:
+        return
+    cleaned = normalize_unit_text(_prefer_metric_value(value.strip()))
+    if name in {"max_aperture", "min_aperture"} and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", cleaned):
+        cleaned = f"f/{cleaned}"
+    if name in {"focal_length", "filter_diameter"} and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", cleaned):
+        cleaned = f"{cleaned} mm"
+    specs_by_name[name] = OfficialSpec(
+        name=name,
+        value=clip(cleaned, 120),
+        unit="",
+        source_url=source_url,
+    )
+
+
+def _prefer_metric_value(value: str) -> str:
+    """Prefer metric parenthetical values: '27.5 oz (778 g)' -> '778 g'."""
+    match = re.search(r"\(([0-9]+(?:\.[0-9]+)?\s*(?:mm|cm|m|g|kg))\)", value, re.I)
+    if match:
+        return match.group(1)
+    return value
+
+
+def _extract_adjacent_spec_pairs(text: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for match in ADJACENT_SPEC_PATTERN.finditer(text):
+        label = match.group(1).strip()
+        value = match.group(2).strip()
+        if len(label) < 2 or len(value) < 1:
+            continue
+        pairs.append((label, value))
+    return pairs
 
 
 def extract_specs_from_markup(markup: str, source_url: str, category: str = "") -> list[OfficialSpec]:
@@ -227,8 +316,58 @@ def build_evidence(platform: str, url: str, author: str, locator: str, excerpt: 
     )
 
 
-def evidence_from_page(platform: str, url: str, markup: str, confidence: float = 0.62) -> list[EvidenceItem]:
+def evidence_mentions_sku(sku: str, *texts: str) -> bool:
+    """True when text clearly refers to the target SKU / model code."""
+    if not sku or not sku.strip():
+        return True
+    blob = " ".join(part for part in texts if part).lower()
+    if not blob.strip():
+        return False
+    compact_sku = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", sku.lower())
+    compact_blob = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", blob)
+    if len(compact_sku) >= 5 and compact_sku in compact_blob:
+        return True
+    # Alphanumeric model tokens (SEL50F12GM, BV1xx, etc.)
+    for token in re.findall(r"[a-z]{2,}\d+[a-z0-9]*|\d+[a-z]+[a-z0-9]*", sku.lower()):
+        if len(token) >= 5 and token in compact_blob:
+            return True
+    stop = {
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "lens",
+        "镜头",
+        "official",
+        "review",
+        "评测",
+        "mm",
+        "gm",
+        "fe",
+    }
+    words = [
+        word
+        for word in re.findall(r"[a-z0-9\u4e00-\u9fff]+", sku.lower())
+        if len(word) >= 3 and word not in stop
+    ]
+    if not words:
+        return False
+    hits = sum(1 for word in words if word in blob or word in compact_blob)
+    return hits >= 2 if len(words) >= 2 else hits >= 1
+
+
+def evidence_from_page(
+    platform: str,
+    url: str,
+    markup: str,
+    confidence: float = 0.62,
+    *,
+    sku: str = "",
+) -> list[EvidenceItem]:
     text = sanitize_html(url, markup).rich_text
+    if sku and not evidence_mentions_sku(sku, text[:4000], url):
+        return []
     evidence: list[EvidenceItem] = []
     for index, pattern in enumerate(NEGATIVE_PATTERNS):
         match = re.search(pattern, text, re.I)
@@ -252,13 +391,29 @@ def evidence_from_page(platform: str, url: str, markup: str, confidence: float =
     return dedupe_evidence(evidence)
 
 
-def evidence_from_search_result(platform: str, result: SearchResult, confidence: float = 0.55) -> EvidenceItem | None:
+def evidence_from_search_result(
+    platform: str,
+    result: SearchResult,
+    confidence: float = 0.55,
+    *,
+    sku: str = "",
+) -> EvidenceItem | None:
     combined = f"{result.title}. {result.snippet}"
     if not result.url.startswith("http"):
+        return None
+    if sku and not evidence_mentions_sku(sku, combined, result.url):
         return None
     if not any(re.search(pattern, combined, re.I) for pattern in NEGATIVE_PATTERNS):
         return None
     return build_evidence(platform, result.url, domain_author(result.url), "search-result", combined, confidence)
+
+
+def _measurement_fits_slot(slot: str, measurement: str) -> bool:
+    pattern = _SLOT_VALUE_COMPAT.get(slot)
+    if pattern is None:
+        # Unknown / generic slots: only backfill when no unit constraints exist.
+        return slot.startswith("parameter_")
+    return bool(pattern.search(measurement))
 
 
 def extract_price(text: str) -> ParsedPrice | None:

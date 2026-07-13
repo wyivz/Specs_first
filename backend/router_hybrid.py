@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, TypeVar
 
 from backend.config import settings
 from backend.gemini_health import resolve_gemini_model
@@ -13,6 +14,9 @@ from backend.router_schemas import ARBITRATION_SCHEMA, parse_json_payload
 from collectors.extractors import ParsedPrice
 from schemas import ConflictLevel, ConflictWarning, EvidenceItem, OfficialSpec, PriceFinding, RealWorldFinding
 
+T = TypeVar("T")
+
+
 class HybridModelRouter(KeywordModelRouter):
     """Gemini: massive text ingestion + multimodal OCR. OpenAI: structured output only."""
 
@@ -20,6 +24,19 @@ class HybridModelRouter(KeywordModelRouter):
         self.mode = mode or settings.model_mode
         self._keyword = KeywordModelRouter()
         self._last_summary = ""
+
+    @staticmethod
+    def _run_with_timeout(fn: Callable[[], T], *, timeout_seconds: float | None = None) -> T:
+        limit = settings.gemini_call_timeout_seconds if timeout_seconds is None else timeout_seconds
+        if limit <= 0:
+            return fn()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(fn)
+            try:
+                return future.result(timeout=limit)
+            except FuturesTimeout as exc:
+                future.cancel()
+                raise TimeoutError(f"Gemini call exceeded {limit:.0f}s") from exc
 
     def extract_official_specs_from_text(
         self,
@@ -30,7 +47,9 @@ class HybridModelRouter(KeywordModelRouter):
     ) -> tuple[list[OfficialSpec], list[str]]:
         if settings.has_gemini and text.strip():
             try:
-                specs, highlights = self._gemini_extract_official_specs(sku, text, source_url, category)
+                specs, highlights = self._run_with_timeout(
+                    lambda: self._gemini_extract_official_specs(sku, text, source_url, category)
+                )
                 if specs:
                     return specs, highlights
             except Exception:
@@ -42,7 +61,7 @@ class HybridModelRouter(KeywordModelRouter):
             return []
         if settings.has_gemini:
             try:
-                findings = self._gemini_extract_findings(sku, corpus)
+                findings = self._run_with_timeout(lambda: self._gemini_extract_findings(sku, corpus))
                 if findings:
                     return findings
             except Exception:
@@ -59,7 +78,9 @@ class HybridModelRouter(KeywordModelRouter):
         if not (settings.has_gemini and image_urls):
             return [], []
         try:
-            return self._gemini_extract_official_specs_from_images(sku, image_urls, source_url, category)
+            return self._run_with_timeout(
+                lambda: self._gemini_extract_official_specs_from_images(sku, image_urls, source_url, category)
+            )
         except Exception:
             return [], []
 

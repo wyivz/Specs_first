@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from collectors.credentials import load_reddit_credentials
 from collectors.diagnostics import CollectorDiagnostics
-from collectors.extractors import dedupe_evidence, evidence_from_page, evidence_from_search_result
+from collectors.extractors import (
+    dedupe_evidence,
+    evidence_from_page,
+    evidence_from_search_result,
+    evidence_mentions_sku,
+)
 from collectors.http import HttpClient
 from collectors.resilient_fetch import ResilientFetcher
 from schemas import EvidenceItem, ProductCandidate
@@ -30,10 +35,21 @@ class ForumSourceCollector:
     ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
         include_reddit = load_reddit_credentials().configured
+        max_results = 3 if not use_browser else 8
         for platform, query in forum_search_queries(candidate.sku, include_reddit=include_reddit):
-            ranked = rank_search_results_for_reviews(self.http.search(query, max_results=8))
+            ranked = rank_search_results_for_reviews(self.http.search(query, max_results=max_results))
             for result in ranked:
-                search_evidence = evidence_from_search_result(platform, result, confidence=0.57)
+                if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip unrelated search hit: {result.url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    continue
+                search_evidence = evidence_from_search_result(
+                    platform, result, confidence=0.57, sku=candidate.sku
+                )
                 if search_evidence:
                     evidence.append(search_evidence)
                 # Reddit/Chiphell: HTTP(+Cookie) first; only escalate when caller opts in
@@ -46,7 +62,15 @@ class ForumSourceCollector:
                     sku=candidate.sku,
                 )
                 if page.ok or page.markup:
-                    evidence.extend(evidence_from_page(platform, page.url, page.markup, confidence=0.64))
+                    evidence.extend(
+                        evidence_from_page(
+                            platform,
+                            page.url,
+                            page.markup,
+                            confidence=0.64,
+                            sku=candidate.sku,
+                        )
+                    )
                 else:
                     self.diagnostics.record(
                         platform,

@@ -4,7 +4,7 @@ from collectors.adapters.bilibili import BilibiliAdapter
 from collectors.adapters.registry import AdapterRegistry, create_default_registry
 from collectors.adapters.youtube import YouTubeAdapter
 from collectors.diagnostics import CollectorDiagnostics
-from collectors.extractors import dedupe_evidence, evidence_from_page, evidence_from_search_result
+from collectors.extractors import dedupe_evidence, evidence_from_page, evidence_from_search_result, evidence_mentions_sku
 from collectors.http import HttpClient
 from collectors.platform_auth import PlatformAuthRequired
 from collectors.resilient_fetch import ResilientFetcher
@@ -38,16 +38,27 @@ class VideoSourceCollector:
     ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
         self.bilibili.reset_api_budget()
+        max_results = 3 if not use_browser else 6
         for platform, query in video_search_queries(candidate.sku):
-            ranked = rank_search_results_for_reviews(self.http.search(query, max_results=6))
+            ranked = rank_search_results_for_reviews(self.http.search(query, max_results=max_results))
             for result in ranked:
-                search_evidence = evidence_from_search_result(platform, result, confidence=0.52)
+                if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip unrelated search hit: {result.url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    continue
+                search_evidence = evidence_from_search_result(
+                    platform, result, confidence=0.52, sku=candidate.sku
+                )
                 if search_evidence:
                     evidence.append(search_evidence)
                 page = self.resilient.fetch(
                     result.url,
                     task_id=task_id,
-                    use_browser=use_browser or platform in {"Bilibili", "YouTube"},
+                    use_browser=use_browser,
                     storage_state_path=storage_state_path,
                     sku=candidate.sku,
                 )
@@ -55,9 +66,29 @@ class VideoSourceCollector:
                     try:
                         adapter = self.registry.for_url(page.url)
                         if adapter is not None and hasattr(adapter, "extract_evidence"):
-                            evidence.extend(adapter.extract_evidence(page.url, page.markup, confidence=0.62))
+                            try:
+                                evidence.extend(
+                                    adapter.extract_evidence(  # type: ignore[call-arg]
+                                        page.url,
+                                        page.markup,
+                                        confidence=0.62,
+                                        use_browser=use_browser,
+                                    )
+                                )
+                            except TypeError:
+                                evidence.extend(
+                                    adapter.extract_evidence(page.url, page.markup, confidence=0.62)
+                                )
                         else:
-                            evidence.extend(evidence_from_page(platform, page.url, page.markup, confidence=0.58))
+                            evidence.extend(
+                                evidence_from_page(
+                                    platform,
+                                    page.url,
+                                    page.markup,
+                                    confidence=0.58,
+                                    sku=candidate.sku,
+                                )
+                            )
                     except PlatformAuthRequired as exc:
                         exc.url = exc.url or page.url
                         raise

@@ -32,6 +32,25 @@ class PageSanitizeTest(unittest.TestCase):
         self.assertNotIn("Copyright 2026", page.rich_text)
         self.assertNotIn("font-family", page.rich_text)
 
+    def test_void_noise_tags_do_not_wipe_page_body(self) -> None:
+        # Sony-like pages put "nav" inside search <input class="...">; void tags
+        # must not permanently raise skip_depth or specs disappear.
+        markup = """
+        <html><body>
+          <input class="search-field__input site-nav-query" type="search" />
+          <img class="banner-ads" src="/x.png" />
+          <main>
+            <h3>Focal Length (mm)</h3><p>50</p>
+            <h3>Maximum Aperture</h3><p>1.2</p>
+            <h3>Weight</h3><p>778 g</p>
+          </main>
+        </body></html>
+        """
+        page = sanitize_html("https://www.sony.com/electronics/x", markup)
+        self.assertIn("Focal Length", page.rich_text)
+        self.assertIn("778 g", page.rich_text)
+        self.assertGreater(len(page.text), 40)
+
     def test_detects_captcha_blockers(self) -> None:
         markup = """
         <html><body>
@@ -42,6 +61,16 @@ class PageSanitizeTest(unittest.TestCase):
         blockers = detect_page_blockers("https://item.jd.com/123.html", markup, "security check")
         kinds = {blocker.kind for blocker in blockers}
         self.assertIn("auth_or_captcha", kinds)
+
+    def test_login_nav_alone_is_not_captcha(self) -> None:
+        blockers = detect_page_blockers(
+            "https://campus.jd.com/",
+            "<html><body><a>请登录</a><h1>京东校园招聘</h1><p>投递简历</p></body></html>",
+            "请登录 京东校园招聘 投递简历",
+            title="京东校招",
+        )
+        kinds = {blocker.kind for blocker in blockers}
+        self.assertNotIn("auth_or_captcha", kinds)
 
     def test_extracts_json_ld_and_meta(self) -> None:
         markup = """

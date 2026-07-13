@@ -54,6 +54,7 @@ class Settings:
     }
     gemini_context_cache_min_chars: int = _int_env("GEMINI_CONTEXT_CACHE_MIN_CHARS", 6000)
     gemini_context_cache_ttl_seconds: int = _int_env("GEMINI_CONTEXT_CACHE_TTL_SECONDS", 300)
+    gemini_call_timeout_seconds: float = _float_env("GEMINI_CALL_TIMEOUT_SECONDS", 45.0)
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     vault_path: Path = Path(os.getenv("OBSIDIAN_VAULT_PATH", "vault_output"))
     default_mode: str = os.getenv("SPECS_FIRST_MODE", "mock")

@@ -68,11 +68,28 @@ class ResilientFetcher:
             )
 
         strategy = strategy_for_url(url)
-        force_browser = use_browser or strategy.mode == "browser_first"
-        if strategy.mode == "api_first":
-            force_browser = use_browser
         http_snapshot = self._fetch_http(url)
         needs_escalation = self._needs_browser_escalation(http_snapshot, strategy)
+
+        # Hard HTTP-only when caller disables browser (CLI live / checkbox off).
+        # Previously browser_first sites and weak pages still escalated to Playwright
+        # and could hang Phase 2 on YouTube/Bilibili even with use_browser=False.
+        if not use_browser:
+            if http_snapshot.ok and not needs_escalation:
+                self._log_snapshot(http_snapshot, sku=sku)
+                return http_snapshot
+            self.diagnostics.record(
+                "fetch",
+                f"http-only mode; not escalating to browser for {url}; strategy={strategy.mode}",
+                level="info",
+                sku=sku,
+            )
+            self._log_snapshot(http_snapshot, sku=sku)
+            return http_snapshot
+
+        force_browser = strategy.mode == "browser_first"
+        if strategy.mode == "api_first":
+            force_browser = False
         if http_snapshot.ok and not needs_escalation:
             self._log_snapshot(http_snapshot, sku=sku)
             return http_snapshot

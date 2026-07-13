@@ -28,9 +28,16 @@ class ModelRouterTest(unittest.TestCase):
         # Title has been generalized to be category-agnostic
         self.assertIn("tradeoff", findings[0].title.lower())
 
-    def test_create_model_router_defaults_to_keyword_without_keys(self) -> None:
+    def test_create_model_router_keyword_never_uses_hybrid(self) -> None:
+        # Even when Gemini/OpenAI keys exist, keyword mode must stay deterministic.
         router = create_model_router("keyword")
-        self.assertIsInstance(router, (KeywordModelRouter, HybridModelRouter))
+        self.assertIs(type(router), KeywordModelRouter)
+
+    def test_create_model_router_hybrid_when_keys_present(self) -> None:
+        boosted = dataclasses.replace(settings, gemini_api_key="fake-key")
+        with patch("backend.model_router.settings", boosted):
+            router = create_model_router("hybrid")
+            self.assertIsInstance(router, HybridModelRouter)
 
     def test_arbitration_marks_focus_ring_as_major(self) -> None:
         router = KeywordModelRouter()

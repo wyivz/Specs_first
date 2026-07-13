@@ -53,6 +53,23 @@ class TmallTaobaoAdapter:
         lower = url.lower()
         return "taobao.com" in lower or "tmall.com" in lower
 
+    def is_product_url(self, url: str) -> bool:
+        if not url or "{keyword}" in url or "{" in url:
+            return False
+        lower = url.lower()
+        if any(
+            noise in lower
+            for noise in (
+                "login.",
+                "passport.",
+                "world.taobao.com/lang/",
+                "s.taobao.com",
+                "list.tmall.com",
+            )
+        ):
+            return False
+        return bool(self._extract_item_id(url, ""))
+
     def normalize_url(self, url: str) -> str:
         if not self.supports(url):
             return url
