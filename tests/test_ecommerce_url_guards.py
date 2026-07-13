@@ -72,6 +72,20 @@ class EcommerceProductUrlGuardTest(unittest.TestCase):
     def test_headed_captcha_only_for_product_urls(self) -> None:
         self.assertTrue(PlaywrightCapture.is_ecommerce_product_url("https://item.jd.com/1.html"))
         self.assertFalse(PlaywrightCapture.is_ecommerce_product_url("https://campus.jd.com/"))
+        self.assertTrue(PlaywrightCapture.should_skip_headed_captcha("https://campus.jd.com/"))
+        self.assertFalse(PlaywrightCapture.should_skip_headed_captcha("https://item.jd.com/1.html"))
+        # Video / official hosts must never be treated as ecommerce junk.
+        self.assertFalse(
+            PlaywrightCapture.should_skip_headed_captcha("https://www.bilibili.com/video/BV1xx411c7mD")
+        )
+        self.assertFalse(
+            PlaywrightCapture.should_skip_headed_captcha("https://www.youtube.com/watch?v=abc123")
+        )
+        self.assertFalse(
+            PlaywrightCapture.should_skip_headed_captcha(
+                "https://www.sony.com/electronics/support/lenses/sel50f12gm/specifications"
+            )
+        )
 
 
 if __name__ == "__main__":

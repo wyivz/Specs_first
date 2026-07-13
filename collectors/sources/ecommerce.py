@@ -325,14 +325,13 @@ class EcommerceSourceCollector:
                         sku=candidate.sku,
                     )
                     continue
-                fetch_browser = use_browser if platform != "JD" else False
+                fetch_browser = use_browser
                 if platform == "Taobao/Tmall" and not (self.tmall_taobao.credentials.cookie or "").strip():
                     fetch_browser = False
                 try:
                     snapshot = self.resilient.fetch(
                         target_url,
                         task_id=task_id,
-                        # JD prefers HTTP(+Cookie)/mgets; only escalate when page is weak.
                         use_browser=fetch_browser,
                         storage_state_path=storage_state_path,
                         sku=candidate.sku,
@@ -450,7 +449,7 @@ class EcommerceSourceCollector:
                     continue
                 if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
                     continue
-                fetch_browser = use_browser if platform != "JD" else False
+                fetch_browser = use_browser
                 if platform == "Taobao/Tmall" and not (self.tmall_taobao.credentials.cookie or "").strip():
                     fetch_browser = False
                 try:

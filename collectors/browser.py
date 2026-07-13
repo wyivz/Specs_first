@@ -90,6 +90,19 @@ class PlaywrightCapture:
         lower = (url or "").lower()
         return any(hint in lower for hint in cls.PRODUCT_URL_HINTS)
 
+    @classmethod
+    def is_ecommerce_host(cls, url: str) -> bool:
+        lower = (url or "").lower()
+        return any(host in lower for host in cls.MOBILE_HOSTS)
+
+    @classmethod
+    def should_skip_headed_captcha(cls, url: str, page_url: str = "") -> bool:
+        """True only for marketplace junk (campus/music/brand), never for video/official."""
+        combined_host = cls.is_ecommerce_host(url) or cls.is_ecommerce_host(page_url or url)
+        if not combined_host:
+            return False
+        return not cls.is_ecommerce_product_url(url) and not cls.is_ecommerce_product_url(page_url or url)
+
     def capture_page_slices(
         self,
         url: str,
@@ -129,12 +142,30 @@ class PlaywrightCapture:
                 blockers = detect_page_blockers(url, page_html, body_text, page.title())
                 if any(blocker.kind == "auth_or_captcha" for blocker in blockers):
                     context.storage_state(path=str(resolved_state))
-                    # Only pause / open headed captcha for real product pages.
+                    # Only pause / open headed captcha for real ecommerce product pages.
                     # Search junk (campus.jd.com, music.jd.com, brand indexes) must not
                     # hijack the pipeline with a fake "solve captcha" window.
-                    if not self.is_ecommerce_product_url(url) and not self.is_ecommerce_product_url(page.url):
+                    # Non-ecommerce hosts (Bilibili/YouTube/Sony) must NOT hit this branch —
+                    # previously ``not is_ecommerce_product_url`` treated them as junk and
+                    # aborted browser capture before API/HTML enrichment could run.
+                    page_url = page.url or url
+                    if self.should_skip_headed_captcha(url, page_url):
                         raise RuntimeError(
-                            f"Non-product ecommerce page looks blocked; skipping headed captcha: {page.url or url}"
+                            f"Non-product ecommerce page looks blocked; skipping headed captcha: {page_url}"
+                        )
+                    if not self.is_ecommerce_host(url) and not self.is_ecommerce_host(page_url):
+                        # Best-effort return: adapters (Bilibili API / YouTube captions) can
+                        # still enrich from URL + thin HTML without pausing the whole task.
+                        if page_html and (body_text or len(page_html) > 500):
+                            return BrowserCapture(
+                                url=page_url,
+                                screenshot_paths=screenshots,
+                                page_text=body_text,
+                                page_html=page_html,
+                                storage_state_path=resolved_state,
+                            )
+                        raise RuntimeError(
+                            f"Blocked non-ecommerce page; falling back to HTTP: {page_url}"
                         )
                     needs_headed = self.headed_fallback and any(
                         host in url.lower() for host in self.HEADED_CAPTCHA_HOSTS
