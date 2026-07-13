@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 
@@ -14,6 +15,7 @@ class DiagnosticRecord:
 @dataclass
 class CollectorDiagnostics:
     records: list[DiagnosticRecord] = field(default_factory=list)
+    on_record: Callable[[DiagnosticRecord], None] | None = None
 
     def record(
         self,
@@ -23,17 +25,25 @@ class CollectorDiagnostics:
         level: str = "warning",
         sku: str = "",
     ) -> None:
-        self.records.append(DiagnosticRecord(source=source, message=message, level=level, sku=sku))
+        item = DiagnosticRecord(source=source, message=message, level=level, sku=sku)
+        self.records.append(item)
+        if self.on_record is not None:
+            try:
+                self.on_record(item)
+            except Exception:
+                pass
 
     def extend(self, other: DiagnosticRecord | list[DiagnosticRecord]) -> None:
         if isinstance(other, DiagnosticRecord):
-            self.records.append(other)
+            self.record(other.source, other.message, level=other.level, sku=other.sku)
         else:
-            self.records.extend(other)
+            for item in other:
+                self.record(item.source, item.message, level=item.level, sku=item.sku)
 
     def merge(self, other: CollectorDiagnostics | None) -> None:
         if other:
-            self.records.extend(other.records)
+            for item in other.records:
+                self.record(item.source, item.message, level=item.level, sku=item.sku)
 
     def for_sku(self, sku: str) -> list[DiagnosticRecord]:
         return [record for record in self.records if not record.sku or record.sku == sku]

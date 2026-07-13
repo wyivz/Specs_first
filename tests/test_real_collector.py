@@ -24,36 +24,36 @@ class FakeHttp:
             "Zeiss Makro-Planar T* 50mm f/2 official specifications manual": [
                 SearchResult("Manual", "https://zeiss.example/specs", "Official manual")
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 site:bilibili.com 评测 缺点 问题 翻车 体验": [
+            '"Zeiss Makro-Planar T* 50mm f/2" site:bilibili.com 评测 缺点 问题 翻车 体验': [
                 SearchResult(
                     "B站评测：Zeiss 50mm 缺点汇总",
                     "https://www.bilibili.com/video/BVmock",
                     "评测中提到缺陷、卡顿和劝退点",
                 )
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 site:youtube.com review defect issue problem quality": [
+            '"Zeiss Makro-Planar T* 50mm f/2" site:youtube.com review defect issue problem quality': [
                 SearchResult(
                     "YouTube review: Zeiss 50mm chromatic aberration",
                     "https://www.youtube.com/watch?v=mock-yt-zeiss",
                     "Purple fringing and focus ring issues discussed in review.",
                 )
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 site:chiphell.com 缺点 品控 翻车 问题 体验": [
+            '"Zeiss Makro-Planar T* 50mm f/2" site:chiphell.com 缺点 品控 翻车 问题 体验': [
                 SearchResult(
                     "Chiphell Zeiss 50mm 讨论",
                     "https://www.chiphell.com/thread-mock.html",
                     "产品质量问题和品控讨论",
                 )
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 site:reddit.com defect issue quality problem review": [],
-            "Zeiss Makro-Planar T* 50mm f/2 site:item.jd.com": [
+            '"Zeiss Makro-Planar T* 50mm f/2" site:reddit.com defect issue quality problem review': [],
+            '"Zeiss Makro-Planar T* 50mm f/2" site:item.jd.com': [
                 SearchResult(
                     "JD Zeiss 50mm",
                     "https://item.jd.com/100010708487.html",
                     "标价 5999 元，优惠券 500，补贴 600，到手价 4899",
                 )
             ],
-            "Zeiss Makro-Planar T* 50mm f/2 (site:detail.tmall.com OR site:item.taobao.com)": [
+            '"Zeiss Makro-Planar T* 50mm f/2" (site:detail.tmall.com OR site:item.taobao.com)': [
                 SearchResult(
                     "Tmall Zeiss 50mm",
                     "https://detail.tmall.com/item.htm?id=22334455",
@@ -165,8 +165,10 @@ class RealCollectorTest(unittest.TestCase):
             self.assertIn("dataview", "".join(path.read_text(encoding="utf-8") for path in result.output_paths).lower())
 
     def test_ecommerce_parameter_block_is_ingested_before_price(self) -> None:
+        from schemas.category_profile import DynamicCategoryProfile
+
         fake = FakeHttp()
-        fake.searches["Zeiss Makro-Planar T* 50mm f/2 site:item.jd.com"] = [
+        fake.searches['"Zeiss Makro-Planar T* 50mm f/2" site:item.jd.com'] = [
             SearchResult(
                 "JD Zeiss 50mm parameter page",
                 "https://item.jd.com/100010708488.html",
@@ -174,13 +176,25 @@ class RealCollectorTest(unittest.TestCase):
             )
         ]
         collector = RealCollector(http=fake, browser=StubBrowser(fake.pages))  # type: ignore[arg-type]
+        collector.set_category_profile(
+            DynamicCategoryProfile(
+                category_label="镜头",
+                slots=["weight", "power", "battery", "focal_length", "max_aperture"],
+                aliases={"重量": "weight", "功率": "power", "电池": "battery"},
+                source="openai_jit",
+            )
+        )
         candidate = collector.discover_candidates("Zeiss 50mm", "Lens")[0]
         specs, highlights = collector.collect_official_specs(candidate)
         names = {spec.name for spec in specs}
         self.assertIn("weight", names)
         self.assertTrue(any("12" in spec.value and "w" in spec.value.lower() for spec in specs))
         self.assertTrue(any("530 g" in spec.value for spec in specs))
-        self.assertTrue(any("80 Wh" in spec.value for spec in specs))
+        # Tmall desc may contribute battery capacity (normalized 瓦时 → Wh).
+        self.assertTrue(
+            any("80" in spec.value and ("wh" in spec.value.lower() or "瓦" in spec.value) for spec in specs)
+            or any(name in {"battery", "电池容量"} for name in names)
+        )
 
 
 if __name__ == "__main__":

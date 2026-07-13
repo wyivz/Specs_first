@@ -10,20 +10,31 @@ from backend.config import settings
 from backend.gemini_health import resolve_gemini_model
 from backend.retry import retry_call
 from backend.router_keyword import KeywordModelRouter
-from backend.router_schemas import ARBITRATION_SCHEMA, parse_json_payload
+from backend.router_schemas import ARBITRATION_SCHEMA, CATEGORY_PROFILE_SCHEMA, parse_json_payload
 from collectors.extractors import ParsedPrice
 from schemas import ConflictLevel, ConflictWarning, EvidenceItem, OfficialSpec, PriceFinding, RealWorldFinding
+from schemas.category_profile import (
+    DynamicCategoryProfile,
+    canonical_slots,
+    generic_category_profile,
+    normalize_spec_name,
+)
 
 T = TypeVar("T")
 
 
 class HybridModelRouter(KeywordModelRouter):
-    """Gemini: massive text ingestion + multimodal OCR. OpenAI: structured output only."""
+    """Gemini: vision survey + text/image fill. OpenAI: JIT schema + arbitration."""
 
     def __init__(self, mode: str | None = None) -> None:
+        super().__init__()
         self.mode = mode or settings.model_mode
         self._keyword = KeywordModelRouter()
         self._last_summary = ""
+
+    def set_category_profile(self, profile: DynamicCategoryProfile | None) -> None:
+        super().set_category_profile(profile)
+        self._keyword.set_category_profile(profile)
 
     @staticmethod
     def _run_with_timeout(fn: Callable[[], T], *, timeout_seconds: float | None = None) -> T:
@@ -38,6 +49,48 @@ class HybridModelRouter(KeywordModelRouter):
                 future.cancel()
                 raise TimeoutError(f"Gemini call exceeded {limit:.0f}s") from exc
 
+    def survey_product_from_images(
+        self,
+        sku: str,
+        image_urls: list[str],
+        query: str = "",
+    ) -> dict[str, Any]:
+        if not (settings.has_gemini and image_urls):
+            return {}
+        try:
+            return self._run_with_timeout(
+                lambda: self._gemini_survey_product_from_images(sku, image_urls, query)
+            )
+        except Exception:
+            return {}
+
+    def build_category_profile(
+        self,
+        query: str,
+        candidates: list | None = None,
+        vision_clues: dict | None = None,
+        category_hint: str = "",
+    ) -> DynamicCategoryProfile:
+        if settings.has_openai:
+            try:
+                profile = retry_call(
+                    lambda: self._openai_build_category_profile(
+                        query,
+                        candidates or [],
+                        vision_clues or {},
+                        category_hint,
+                    ),
+                    attempts=2,
+                )
+                if profile is not None:
+                    self.set_category_profile(profile)
+                    return profile
+            except Exception:
+                pass
+        profile = generic_category_profile(category_hint or "通用商品")
+        self.set_category_profile(profile)
+        return profile
+
     def extract_official_specs_from_text(
         self,
         sku: str,
@@ -51,9 +104,10 @@ class HybridModelRouter(KeywordModelRouter):
                     lambda: self._gemini_extract_official_specs(sku, text, source_url, category)
                 )
                 if specs:
-                    return specs, highlights
+                    return self._normalize_specs(specs, category), highlights
             except Exception:
                 pass
+        self._keyword.set_category_profile(self.category_profile)
         return self._keyword.extract_official_specs_from_text(sku, text, source_url, category)
 
     def extract_real_world_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
@@ -78,9 +132,12 @@ class HybridModelRouter(KeywordModelRouter):
         if not (settings.has_gemini and image_urls):
             return [], []
         try:
-            return self._run_with_timeout(
-                lambda: self._gemini_extract_official_specs_from_images(sku, image_urls, source_url, category)
+            specs, highlights = self._run_with_timeout(
+                lambda: self._gemini_extract_official_specs_from_images(
+                    sku, image_urls, source_url, category
+                )
             )
+            return self._normalize_specs(specs, category), highlights
         except Exception:
             return [], []
 
@@ -143,24 +200,54 @@ class HybridModelRouter(KeywordModelRouter):
         self,
         findings: list[RealWorldFinding],
         official_specs: list[OfficialSpec] | None = None,
+        category: str = "",
     ) -> list[ConflictWarning]:
         self._last_summary = ""
         if settings.has_openai and findings:
             try:
                 warnings = retry_call(
-                    lambda: self._openai_arbitrate_structured(findings, official_specs or []),
+                    lambda: self._openai_arbitrate_structured(
+                        findings, official_specs or [], category=category
+                    ),
                     attempts=2,
                 )
                 if warnings is not None:
                     return warnings
             except Exception:
                 pass
-        return self._keyword.arbitrate_conflicts(findings, official_specs)
+        self._keyword.set_category_profile(self.category_profile)
+        return self._keyword.arbitrate_conflicts(findings, official_specs, category=category)
 
     def summarize(self, warnings: list[ConflictWarning], findings: list[RealWorldFinding]) -> str:
         if self._last_summary:
             return self._last_summary
         return self._keyword.summarize(warnings, findings)
+
+    def _normalize_specs(
+        self,
+        specs: list[OfficialSpec],
+        category: str,
+    ) -> list[OfficialSpec]:
+        profile = self.category_profile
+        slots = set(canonical_slots(category, profile=profile))
+        normalized: list[OfficialSpec] = []
+        seen: set[str] = set()
+        for spec in specs:
+            name = normalize_spec_name(spec.name, category, profile=profile)
+            if name in seen:
+                continue
+            seen.add(name)
+            normalized.append(
+                OfficialSpec(
+                    name=name,
+                    value=spec.value,
+                    unit=spec.unit,
+                    source_url=spec.source_url,
+                )
+            )
+        # Keep non-slot specs; matrix will prefer slots and push extras to highlights upstream.
+        del slots
+        return normalized
 
     def _gemini_model(self):
         import google.generativeai as genai
@@ -170,17 +257,6 @@ class HybridModelRouter(KeywordModelRouter):
 
     @contextmanager
     def _gemini_cached_content(self, corpus_text: str, system_instruction: str) -> Iterator[Any]:
-        """Yield a GenerativeModel bound to a Gemini context cache of ``corpus_text``.
-
-        Context caching lets large, repeatedly-referenced text (the same
-        product corpus is re-sent on every retry attempt) be billed once
-        instead of on every call. Gemini enforces a minimum cache size
-        (~2048 tokens), so caching is only attempted above
-        ``gemini_context_cache_min_chars``. Any failure (unsupported model,
-        below the token floor, API error) silently falls back to yielding
-        ``None`` so the caller sends the full prompt inline instead. The
-        remote cache is always cleaned up on exit.
-        """
         cache = None
         model = None
         if settings.gemini_context_cache_enabled and len(corpus_text) >= settings.gemini_context_cache_min_chars:
@@ -210,6 +286,107 @@ class HybridModelRouter(KeywordModelRouter):
                 except Exception:
                     pass
 
+    def _gemini_survey_product_from_images(
+        self,
+        sku: str,
+        image_urls: list[str],
+        query: str,
+    ) -> dict[str, Any]:
+        from urllib.request import Request, urlopen
+
+        prompt = (
+            f"Survey product images for SKU '{sku}' (user query: {query or 'n/a'}). "
+            "Do NOT decide final comparison columns. Return JSON only: "
+            '{"likely_category":"","parameter_clues":[{"name":"","value":"","note":""}],'
+            '"packaging_or_detail_notes":[""],"other_signals":[""]}. '
+            "List attribute names/values visible on packaging, spec sheets, or detail graphics."
+        )
+        clues: dict[str, Any] = {
+            "likely_category": "",
+            "parameter_clues": [],
+            "packaging_or_detail_notes": [],
+            "other_signals": [],
+        }
+        for url in image_urls[:6]:
+            request = Request(url, headers={"User-Agent": "SpecsFirst/0.1"})
+            with urlopen(request, timeout=12) as response:
+                data = response.read(4_000_000)
+                mime_type = response.headers.get_content_type() or "image/jpeg"
+            gemini_response = self._gemini_model().generate_content(
+                [prompt, {"mime_type": mime_type, "data": data}]
+            )
+            payload = parse_json_payload(gemini_response.text or "", default={})
+            if payload.get("likely_category") and not clues["likely_category"]:
+                clues["likely_category"] = str(payload.get("likely_category", "")).strip()
+            for key in ("parameter_clues", "packaging_or_detail_notes", "other_signals"):
+                items = payload.get(key) or []
+                if not isinstance(items, list):
+                    continue
+                bucket = clues[key]
+                for item in items:
+                    if item and item not in bucket and len(bucket) < 24:
+                        bucket.append(item)
+        return clues
+
+    def _openai_build_category_profile(
+        self,
+        query: str,
+        candidates: list,
+        vision_clues: dict[str, Any],
+        category_hint: str,
+    ) -> DynamicCategoryProfile | None:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=settings.openai_api_key)
+        candidate_rows = []
+        for item in candidates[:10]:
+            if hasattr(item, "sku"):
+                candidate_rows.append(
+                    {
+                        "sku": getattr(item, "sku", ""),
+                        "brand": getattr(item, "brand", ""),
+                        "title_or_url": getattr(item, "source_url", ""),
+                    }
+                )
+            elif isinstance(item, dict):
+                candidate_rows.append(item)
+        payload = {
+            "query": query,
+            "category_hint": category_hint,
+            "candidates": candidate_rows,
+            "vision_clues": vision_clues,
+        }
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You define a universal product comparison schema for ANY category. "
+                        "Pick a concise Chinese or English category_label, exactly 5-8 snake_case "
+                        "hard comparison slots that buyers care about across SKUs, bilingual aliases "
+                        "mapping common label substrings onto those slots, comparison_keywords for "
+                        "cross-SKU matrix language, and search_modifiers for review/forum queries. "
+                        "Unique SKU-only features must NOT become slots. Use OpenAI structured output only."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "category_profile",
+                    "strict": True,
+                    "schema": CATEGORY_PROFILE_SCHEMA,
+                },
+            },
+        )
+        parsed = json.loads(response.choices[0].message.content or "{}")
+        if not parsed.get("slots"):
+            return None
+        profile = DynamicCategoryProfile.from_dict({**parsed, "source": "openai_jit"})
+        return profile
+
     def _gemini_extract_official_specs(
         self,
         sku: str,
@@ -217,10 +394,8 @@ class HybridModelRouter(KeywordModelRouter):
         source_url: str,
         category: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
-        from schemas.category_profile import canonical_slots
-
         corpus = text[:120000]
-        slots = canonical_slots(category)
+        slots = canonical_slots(category, profile=self.category_profile)
         system_instruction = (
             "You extract official product specifications verbatim from source text. "
             "Never invent values that are not present in the text."
@@ -233,7 +408,7 @@ class HybridModelRouter(KeywordModelRouter):
             '"highlights":["unique feature"]}. '
             f"Prefer these canonical snake_case field names when the source text covers them: {', '.join(slots)}. "
             "For any other factual attribute present in the text that doesn't fit those names, "
-            "invent a concise snake_case name (for example screen_size, battery_capacity) instead of dropping it. "
+            "invent a concise snake_case name instead of dropping it. "
             "Attributes unique to this SKU that don't belong as a comparison column go into 'highlights' instead. "
             "Include only factual values present in the text."
         )
@@ -333,10 +508,9 @@ class HybridModelRouter(KeywordModelRouter):
         source_url: str,
         category: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
-        from schemas.category_profile import canonical_slots
         from urllib.request import Request, urlopen
 
-        slots = canonical_slots(category)
+        slots = canonical_slots(category, profile=self.category_profile)
         prompt = (
             f"Extract product specifications for {sku} from these detail images. "
             "Return JSON only: "
@@ -378,11 +552,15 @@ class HybridModelRouter(KeywordModelRouter):
         self,
         findings: list[RealWorldFinding],
         official_specs: list[OfficialSpec],
+        category: str = "",
     ) -> list[ConflictWarning] | None:
         from openai import OpenAI
 
         client = OpenAI(api_key=settings.openai_api_key)
+        slots = list(canonical_slots(category, profile=self.category_profile))
         payload = {
+            "category": category or (self.category_profile.category_label if self.category_profile else ""),
+            "canonical_slots": slots,
             "findings": [
                 {
                     "title": finding.title,
@@ -404,6 +582,7 @@ class HybridModelRouter(KeywordModelRouter):
                     "role": "system",
                     "content": (
                         "Arbitrate conflicts between official specs and real-world reports. "
+                        "warning.field MUST be one of canonical_slots when possible. "
                         "Use OpenAI structured output only; do not add prose outside JSON."
                     ),
                 },
@@ -421,9 +600,12 @@ class HybridModelRouter(KeywordModelRouter):
             if index < 0 or index >= len(findings):
                 continue
             finding = findings[index]
+            field = str(item.get("field", "general"))
+            if self.category_profile:
+                field = normalize_spec_name(field, category, profile=self.category_profile)
             warnings.append(
                 ConflictWarning(
-                    field=str(item.get("field", "general")),
+                    field=field,
                     official_claim=str(item.get("official_claim", "")),
                     real_world_claim=str(item.get("real_world_claim", finding.detail)),
                     level=ConflictLevel(str(item.get("level", finding.severity.value))),

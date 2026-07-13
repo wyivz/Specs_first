@@ -9,7 +9,7 @@ from collectors.http import HttpClient
 from collectors.platform_auth import PlatformAuthRequired
 from collectors.resilient_fetch import ResilientFetcher
 from schemas import EvidenceItem, ProductCandidate
-from schemas.category_profile import rank_search_results_for_reviews, video_search_queries
+from schemas.category_profile import DynamicCategoryProfile, rank_search_results_for_reviews, video_search_queries
 
 
 class VideoSourceCollector:
@@ -27,6 +27,12 @@ class VideoSourceCollector:
         self.registry = registry or create_default_registry(http=http, diagnostics=self.diagnostics)
         self.bilibili = self.registry.require(BilibiliAdapter)
         self.youtube = self.registry.require(YouTubeAdapter)
+        self.category_profile: DynamicCategoryProfile | None = None
+
+    def _search_modifiers(self) -> list[str] | None:
+        if self.category_profile and self.category_profile.search_modifiers:
+            return list(self.category_profile.search_modifiers)
+        return None
 
     def collect(
         self,
@@ -39,8 +45,11 @@ class VideoSourceCollector:
         evidence: list[EvidenceItem] = []
         self.bilibili.reset_api_budget()
         max_results = 3 if not use_browser else 6
-        for platform, query in video_search_queries(candidate.sku):
-            ranked = rank_search_results_for_reviews(self.http.search(query, max_results=max_results))
+        for platform, query in video_search_queries(candidate.sku, modifiers=self._search_modifiers()):
+            ranked = rank_search_results_for_reviews(
+                self.http.search(query, max_results=max_results),
+                sku=candidate.sku,
+            )
             for result in ranked:
                 if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
                     self.diagnostics.record(
@@ -73,12 +82,23 @@ class VideoSourceCollector:
                                         page.markup,
                                         confidence=0.62,
                                         use_browser=use_browser,
+                                        sku=candidate.sku,
                                     )
                                 )
                             except TypeError:
-                                evidence.extend(
-                                    adapter.extract_evidence(page.url, page.markup, confidence=0.62)
-                                )
+                                try:
+                                    evidence.extend(
+                                        adapter.extract_evidence(  # type: ignore[call-arg]
+                                            page.url,
+                                            page.markup,
+                                            confidence=0.62,
+                                            sku=candidate.sku,
+                                        )
+                                    )
+                                except TypeError:
+                                    evidence.extend(
+                                        adapter.extract_evidence(page.url, page.markup, confidence=0.62)
+                                    )
                         else:
                             evidence.extend(
                                 evidence_from_page(

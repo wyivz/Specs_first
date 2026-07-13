@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collectors.extractors import extract_specs_from_text
 from schemas import ConflictLevel, ConflictWarning, EvidenceItem, OfficialSpec, PriceFinding, RealWorldFinding
+from schemas.category_profile import DynamicCategoryProfile, canonical_slots, generic_category_profile
+
 
 class KeywordModelRouter:
     """Deterministic fallback when API keys are absent.
@@ -12,6 +14,31 @@ class KeywordModelRouter:
     This fallback exists only for testing without API keys.
     """
 
+    category_profile: DynamicCategoryProfile | None = None
+
+    def __init__(self) -> None:
+        self.category_profile: DynamicCategoryProfile | None = None
+
+    def set_category_profile(self, profile: DynamicCategoryProfile | None) -> None:
+        self.category_profile = profile
+
+    def survey_product_from_images(
+        self,
+        sku: str,
+        image_urls: list[str],
+        query: str = "",
+    ) -> dict:
+        return {}
+
+    def build_category_profile(
+        self,
+        query: str,
+        candidates: list | None = None,
+        vision_clues: dict | None = None,
+        category_hint: str = "",
+    ) -> DynamicCategoryProfile:
+        return generic_category_profile(category_hint or "通用商品")
+
     def extract_official_specs_from_text(
         self,
         sku: str,
@@ -19,9 +46,7 @@ class KeywordModelRouter:
         source_url: str,
         category: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
-        from collectors.extractors import extract_specs_from_text
-
-        return extract_specs_from_text(text, source_url, category), []
+        return extract_specs_from_text(text, source_url, category, profile=self.category_profile), []
 
     def extract_official_specs_from_images(
         self,
@@ -139,25 +164,12 @@ class KeywordModelRouter:
         self,
         findings: list[RealWorldFinding],
         official_specs: list[OfficialSpec] | None = None,
+        category: str = "",
     ) -> list[ConflictWarning]:
-        """Arbitrate conflicts between official specs and real-world findings.
-        
-        NOTE: This keyword-based fallback provides generic conflict detection.
-        In production with OpenAI/Gemini, the arbitration is done intelligently
-        based on the actual product context and spec names.
-        """
+        """Arbitrate conflicts between official specs and real-world findings."""
         warnings: list[ConflictWarning] = []
         named = [spec.name for spec in (official_specs or [])]
-        preferred = (
-            "weight",
-            "max_aperture",
-            "focal_length",
-            "mount",
-            "filter_diameter",
-            "battery_capacity",
-            "screen_size",
-            "chipset",
-        )
+        preferred = canonical_slots(category, profile=self.category_profile)
         junk_tokens = ("举报", "维权", "许可", "京东", "违法", "经营")
         related_default = next((name for name in preferred if name in named), None)
         if related_default is None:
@@ -193,7 +205,6 @@ class KeywordModelRouter:
                     )
                 )
             else:
-                # Generic warning for any finding
                 warnings.append(
                     ConflictWarning(
                         field=related_field,

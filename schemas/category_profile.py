@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from typing import Any
 
 
-# Generic evaluation slots used by keyword fallback extractors (non-mock code paths).
+# Generic evaluation slots used when no JIT profile is available (no LLM / failure).
 GENERIC_PARAMETER_SLOTS = tuple(f"parameter_{chr(ord('a') + index)}" for index in range(8))
 
 
@@ -15,379 +16,190 @@ def slugify_spec_name(label: str) -> str:
     return cleaned or "parameter"
 
 
-@dataclass(frozen=True)
-class CategoryTemplate:
-    """Category-specific spec schema: the 5-8 canonical 'hard slot' columns
-    the plan calls for in Phase 0, plus label aliases (EN/ZH) so that
-    differently-worded source labels ("Focal Length" / "焦距") collapse
-    onto the same matrix column instead of fragmenting into duplicate,
-    mostly-empty columns (the "dimension explosion" the plan warns about).
+@dataclass
+class DynamicCategoryProfile:
+    """JIT category schema: 5-8 hard comparison slots + aliases + search keywords.
+
+    Built by ChatGPT Structured Outputs after Gemini vision survey (or from
+    query text alone when no images are available). Persisted on the task
+    checkpoint so every SKU in a compare run shares one column schema.
     """
 
-    key: str
-    match_keywords: tuple[str, ...]
-    slots: tuple[str, ...]
+    category_label: str = "通用商品"
+    slots: list[str] = field(default_factory=lambda: list(GENERIC_PARAMETER_SLOTS))
     aliases: dict[str, str] = field(default_factory=dict)
+    comparison_keywords: list[str] = field(default_factory=list)
+    search_modifiers: list[str] = field(default_factory=list)
+    source: str = "generic"  # openai_jit | generic
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> DynamicCategoryProfile:
+        if not data:
+            return generic_category_profile()
+        slots_raw = data.get("slots") or list(GENERIC_PARAMETER_SLOTS)
+        slots = [_normalize_slot_key(str(s)) for s in slots_raw if str(s).strip()]
+        slots = _clamp_slots(slots)
+        aliases_raw = data.get("aliases") or {}
+        aliases: dict[str, str] = {}
+        if isinstance(aliases_raw, dict):
+            for alias, slot in aliases_raw.items():
+                key = str(alias).strip().lower()
+                val = _normalize_slot_key(str(slot))
+                if key and val:
+                    aliases[key] = val
+        elif isinstance(aliases_raw, list):
+            for item in aliases_raw:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("alias", "")).strip().lower()
+                val = _normalize_slot_key(str(item.get("slot", "")))
+                if key and val:
+                    aliases[key] = val
+        label = str(data.get("category_label") or "").strip() or "通用商品"
+        source = str(data.get("source") or "generic").strip() or "generic"
+        comparison_keywords = [
+            str(item).strip() for item in (data.get("comparison_keywords") or []) if str(item).strip()
+        ]
+        search_modifiers = [
+            str(item).strip() for item in (data.get("search_modifiers") or []) if str(item).strip()
+        ]
+        return cls(
+            category_label=label,
+            slots=slots,
+            aliases=aliases,
+            comparison_keywords=comparison_keywords,
+            search_modifiers=search_modifiers,
+            source=source,
+        )
 
 
-# Each template's aliases map a lowercase label substring (EN or ZH) to one
-# of the template's canonical `slots`. These are examples covering common
-# categories; unmatched categories/labels gracefully fall back to
-# `GENERIC_PARAMETER_SLOTS` / `slugify_spec_name` so nothing breaks for a
-# category we haven't modeled yet.
-CATEGORY_TEMPLATES: dict[str, CategoryTemplate] = {
-    "lens": CategoryTemplate(
-        key="lens",
-        match_keywords=("lens", "镜头", "定焦", "变焦", "微单镜头", "单反镜头"),
-        slots=(
-            "focal_length",
-            "max_aperture",
-            "optical_structure",
-            "filter_diameter",
-            "weight",
-            "mount",
-            "min_focus_distance",
-            "image_stabilization",
-        ),
-        aliases={
-            "focal length": "focal_length",
-            "焦距": "focal_length",
-            "maximum aperture": "max_aperture",
-            "max aperture": "max_aperture",
-            "aperture": "max_aperture",
-            "最大光圈": "max_aperture",
-            "光圈": "max_aperture",
-            "optical structure": "optical_structure",
-            "镜片结构": "optical_structure",
-            "镜片组": "optical_structure",
-            "filter": "filter_diameter",
-            "口径": "filter_diameter",
-            "weight": "weight",
-            "重量": "weight",
-            "mount": "mount",
-            "卡口": "mount",
-            "minimum focus": "min_focus_distance",
-            "最近对焦": "min_focus_distance",
-            "stabiliz": "image_stabilization",
-            "防抖": "image_stabilization",
-        },
-    ),
-    "phone": CategoryTemplate(
-        key="phone",
-        match_keywords=("phone", "手机", "smartphone", "iphone"),
-        slots=(
-            "screen_size",
-            "resolution",
-            "chipset",
-            "ram",
-            "storage",
-            "battery_capacity",
-            "main_camera",
-            "weight",
-        ),
-        aliases={
-            "screen size": "screen_size",
-            "屏幕尺寸": "screen_size",
-            "resolution": "resolution",
-            "分辨率": "resolution",
-            "chipset": "chipset",
-            "processor": "chipset",
-            "处理器": "chipset",
-            "soc": "chipset",
-            "ram": "ram",
-            "运行内存": "ram",
-            "storage": "storage",
-            "存储": "storage",
-            "battery": "battery_capacity",
-            "电池": "battery_capacity",
-            "容量": "battery_capacity",
-            "camera": "main_camera",
-            "摄像头": "main_camera",
-            "weight": "weight",
-            "重量": "weight",
-        },
-    ),
-    "laptop": CategoryTemplate(
-        key="laptop",
-        match_keywords=("laptop", "notebook", "笔记本", "笔电", "ultrabook"),
-        slots=(
-            "cpu",
-            "gpu",
-            "ram",
-            "storage",
-            "screen_size",
-            "resolution",
-            "battery_capacity",
-            "weight",
-        ),
-        aliases={
-            "cpu": "cpu",
-            "processor": "cpu",
-            "处理器": "cpu",
-            "gpu": "gpu",
-            "显卡": "gpu",
-            "ram": "ram",
-            "内存": "ram",
-            "storage": "storage",
-            "存储": "storage",
-            "硬盘": "storage",
-            "screen size": "screen_size",
-            "屏幕尺寸": "screen_size",
-            "resolution": "resolution",
-            "分辨率": "resolution",
-            "battery": "battery_capacity",
-            "电池": "battery_capacity",
-            "weight": "weight",
-            "重量": "weight",
-        },
-    ),
-    "headphone": CategoryTemplate(
-        key="headphone",
-        match_keywords=("headphone", "headset", "earbud", "耳机", "耳麦"),
-        slots=(
-            "driver_size",
-            "frequency_response",
-            "impedance",
-            "battery_life",
-            "noise_cancellation",
-            "connectivity",
-            "water_resistance",
-            "weight",
-        ),
-        aliases={
-            "driver": "driver_size",
-            "单元": "driver_size",
-            "frequency response": "frequency_response",
-            "频响": "frequency_response",
-            "impedance": "impedance",
-            "阻抗": "impedance",
-            "battery life": "battery_life",
-            "续航": "battery_life",
-            "anc": "noise_cancellation",
-            "noise cancel": "noise_cancellation",
-            "降噪": "noise_cancellation",
-            "bluetooth": "connectivity",
-            "蓝牙": "connectivity",
-            "connectivity": "connectivity",
-            "waterproof": "water_resistance",
-            "防水": "water_resistance",
-            "ip rating": "water_resistance",
-            "weight": "weight",
-            "重量": "weight",
-        },
-    ),
-    "camera": CategoryTemplate(
-        key="camera",
-        match_keywords=("camera", "相机", "微单", "单反", "mirrorless", "dslr"),
-        slots=(
-            "sensor_size",
-            "resolution",
-            "iso_range",
-            "autofocus_points",
-            "video_resolution",
-            "battery_life",
-            "mount",
-            "weight",
-        ),
-        aliases={
-            "sensor": "sensor_size",
-            "画幅": "sensor_size",
-            "传感器": "sensor_size",
-            "resolution": "resolution",
-            "像素": "resolution",
-            "分辨率": "resolution",
-            "iso": "iso_range",
-            "autofocus": "autofocus_points",
-            "对焦点": "autofocus_points",
-            "video": "video_resolution",
-            "视频": "video_resolution",
-            "battery life": "battery_life",
-            "续航": "battery_life",
-            "mount": "mount",
-            "卡口": "mount",
-            "weight": "weight",
-            "重量": "weight",
-        },
-    ),
-    "monitor": CategoryTemplate(
-        key="monitor",
-        match_keywords=("monitor", "显示器", "display panel"),
-        slots=(
-            "screen_size",
-            "resolution",
-            "refresh_rate",
-            "panel_type",
-            "response_time",
-            "brightness",
-            "color_gamut",
-            "weight",
-        ),
-        aliases={
-            "screen size": "screen_size",
-            "尺寸": "screen_size",
-            "resolution": "resolution",
-            "分辨率": "resolution",
-            "refresh rate": "refresh_rate",
-            "刷新率": "refresh_rate",
-            "panel": "panel_type",
-            "面板": "panel_type",
-            "response time": "response_time",
-            "响应时间": "response_time",
-            "brightness": "brightness",
-            "亮度": "brightness",
-            "color gamut": "color_gamut",
-            "色域": "color_gamut",
-            "weight": "weight",
-            "重量": "weight",
-        },
-    ),
-    "keyboard": CategoryTemplate(
-        key="keyboard",
-        match_keywords=("keyboard", "键盘"),
-        slots=(
-            "switch_type",
-            "layout",
-            "connectivity",
-            "battery_life",
-            "keycap_material",
-            "backlight",
-            "hot_swappable",
-            "weight",
-        ),
-        aliases={
-            "switch": "switch_type",
-            "轴体": "switch_type",
-            "layout": "layout",
-            "布局": "layout",
-            "connectivity": "connectivity",
-            "连接方式": "connectivity",
-            "bluetooth": "connectivity",
-            "battery life": "battery_life",
-            "续航": "battery_life",
-            "keycap": "keycap_material",
-            "键帽": "keycap_material",
-            "backlight": "backlight",
-            "背光": "backlight",
-            "hot-swap": "hot_swappable",
-            "热插拔": "hot_swappable",
-            "weight": "weight",
-            "重量": "weight",
-        },
-    ),
-    "drone": CategoryTemplate(
-        key="drone",
-        match_keywords=("drone", "无人机", "quadcopter"),
-        slots=(
-            "max_flight_time",
-            "max_range",
-            "camera_resolution",
-            "max_speed",
-            "obstacle_avoidance",
-            "battery_capacity",
-            "gimbal_stabilization",
-            "weight",
-        ),
-        aliases={
-            "flight time": "max_flight_time",
-            "续航": "max_flight_time",
-            "range": "max_range",
-            "图传距离": "max_range",
-            "camera": "camera_resolution",
-            "摄像头": "camera_resolution",
-            "max speed": "max_speed",
-            "最大速度": "max_speed",
-            "obstacle": "obstacle_avoidance",
-            "避障": "obstacle_avoidance",
-            "battery": "battery_capacity",
-            "电池": "battery_capacity",
-            "gimbal": "gimbal_stabilization",
-            "云台": "gimbal_stabilization",
-            "weight": "weight",
-            "重量": "weight",
-        },
-    ),
-    "wearable": CategoryTemplate(
-        key="wearable",
-        match_keywords=("watch", "手表", "band", "手环", "wearable"),
-        slots=(
-            "battery_life",
-            "display_type",
-            "water_resistance",
-            "sensors",
-            "connectivity",
-            "gps",
-            "compatibility",
-            "weight",
-        ),
-        aliases={
-            "battery life": "battery_life",
-            "续航": "battery_life",
-            "display": "display_type",
-            "屏幕": "display_type",
-            "waterproof": "water_resistance",
-            "防水": "water_resistance",
-            "sensor": "sensors",
-            "传感器": "sensors",
-            "bluetooth": "connectivity",
-            "连接": "connectivity",
-            "gps": "gps",
-            "compatib": "compatibility",
-            "兼容": "compatibility",
-            "weight": "weight",
-            "重量": "weight",
-        },
-    ),
-}
+def _normalize_slot_key(raw: str) -> str:
+    return slugify_spec_name(raw.replace("-", "_"))
+
+
+def _clamp_slots(slots: list[str]) -> list[str]:
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for slot in slots:
+        if not slot or slot in seen:
+            continue
+        seen.add(slot)
+        cleaned.append(slot)
+        if len(cleaned) >= 8:
+            break
+    while len(cleaned) < 5:
+        filler = f"parameter_{chr(ord('a') + len(cleaned))}"
+        if filler not in seen:
+            cleaned.append(filler)
+            seen.add(filler)
+        else:
+            cleaned.append(f"extra_slot_{len(cleaned)}")
+            seen.add(cleaned[-1])
+    return cleaned
+
+
+def generic_category_profile(category_label: str = "通用商品") -> DynamicCategoryProfile:
+    label = (category_label or "").strip()
+    placeholder = label.lower() in {"", "product", "品类", "generic", "通用", "通用商品"}
+    return DynamicCategoryProfile(
+        category_label="通用商品" if placeholder else label,
+        slots=list(GENERIC_PARAMETER_SLOTS),
+        aliases={},
+        comparison_keywords=[],
+        search_modifiers=[],
+        source="generic",
+    )
+
+
+def infer_category(query: str = "", category_hint: str = "") -> str:
+    """Return a display label before JIT schema exists.
+
+    No preset keyword matching: keep a non-placeholder user hint, else
+    ``通用商品``. The real category label comes from ChatGPT JIT later.
+    """
+    del query  # reserved for callers; JIT uses query separately
+    hint = (category_hint or "").strip()
+    placeholder = hint.lower() in {"", "product", "品类", "generic", "通用", "通用商品"}
+    if hint and not placeholder:
+        return hint
+    return "通用商品"
 
 
 def resolve_category_key(category: str) -> str:
-    """Map a free-form category string (from Phase 0 disambiguation) onto
-    one of the known ``CATEGORY_TEMPLATES`` keys, or ``"generic"`` when
-    no template matches. Unmatched categories still work fine — they just
-    use the category-agnostic slot/alias-free fallback.
-    """
+    """Stable opaque key for logging/events (slug of label, or ``generic``)."""
     lowered = (category or "").strip().lower()
-    if not lowered:
+    if not lowered or lowered in {"product", "品类", "generic", "通用", "通用商品"}:
         return "generic"
-    for template in CATEGORY_TEMPLATES.values():
-        if any(keyword in lowered for keyword in template.match_keywords):
-            return template.key
-    return "generic"
+    return slugify_spec_name(category)
 
 
-def canonical_slots(category: str) -> tuple[str, ...]:
-    """The 5-8 canonical hard-spec column names for a category, or the
-    generic ``parameter_a..h`` slots when the category is unmodeled.
-    """
-    template = CATEGORY_TEMPLATES.get(resolve_category_key(category))
-    return template.slots if template else GENERIC_PARAMETER_SLOTS
+def category_template_key(query: str = "", category: str = "") -> str:
+    """Backward-compatible alias for ``resolve_category_key``."""
+    return resolve_category_key(infer_category(query, category) if category or query else category)
 
 
-def normalize_spec_name(label: str, category: str = "") -> str:
-    """Normalize an extracted spec label to a canonical column name.
+def canonical_slots(
+    category: str = "",
+    profile: DynamicCategoryProfile | None = None,
+) -> tuple[str, ...]:
+    """Hard-spec column names from a JIT profile, else generic ``parameter_a..h``."""
+    if profile and profile.slots:
+        return tuple(profile.slots)
+    del category
+    return GENERIC_PARAMETER_SLOTS
 
-    Tries the category template's aliases first (so "Focal Length" and
-    "焦距" both become ``focal_length``); falls back to ``slugify_spec_name``
-    for anything the template doesn't recognize, so unusual/independent
-    attributes still land in a stable, unique column via
-    ``spec_highlights``-style behavior rather than being dropped.
-    """
-    template = CATEGORY_TEMPLATES.get(resolve_category_key(category))
-    if template:
+
+def normalize_spec_name(
+    label: str,
+    category: str = "",
+    profile: DynamicCategoryProfile | None = None,
+) -> str:
+    """Normalize an extracted spec label onto a canonical column name."""
+    del category
+    if profile and profile.aliases:
         lowered = label.strip().lower()
-        # Do not let bare "aperture" alias capture Minimum Aperture (F).
-        if "minimum aperture" in lowered or "最小光圈" in lowered:
-            return slugify_spec_name(label)
-        for alias, canonical in template.aliases.items():
+        # Prefer longer aliases first so "battery capacity" beats "battery".
+        for alias, canonical in sorted(profile.aliases.items(), key=lambda item: -len(item[0])):
             if alias in lowered:
                 return canonical
+        slug = slugify_spec_name(label)
+        if slug in profile.slots:
+            return slug
     return slugify_spec_name(label)
 
 
-def video_search_queries(sku: str) -> list[tuple[str, str]]:
+def _append_modifiers(base: str, modifiers: list[str] | None) -> str:
+    if not modifiers:
+        return base
+    extra = " ".join(m for m in modifiers if m).strip()
+    if not extra:
+        return base
+    return f"{base} {extra}"
+
+
+def video_search_queries(
+    sku: str,
+    *,
+    modifiers: list[str] | None = None,
+) -> list[tuple[str, str]]:
+    from collectors.extractors import sku_search_phrase
+
+    phrase = sku_search_phrase(sku)
     return [
-        ("Bilibili", f"{sku} site:bilibili.com 评测 缺点 问题 翻车 体验"),
-        ("YouTube", f"{sku} site:youtube.com review defect issue problem quality"),
+        (
+            "Bilibili",
+            _append_modifiers(f"{phrase} site:bilibili.com 评测 缺点 问题 翻车 体验", modifiers),
+        ),
+        (
+            "YouTube",
+            _append_modifiers(
+                f"{phrase} site:youtube.com review defect issue problem quality",
+                modifiers,
+            ),
+        ),
     ]
 
 
@@ -410,38 +222,80 @@ _REVIEW_RANK_TOKENS: tuple[str, ...] = (
 )
 
 
-def rank_search_results_for_reviews(results: list) -> list:
-    """Prefer search hits whose title/snippet look like reviews or defect reports.
+def rank_search_results_for_reviews(results: list, sku: str = "") -> list:
+    """Prefer hits that mention the target SKU, then review/defect wording.
 
     Stable for equal scores: original relative order is preserved via enumerate.
     """
+    from collectors.extractors import evidence_mentions_sku, primary_model_code
 
-    def score(index_and_result: tuple[int, object]) -> tuple[int, int]:
+    model = primary_model_code(sku).lower() if sku else ""
+
+    def score(index_and_result: tuple[int, object]) -> tuple[int, int, int]:
         index, result = index_and_result
         title = str(getattr(result, "title", "") or "")
         snippet = str(getattr(result, "snippet", "") or "")
+        url = str(getattr(result, "url", "") or "")
         text = f"{title} {snippet}".lower()
-        hits = sum(1 for token in _REVIEW_RANK_TOKENS if token.lower() in text)
-        return (-hits, index)
+        sku_score = 0
+        if sku:
+            if evidence_mentions_sku(sku, title, snippet, url):
+                sku_score = 20
+            elif model and model in re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", text):
+                sku_score = 12
+        review_hits = sum(1 for token in _REVIEW_RANK_TOKENS if token.lower() in text)
+        return (-sku_score, -review_hits, index)
 
     return [item for _, item in sorted(enumerate(results), key=score)]
 
 
-def forum_search_queries(sku: str, *, include_reddit: bool = False) -> list[tuple[str, str]]:
+def forum_search_queries(
+    sku: str,
+    *,
+    include_reddit: bool = False,
+    modifiers: list[str] | None = None,
+) -> list[tuple[str, str]]:
+    from collectors.extractors import sku_search_phrase
+
+    phrase = sku_search_phrase(sku)
     queries: list[tuple[str, str]] = [
-        ("Chiphell", f"{sku} site:chiphell.com 缺点 品控 翻车 问题 体验"),
+        (
+            "Chiphell",
+            _append_modifiers(f"{phrase} site:chiphell.com 缺点 品控 翻车 问题 体验", modifiers),
+        ),
     ]
     if include_reddit:
-        queries.append(("Reddit", f"{sku} site:reddit.com defect issue quality problem review"))
+        queries.append(
+            (
+                "Reddit",
+                _append_modifiers(
+                    f"{phrase} site:reddit.com defect issue quality problem review",
+                    modifiers,
+                ),
+            )
+        )
     return queries
 
 
-def ecommerce_search_queries(sku: str) -> list[tuple[str, str]]:
+def ecommerce_search_queries(
+    sku: str,
+    *,
+    modifiers: list[str] | None = None,
+) -> list[tuple[str, str]]:
     # Prefer product hosts — bare site:jd.com / site:taobao.com returns campus,
     # music, brand and price-index junk that used to trigger false captcha pauses.
+    from collectors.extractors import sku_search_phrase
+
+    phrase = sku_search_phrase(sku)
     return [
-        ("JD", f"{sku} site:item.jd.com"),
-        ("Taobao/Tmall", f"{sku} (site:detail.tmall.com OR site:item.taobao.com)"),
+        ("JD", _append_modifiers(f"{phrase} site:item.jd.com", modifiers)),
+        (
+            "Taobao/Tmall",
+            _append_modifiers(
+                f"{phrase} (site:detail.tmall.com OR site:item.taobao.com)",
+                modifiers,
+            ),
+        ),
     ]
 
 

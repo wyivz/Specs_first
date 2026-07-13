@@ -209,8 +209,8 @@ class BilibiliApiClient:
             self._record("bilibili", f"title API failed for {bvid}: {exc}", level="warning")
             return ""
 
-    def collect_api_evidence(self, url: str, *, confidence: float = 0.68) -> list[EvidenceItem]:
-        from collectors.extractors import build_evidence
+    def collect_api_evidence(self, url: str, *, confidence: float = 0.68, sku: str = "") -> list[EvidenceItem]:
+        from collectors.extractors import build_evidence, evidence_mentions_sku
 
         bvid = self.extract_bvid(url)
         if not bvid:
@@ -230,6 +230,13 @@ class BilibiliApiClient:
                 "bilibili",
                 f"BVID {bvid} title looks like meme/rickroll ({title[:80]}); skipping API evidence",
                 level="warning",
+            )
+            return []
+        if sku and title and not evidence_mentions_sku(sku, title, url):
+            self._record(
+                "bilibili",
+                f"BVID {bvid} title does not match target sku ({title[:80]}); skipping API evidence",
+                level="info",
             )
             return []
         subtitle = self.fetch_subtitle_text(bvid)

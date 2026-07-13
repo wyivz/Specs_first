@@ -6,7 +6,7 @@ from collectors.adapters.bilibili_api_client import BilibiliApiClient
 from collectors.adapters.bilibili_guard import is_blocked_bvid, is_rickroll_title
 from collectors.credentials import BilibiliCredentials, load_bilibili_credentials
 from collectors.diagnostics import CollectorDiagnostics
-from collectors.extractors import build_evidence, evidence_from_page
+from collectors.extractors import build_evidence, evidence_from_page, evidence_mentions_sku
 from collectors.http import clip, html_to_text
 from collectors.platform_auth import PlatformAuthRequired
 from collectors.rate_limit import PlatformRateLimiter, get_rate_limiter
@@ -57,9 +57,24 @@ class BilibiliAdapter:
         confidence: float = 0.62,
         *,
         use_browser: bool = True,
+        sku: str = "",
     ) -> list[EvidenceItem]:
         if not self.supports(url):
             return []
+        # Search already SKU-filtered; only reject when the page title clearly mismatches.
+        if sku:
+            from collectors.http import extract_title
+
+            title = extract_title(markup)
+            if title and not evidence_mentions_sku(sku, title, url):
+                if self.diagnostics:
+                    self.diagnostics.record(
+                        "bilibili",
+                        f"skip page that does not match target sku: {url}",
+                        level="info",
+                        sku=sku,
+                    )
+                return []
         evidence = evidence_from_page("Bilibili", url, markup, confidence=confidence)
         text = html_to_text(markup)
         snippets = self._extract_comment_snippets(text)
@@ -94,7 +109,9 @@ class BilibiliAdapter:
                 return evidence
             self._api_video_budget -= 1
             try:
-                evidence.extend(self._api_client.collect_api_evidence(url, confidence=confidence + 0.04))
+                evidence.extend(
+                    self._api_client.collect_api_evidence(url, confidence=confidence + 0.04, sku=sku)
+                )
             except PlatformAuthRequired:
                 raise
             except Exception as exc:

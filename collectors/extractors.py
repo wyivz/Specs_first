@@ -9,6 +9,7 @@ from collectors.page_sanitize import sanitize_html
 from collectors.http import SearchResult, clip, normalize_whitespace, strip_tags
 from schemas import EvidenceItem, OfficialSpec, ProductCandidate
 from schemas.category_profile import (
+    DynamicCategoryProfile,
     canonical_slots,
     normalize_spec_name,
     real_world_issue_patterns,
@@ -23,24 +24,28 @@ KEY_VALUE_SPEC_PATTERN = re.compile(
 # Sony support / many manufacturer pages use heading + value without a colon.
 ADJACENT_SPEC_PATTERN = re.compile(
     r"\b("
+    # Lens (Sony-style heading + value without colon)
     r"Focal Length(?:\s*\([^)]*\))?|"
     r"Maximum aperture(?:\s*\([^)]*\))?|"
     r"Minimum Aperture(?:\s*\([^)]*\))?|"
     r"Filter Diameter(?:\s*\([^)]*\))?|"
     r"Minimum Focus Distance|"
-    r"Weight|"
     r"Mount|"
-    r"焦距|最大光圈|滤镜口径|最近对焦距离|重量|卡口"
+    r"焦距|最大光圈|滤镜口径|最近对焦距离|卡口|"
+    # Cross-category manufacturer pages
+    r"Weight|Battery(?:\s+Capacity|\s+Life)?|Screen Size|Refresh Rate|"
+    r"RAM|Storage|CPU|GPU|Impedance|Driver Size|"
+    r"重量|电池容量|续航|屏幕尺寸|刷新率|内存|存储|处理器|显卡|阻抗|单元直径"
     r")\s+("
     r"Sony\s+E-mount|"
     r"[0-9]+(?:\.[0-9]+)?\s+oz\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*g\s*\)|"
     r"[0-9]+(?:\.[0-9]+)?\s+ft\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*m\s*\)|"
-    r"[0-9]+(?:\.[0-9]+)?(?:\s*(?:mm|cm|m|g|kg|oz|ft)\b)?"
+    r"[0-9]+(?:\.[0-9]+)?(?:\s*(?:mm|cm|m|g|kg|oz|ft|inch|英寸|hz|mah|wh|gb|tb|ohm|Ω|小时|h)\b)?"
     r")",
     re.I,
 )
 MEASUREMENT_PATTERN = re.compile(
-    r"\b([0-9]+(?:\.[0-9]+)?\s*(?:mm|cm|m|g|kg|gb|tb|hz|w|mah|inch|英寸|克|千克|毫米|厘米|米|%))\b",
+    r"\b([0-9]+(?:\.[0-9]+)?\s*(?:mm|cm|m|g|kg|gb|tb|hz|w|mah|wh|ohm|Ω|inch|英寸|克|千克|毫米|厘米|米|小时|%))\b",
     re.I,
 )
 APERTURE_PATTERN = re.compile(r"\bf\s*/\s*([0-9]+(?:\.[0-9]+)?)\b", re.I)
@@ -68,9 +73,14 @@ _SLOT_VALUE_COMPAT: dict[str, re.Pattern[str]] = {
     "weight": re.compile(r"\b(?:g|kg)\b", re.I),
     "min_focus_distance": re.compile(r"\b(?:m|cm|mm)\b", re.I),
     "screen_size": re.compile(r"\b(?:inch|英寸|mm)\b", re.I),
-    "battery_capacity": re.compile(r"\b(?:mah|wh|kwh|mah)\b", re.I),
+    "battery_capacity": re.compile(r"\b(?:mah|wh|kwh)\b", re.I),
+    "battery_life": re.compile(r"(?:h|hour|小时|mah)", re.I),
     "ram": re.compile(r"\b(?:gb|tb)\b", re.I),
     "storage": re.compile(r"\b(?:gb|tb)\b", re.I),
+    "refresh_rate": re.compile(r"\bhz\b", re.I),
+    "impedance": re.compile(r"(?:ohm|Ω|欧)", re.I),
+    "driver_size": re.compile(r"\bmm\b", re.I),
+    "max_flight_time": re.compile(r"(?:min|分钟|h|hour|小时)", re.I),
 }
 
 NEGATIVE_PATTERNS = real_world_issue_patterns()
@@ -158,24 +168,25 @@ def clean_sku(title: str) -> str:
     return title[:120] or "Unknown Product"
 
 
-def extract_specs_from_text(text: str, source_url: str, category: str = "") -> list[OfficialSpec]:
+def extract_specs_from_text(
+    text: str,
+    source_url: str,
+    category: str = "",
+    profile: DynamicCategoryProfile | None = None,
+) -> list[OfficialSpec]:
     """Extract key-value specs from arbitrary product pages.
 
-    When ``category`` matches a known template (see
-    ``schemas.category_profile.CATEGORY_TEMPLATES``), labels are normalized
-    onto that category's canonical 5-8 "hard slot" columns (e.g. "Focal
-    Length" and "焦距" both collapse onto ``focal_length``) so the
-    comparison matrix doesn't fragment into near-duplicate sparse columns.
-    Unmodeled categories/labels fall back to a stable slugified name.
+    When a JIT ``profile`` is provided, labels collapse onto that profile's
+    5-8 hard slots via aliases. Otherwise names are slugified.
     """
     specs_by_name: dict[str, OfficialSpec] = {}
     for label, value in _extract_key_value_pairs(text):
-        _store_spec(specs_by_name, label, value, source_url, category)
+        _store_spec(specs_by_name, label, value, source_url, category, profile)
     for label, value in _extract_adjacent_spec_pairs(text):
-        _store_spec(specs_by_name, label, value, source_url, category)
+        _store_spec(specs_by_name, label, value, source_url, category, profile)
 
-    # Prefer explicit f-numbers for aperture before any measurement backfill.
-    if "max_aperture" not in specs_by_name:
+    slots = canonical_slots(category, profile=profile)
+    if "max_aperture" in slots and "max_aperture" not in specs_by_name:
         aperture = APERTURE_PATTERN.search(text)
         if aperture:
             specs_by_name["max_aperture"] = OfficialSpec(
@@ -185,7 +196,6 @@ def extract_specs_from_text(text: str, source_url: str, category: str = "") -> l
                 source_url=source_url,
             )
 
-    slots = canonical_slots(category)
     for measurement in _extract_measurements(text):
         if any(spec.value == measurement for spec in specs_by_name.values()):
             continue
@@ -205,16 +215,16 @@ def _store_spec(
     value: str,
     source_url: str,
     category: str,
+    profile: DynamicCategoryProfile | None = None,
 ) -> None:
     if SKIP_SPEC_LABELS.search(label):
         return
-    # Prefer full-frame focal length over APS-C equivalent labels.
     if re.search(r"equivalent|aps-c|35\s*mm\s*equivalent", label, re.I):
         return
-    # Sony lists both max and min aperture; never map minimum aperture -> max_aperture.
+    # Never map minimum aperture -> max_aperture via alias.
     if re.search(r"minimum\s+aperture|最小光圈", label, re.I):
         return
-    name = normalize_spec_name(label, category)
+    name = normalize_spec_name(label, category, profile=profile)
     if name in specs_by_name:
         return
     cleaned = normalize_unit_text(_prefer_metric_value(value.strip()))
@@ -249,14 +259,21 @@ def _extract_adjacent_spec_pairs(text: str) -> list[tuple[str, str]]:
     return pairs
 
 
-def extract_specs_from_markup(markup: str, source_url: str, category: str = "") -> list[OfficialSpec]:
+def extract_specs_from_markup(
+    markup: str,
+    source_url: str,
+    category: str = "",
+    profile: DynamicCategoryProfile | None = None,
+) -> list[OfficialSpec]:
     text = sanitize_html(source_url, markup).rich_text
-    specs_by_name = {spec.name: spec for spec in extract_specs_from_text(text, source_url, category)}
+    specs_by_name = {
+        spec.name: spec for spec in extract_specs_from_text(text, source_url, category, profile=profile)
+    }
 
     for label, value in _extract_table_pairs(markup):
         if SKIP_SPEC_LABELS.search(label):
             continue
-        name = normalize_spec_name(label, category)
+        name = normalize_spec_name(label, category, profile=profile)
         specs_by_name.setdefault(
             name,
             OfficialSpec(name=name, value=clip(normalize_unit_text(value), 120), unit="", source_url=source_url),
@@ -265,7 +282,7 @@ def extract_specs_from_markup(markup: str, source_url: str, category: str = "") 
     for label, value in _extract_json_ld_pairs(markup):
         if SKIP_SPEC_LABELS.search(label):
             continue
-        name = normalize_spec_name(label, category)
+        name = normalize_spec_name(label, category, profile=profile)
         specs_by_name.setdefault(
             name,
             OfficialSpec(name=name, value=clip(normalize_unit_text(value), 120), unit="", source_url=source_url),
@@ -316,6 +333,90 @@ def build_evidence(platform: str, url: str, author: str, locator: str, excerpt: 
     )
 
 
+_SKU_STOP_WORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "lens",
+    "镜头",
+    "official",
+    "review",
+    "评测",
+    "mm",
+    "gm",
+    "fe",
+    "pro",
+    "max",
+    "mini",
+    "plus",
+    "ultra",
+    "mount",
+    "series",
+    "edition",
+}
+_MODEL_CODE_RE = re.compile(r"[a-z]{2,}\d+[a-z0-9]*|\d+[a-z]{2,}[a-z0-9]*", re.I)
+_FOCAL_OR_APERTURE_TOKEN_RE = re.compile(r"^\d+(?:\.\d+)?(?:mm)?$|^f/?\d+(?:\.\d+)?$", re.I)
+# Sony E-mount lens codes: SEL50F12GM → 50mm + F1.2 + GM (common on CN marketplaces).
+_SONY_SEL_RE = re.compile(r"^sel(\d+)f(\d+)(gm|g|oss|za)?$", re.I)
+
+
+def primary_model_code(sku: str) -> str:
+    """Best alphanumeric model token from a SKU / marketing name."""
+    best = ""
+    for token in _MODEL_CODE_RE.findall(sku or ""):
+        if len(token) >= 5 and len(token) > len(best):
+            best = token
+    return best
+
+
+def sku_search_phrase(sku: str) -> str:
+    """Quote distinctive model codes / names so DDG prefers exact product hits."""
+    cleaned = (sku or "").strip()
+    if not cleaned:
+        return cleaned
+    model = primary_model_code(cleaned)
+    if model and len(model) >= 5:
+        compact = re.sub(r"[^a-z0-9]", "", cleaned.lower())
+        if model.lower() == compact:
+            return f'"{model}"'
+        return f'"{model}" {cleaned}'
+    if " " in cleaned and len(cleaned) <= 100:
+        return f'"{cleaned}"'
+    return cleaned
+
+
+def sku_marketplace_aliases(sku: str) -> list[str]:
+    """Phrases that often replace a raw model code on JD/Tmall/review titles."""
+    compact = re.sub(r"[^a-z0-9]", "", (sku or "").lower())
+    match = _SONY_SEL_RE.match(compact)
+    if not match:
+        return []
+    focal, aperture_raw, grade = match.group(1), match.group(2), (match.group(3) or "").lower()
+    if len(aperture_raw) == 2 and aperture_raw[0] in "12":
+        aperture = f"{aperture_raw[0]}.{aperture_raw[1]}"
+    else:
+        aperture = aperture_raw
+    aliases = [
+        f"{focal}mm",
+        f"f/{aperture}",
+        f"f{aperture}",
+        f"{focal}mm f/{aperture}",
+        f"{focal}mm f{aperture}",
+    ]
+    if grade:
+        aliases.extend(
+            [
+                grade,
+                f"{focal}mm f/{aperture} {grade}",
+                f"{focal}mm f{aperture} {grade}",
+                f"fe {focal}mm f/{aperture} {grade}",
+            ]
+        )
+    return aliases
+
+
 def evidence_mentions_sku(sku: str, *texts: str) -> bool:
     """True when text clearly refers to the target SKU / model code."""
     if not sku or not sku.strip():
@@ -327,34 +428,54 @@ def evidence_mentions_sku(sku: str, *texts: str) -> bool:
     compact_blob = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", blob)
     if len(compact_sku) >= 5 and compact_sku in compact_blob:
         return True
-    # Alphanumeric model tokens (SEL50F12GM, BV1xx, etc.)
-    for token in re.findall(r"[a-z]{2,}\d+[a-z0-9]*|\d+[a-z]+[a-z0-9]*", sku.lower()):
-        if len(token) >= 5 and token in compact_blob:
+
+    model_tokens = [token.lower() for token in _MODEL_CODE_RE.findall(sku) if len(token) >= 5]
+    if model_tokens:
+        if any(token in compact_blob for token in model_tokens):
             return True
-    stop = {
-        "the",
-        "and",
-        "for",
-        "with",
-        "from",
-        "lens",
-        "镜头",
-        "official",
-        "review",
-        "评测",
-        "mm",
-        "gm",
-        "fe",
-    }
+        # Marketplace titles often omit SEL… codes but keep focal + aperture + grade.
+        aliases = [alias.lower() for alias in sku_marketplace_aliases(sku)]
+        if aliases:
+            alias_hits = sum(1 for alias in aliases if alias in blob or alias.replace(" ", "") in compact_blob)
+            strong = [a for a in aliases if "mm" in a and ("f/" in a or "f1" in a or "f2" in a)]
+            if any(item in blob or item.replace(" ", "") in compact_blob for item in strong):
+                return True
+            if alias_hits >= 3:
+                return True
+        # Model-code SKUs must not match on weak shared words alone (e.g. "50mm").
+        return False
+
     words = [
         word
         for word in re.findall(r"[a-z0-9\u4e00-\u9fff]+", sku.lower())
-        if len(word) >= 3 and word not in stop
+        if len(word) >= 3
+        and word not in _SKU_STOP_WORDS
+        and not _FOCAL_OR_APERTURE_TOKEN_RE.match(word)
     ]
     if not words:
         return False
     hits = sum(1 for word in words if word in blob or word in compact_blob)
-    return hits >= 2 if len(words) >= 2 else hits >= 1
+    if len(words) >= 2:
+        if hits >= 2:
+            return True
+        # Brand + the SKU's own focal length is enough for marketplace titles.
+        if hits >= 1:
+            for focal in re.findall(r"\b(\d+(?:\.\d+)?)\s*mm\b", sku.lower()):
+                token = f"{focal}mm"
+                if token in compact_blob or token in blob.replace(" ", ""):
+                    return True
+        return False
+    return hits >= 1 and len(words[0]) >= 4
+
+
+def page_matches_sku(sku: str, *, title: str = "", text: str = "", url: str = "") -> bool:
+    """Post-fetch identity check: prefer title, then leading body text."""
+    if not sku or not sku.strip():
+        return True
+    if title and evidence_mentions_sku(sku, title, url):
+        return True
+    head = (text or "")[:2500]
+    return evidence_mentions_sku(sku, title, head, url)
 
 
 def evidence_from_page(

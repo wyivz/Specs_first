@@ -11,7 +11,11 @@ from collectors.extractors import (
 from collectors.http import HttpClient
 from collectors.resilient_fetch import ResilientFetcher
 from schemas import EvidenceItem, ProductCandidate
-from schemas.category_profile import forum_search_queries, rank_search_results_for_reviews
+from schemas.category_profile import (
+    DynamicCategoryProfile,
+    forum_search_queries,
+    rank_search_results_for_reviews,
+)
 
 
 class ForumSourceCollector:
@@ -24,6 +28,12 @@ class ForumSourceCollector:
         self.http = http
         self.diagnostics = diagnostics or CollectorDiagnostics()
         self.resilient = resilient or ResilientFetcher(http, diagnostics=self.diagnostics)
+        self.category_profile: DynamicCategoryProfile | None = None
+
+    def _search_modifiers(self) -> list[str] | None:
+        if self.category_profile and self.category_profile.search_modifiers:
+            return list(self.category_profile.search_modifiers)
+        return None
 
     def collect(
         self,
@@ -36,8 +46,15 @@ class ForumSourceCollector:
         evidence: list[EvidenceItem] = []
         include_reddit = load_reddit_credentials().configured
         max_results = 3 if not use_browser else 8
-        for platform, query in forum_search_queries(candidate.sku, include_reddit=include_reddit):
-            ranked = rank_search_results_for_reviews(self.http.search(query, max_results=max_results))
+        for platform, query in forum_search_queries(
+            candidate.sku,
+            include_reddit=include_reddit,
+            modifiers=self._search_modifiers(),
+        ):
+            ranked = rank_search_results_for_reviews(
+                self.http.search(query, max_results=max_results),
+                sku=candidate.sku,
+            )
             for result in ranked:
                 if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
                     self.diagnostics.record(

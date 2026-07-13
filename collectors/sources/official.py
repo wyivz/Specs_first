@@ -3,14 +3,18 @@ from __future__ import annotations
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import (
     candidate_from_search_result,
+    evidence_mentions_sku,
     extract_specs_from_text,
     infer_specs_from_sku,
+    page_matches_sku,
+    primary_model_code,
 )
 from collectors.http import HttpClient, SearchResult, clip, extract_title
 from collectors.protocols import SpecExtractionRouter
 from collectors.resilient_fetch import ResilientFetcher
 from collectors.url_guards import is_noisy_ecommerce_url
 from schemas import OfficialSpec, ProductCandidate
+from schemas.category_profile import DynamicCategoryProfile
 
 
 class OfficialSourceCollector:
@@ -38,21 +42,28 @@ class OfficialSourceCollector:
         self.diagnostics = diagnostics or CollectorDiagnostics()
         self.resilient = resilient or ResilientFetcher(http, diagnostics=self.diagnostics)
         self.router = router
+        self.category_profile: DynamicCategoryProfile | None = None
 
     def discover_candidates(self, query: str, category: str, max_results: int = 10) -> list[ProductCandidate]:
         search_query = f"{query} {category} official specifications"
         results = self.http.search(search_query, max_results=max_results * 2)
         candidates: list[ProductCandidate] = []
         for result in results:
-            if self._looks_relevant(result):
-                candidates.append(candidate_from_search_result(result, category))
+            if not self._looks_relevant(result, query=query):
+                continue
+            candidate = candidate_from_search_result(result, category)
+            # When the user already typed a model code, keep that identity.
+            if primary_model_code(query):
+                candidate.sku = query.strip()[:120]
+            candidates.append(candidate)
         if not candidates:
+            # Do not attach an unrelated first hit URL — keep an explicit low-confidence stub.
             candidates = [
                 ProductCandidate(
                     sku=query.strip() or "Unknown Product",
                     brand=query.split()[0] if query.split() else "Unknown",
                     category=category,
-                    source_url=results[0].url if results else "https://example.invalid/no-source",
+                    source_url="https://example.invalid/no-source",
                     confidence=0.35,
                 )
             ]
@@ -71,7 +82,7 @@ class OfficialSourceCollector:
         urls.extend(
             result.url
             for result in self.http.search(f"{candidate.sku} official specifications", max_results=5)
-            if self._looks_relevant(result)
+            if self._looks_relevant(result, query=candidate.sku)
         )
 
         specs_by_name: dict[str, OfficialSpec] = {}
@@ -127,11 +138,23 @@ class OfficialSourceCollector:
                 )
                 if not snapshot.markup:
                     continue
+            title = snapshot.page.title or extract_title(snapshot.markup)
+            if primary_model_code(candidate.sku) and not page_matches_sku(
+                candidate.sku, title=title, text=snapshot.text, url=snapshot.url
+            ):
+                self.diagnostics.record(
+                    "official",
+                    f"skip page that does not match target sku: {snapshot.url}",
+                    level="info",
+                    sku=candidate.sku,
+                )
+                continue
             text = snapshot.text
             page_texts.append(text)
-            for spec in extract_specs_from_text(text, snapshot.url, candidate.category):
+            for spec in extract_specs_from_text(
+                text, snapshot.url, candidate.category, profile=self.category_profile
+            ):
                 specs_by_name.setdefault(spec.name, spec)
-            title = snapshot.page.title or extract_title(snapshot.markup)
             if title and len(highlights) < 3:
                 highlights.append(clip(title, 80))
 
@@ -156,8 +179,12 @@ class OfficialSourceCollector:
             specs_by_name.setdefault(spec.name, spec)
         return list(specs_by_name.values()), highlights
 
-    def _looks_relevant(self, result: SearchResult) -> bool:
+    def _looks_relevant(self, result: SearchResult, *, query: str = "") -> bool:
         if is_noisy_ecommerce_url(result.url):
             return False
         combined = f"{result.title} {result.snippet} {result.url}".lower()
-        return any(hint in combined for hint in self.OFFICIAL_HINTS)
+        if not any(hint in combined for hint in self.OFFICIAL_HINTS):
+            return False
+        if query and not evidence_mentions_sku(query, result.title, result.snippet, result.url):
+            return False
+        return True

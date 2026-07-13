@@ -43,7 +43,15 @@ class UrlInjectionCollector:
             if not page.ok and not page.markup:
                 self.diagnostics.record("url", f"failed to fetch {url}: {page.error}", sku=sku)
                 continue
-            evidence.extend(evidence_from_page(platform_from_url(page.url), page.url, page.markup, confidence=0.68))
+            evidence.extend(
+                evidence_from_page(
+                    platform_from_url(page.url),
+                    page.url,
+                    page.markup,
+                    confidence=0.68,
+                    sku=sku,
+                )
+            )
         return dedupe_evidence(evidence)
 
     def collect_prices(

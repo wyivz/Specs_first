@@ -60,6 +60,47 @@ ARBITRATION_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+CATEGORY_PROFILE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "category_label": {"type": "string"},
+        "slots": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 5,
+            "maxItems": 8,
+        },
+        "aliases": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "alias": {"type": "string"},
+                    "slot": {"type": "string"},
+                },
+                "required": ["alias", "slot"],
+                "additionalProperties": False,
+            },
+        },
+        "comparison_keywords": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "search_modifiers": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+    },
+    "required": [
+        "category_label",
+        "slots",
+        "aliases",
+        "comparison_keywords",
+        "search_modifiers",
+    ],
+    "additionalProperties": False,
+}
+
 
 def parse_json_payload(text: str, default: dict[str, Any] | None = None) -> dict[str, Any]:
     fallback = default if default is not None else {}

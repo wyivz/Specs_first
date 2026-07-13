@@ -180,7 +180,17 @@ def start_background_task(
     st.session_state["seen_event_count"] = 0
     st.session_state["matrix_rows"] = []
     st.session_state["events_log"] = []
+    st.session_state["category_profile"] = None
     st.session_state["total_steps"] = max(len(selected_skus or []), 1)
+    st.session_state["progress_info"] = {
+        "sku": "",
+        "sku_index": 0,
+        "total_skus": st.session_state["total_steps"],
+        "phase": 0,
+        "phase_label": "发现候选",
+        "category": category,
+        "progress": 0.0,
+    }
     st.session_state.pop("result", None)
     st.session_state.pop("paused_task_id", None)
 
@@ -204,26 +214,103 @@ def render_active_task() -> bool:
     api = get_api_client()
     status = api.get_task(task_id)
     events = api.events_snapshot(task_id)
-    new_events = events[st.session_state.get("seen_event_count", 0):]
+    new_events = events[st.session_state.get("seen_event_count", 0) :]
     st.session_state["seen_event_count"] = len(events)
 
+    progress_info = st.session_state.setdefault(
+        "progress_info",
+        {
+            "sku": "",
+            "sku_index": 0,
+            "total_skus": st.session_state.get("total_steps", 1),
+            "phase": 0,
+            "phase_label": "准备中",
+            "category": "",
+            "progress": 0.0,
+        },
+    )
+
     for event in new_events:
-        st.session_state["events_log"].append(f"- `{event['event_type']}`: {event['message']}")
         payload = event.get("payload") or {}
+        st.session_state["events_log"].append(f"- `{event['event_type']}`: {event['message']}")
+        if event["event_type"] in {
+            "phase_started",
+            "candidate_found",
+            "category_profile_ready",
+            "specs_collected",
+            "findings_extracted",
+            "collector_status",
+            "matrix_row_updated",
+        }:
+            for key in ("sku", "sku_index", "total_skus", "phase", "phase_label", "category", "progress"):
+                if key in payload and payload[key] is not None:
+                    progress_info[key] = payload[key]
+            if event["event_type"] == "candidate_found" and "total_skus" in payload:
+                st.session_state["total_steps"] = max(int(payload.get("total_skus") or 1), 1)
+        if event["event_type"] == "category_profile_ready":
+            st.session_state["category_profile"] = {
+                "category": payload.get("category"),
+                "slots": payload.get("slots") or [],
+                "comparison_keywords": payload.get("comparison_keywords") or [],
+                "search_modifiers": payload.get("search_modifiers") or [],
+                "source": payload.get("source"),
+            }
         if event["event_type"] == "matrix_row_updated":
             st.session_state["matrix_rows"] = payload.get("matrix_rows", st.session_state["matrix_rows"])
         if event["event_type"] == "diagnostics_updated":
             st.session_state["diagnostics"] = payload.get("records", [])
         if event["event_type"] == "task_done":
             st.session_state["diagnostics"] = payload.get("diagnostics", st.session_state.get("diagnostics", []))
+            if payload.get("category_profile"):
+                st.session_state["category_profile"] = payload.get("category_profile")
+            progress_info["progress"] = 1.0
+            progress_info["phase_label"] = "完成"
 
-    progress_text = new_events[-1]["message"] if new_events else "Running..."
-    total_steps = st.session_state.get("total_steps", 1)
-    completed = len(st.session_state["matrix_rows"])
-    progress_value = 1.0 if status["state"] != "RUNNING" else min(completed / total_steps, 0.95)
+    total_skus = max(int(progress_info.get("total_skus") or st.session_state.get("total_steps", 1)), 1)
+    phase = int(progress_info.get("phase") or 0)
+    sku_index = int(progress_info.get("sku_index") or 0)
+    if status["state"] == "RUNNING":
+        computed = progress_info.get("progress")
+        if computed is None:
+            computed = (sku_index * 4 + max(phase - 1, 0)) / max(total_skus * 4, 1)
+        progress_value = min(float(computed), 0.97)
+    else:
+        progress_value = 1.0 if status["state"] == "DONE" else min(float(progress_info.get("progress") or 0), 0.95)
+
+    progress_text = new_events[-1]["message"] if new_events else progress_info.get("phase_label") or "Running..."
     st.progress(progress_value, text=progress_text)
 
-    st.markdown("#### Live event stream\n" + "\n".join(st.session_state["events_log"][-12:]))
+    sku = progress_info.get("sku") or "—"
+    phase_label = progress_info.get("phase_label") or "准备中"
+    category = progress_info.get("category") or ""
+    st.markdown(
+        f"**当前 SKU** `{sku}` · 第 **{sku_index + 1}/{total_skus}** 个"
+        + (f" · 品类 `{category}`" if category else "")
+        + f" · **{phase_label}**"
+    )
+    profile = st.session_state.get("category_profile")
+    if profile:
+        slots = profile.get("slots") or []
+        keywords = profile.get("comparison_keywords") or []
+        source = profile.get("source") or profile.get("category_label") or ""
+        label = profile.get("category") or profile.get("category_label") or category
+        st.caption(
+            f"JIT Schema · **{label}**（{source}）· 硬指标：{', '.join(slots) or '—'} · "
+            f"对比关键词：{', '.join(keywords) or '—'}"
+        )
+    step_names = ["发现", "规格", "口碑", "价格", "仲裁"]
+    step_cols = st.columns(len(step_names))
+    active_step = 0 if phase <= 0 else min(phase, 4)
+    for idx, name in enumerate(step_names):
+        if idx < active_step:
+            step_cols[idx].success(name)
+        elif idx == active_step and status["state"] == "RUNNING":
+            step_cols[idx].info(f"▶ {name}")
+        else:
+            step_cols[idx].caption(name)
+
+    with st.expander("实时事件流", expanded=True):
+        st.markdown("\n".join(st.session_state["events_log"][-16:]) or "_暂无事件_")
 
     st.subheader("Progressive comparison matrix")
     render_matrix_table(st.session_state["matrix_rows"])
@@ -313,8 +400,21 @@ with st.sidebar:
             st.rerun()
 
 query = st.text_input("想对比什么？", "无线机械键盘 75%")
-category = st.text_input("品类", "Product")
+category = st.text_input(
+    "品类提示（可留空/填 Product；正式品类由大模型 JIT 建表）",
+    "Product",
+    help="不再使用预设品类模板。有图时 Gemini 识图梳理 → ChatGPT 结构化输出 5–8 个对比硬指标；无 API 时回退通用 parameter_a…h。",
+)
+try:
+    from schemas.category_profile import infer_category
 
+    _hint = infer_category(query, category)
+    st.caption(f"建表前提示标签：**{_hint}** · 开始对比后会生成动态品类 Schema（槽位 + 对比关键词）")
+except Exception:
+    pass
+
+if "category_profile" not in st.session_state:
+    st.session_state["category_profile"] = None
 if "candidates" not in st.session_state:
     st.session_state["candidates"] = []
 

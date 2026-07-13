@@ -33,7 +33,7 @@ class EcommerceProductUrlGuardTest(unittest.TestCase):
         http.search.return_value = [
             SearchResult("校招", "https://campus.jd.com/", "校园招聘"),
             SearchResult("模板", "https://music.jd.com/8_0_desc_0_0_1_15.html?key={keyword}", "junk"),
-            SearchResult("商品", "https://item.jd.com/100010708487.html", "到手价"),
+            SearchResult("索尼 SEL50F12GM 镜头", "https://item.jd.com/100010708487.html", "到手价 SEL50F12GM"),
         ]
         http.fetch.side_effect = AssertionError("non-product URLs must not be fetched")
 

@@ -8,11 +8,14 @@ from collectors.collection_trace import CollectionTrace, create_collection_trace
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import (
     build_evidence,
+    evidence_mentions_sku,
     extract_desc_api_urls,
     extract_detail_image_urls,
     extract_price,
     extract_specs_from_markup,
+    page_matches_sku,
     platform_from_url,
+    primary_model_code,
 )
 from collectors.http import HttpClient, clip
 from collectors.platform_auth import PlatformAuthRequired
@@ -20,7 +23,7 @@ from collectors.protocols import SpecExtractionRouter
 from collectors.resilient_fetch import ResilientFetcher
 from collectors.url_guards import is_noisy_ecommerce_url
 from schemas import OfficialSpec, PriceFinding, ProductCandidate
-from schemas.category_profile import ecommerce_search_queries
+from schemas.category_profile import DynamicCategoryProfile, ecommerce_search_queries
 
 
 class EcommerceSourceCollector:
@@ -40,8 +43,14 @@ class EcommerceSourceCollector:
         self.resilient = resilient or ResilientFetcher(http, self.browser, self.diagnostics)
         self.registry = registry or create_default_registry(http=http, diagnostics=self.diagnostics)
         self.router = router
+        self.category_profile: DynamicCategoryProfile | None = None
         self.jd = self.registry.require(JdAdapter)
         self.tmall_taobao = self.registry.require(TmallTaobaoAdapter)
+
+    def _search_modifiers(self) -> list[str] | None:
+        if self.category_profile and self.category_profile.search_modifiers:
+            return list(self.category_profile.search_modifiers)
+        return None
 
     def collect(
         self,
@@ -54,7 +63,7 @@ class EcommerceSourceCollector:
     ) -> list[PriceFinding]:
         findings: list[PriceFinding] = []
         active_trace = trace or self.resilient.trace
-        for platform, query in ecommerce_search_queries(candidate.sku):
+        for platform, query in ecommerce_search_queries(candidate.sku, modifiers=self._search_modifiers()):
             if active_trace:
                 active_trace.log("ecommerce", f"search platform={platform} query={query}", sku=candidate.sku)
             for result in self.http.search(query, max_results=5):
@@ -71,12 +80,24 @@ class EcommerceSourceCollector:
                         sku=candidate.sku,
                     )
                     continue
+                if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip unrelated ecommerce search hit: {result.url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    continue
                 combined_text = f"{result.title}. {result.snippet}"
+                fetch_browser = use_browser
+                if platform == "Taobao/Tmall" and not (self.tmall_taobao.credentials.cookie or "").strip():
+                    # Without Cookie, headed captcha windows are useless noise — stay HTTP-only.
+                    fetch_browser = False
                 try:
                     snapshot = self.resilient.fetch(
                         target_url,
                         task_id=task_id,
-                        use_browser=use_browser,
+                        use_browser=fetch_browser,
                         storage_state_path=storage_state_path,
                         sku=candidate.sku,
                     )
@@ -103,6 +124,14 @@ class EcommerceSourceCollector:
                         )
                         if jd_finding:
                             findings.append(jd_finding)
+                    continue
+                if not self._page_matches_target(candidate.sku, result.title, snapshot):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip ecommerce page that does not match target sku: {snapshot.url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
                     continue
                 try:
                     if platform == "Taobao/Tmall":
@@ -262,7 +291,7 @@ class EcommerceSourceCollector:
     ) -> tuple[list[OfficialSpec], list[str]]:
         specs_by_name: dict[str, OfficialSpec] = {}
         highlights: list[str] = []
-        for platform, query in ecommerce_search_queries(candidate.sku):
+        for platform, query in ecommerce_search_queries(candidate.sku, modifiers=self._search_modifiers()):
             for result in self.http.search(query, max_results=4):
                 adapter = self.registry.for_platform(platform)
                 if adapter is not None and hasattr(adapter, "normalize_url"):
@@ -277,12 +306,23 @@ class EcommerceSourceCollector:
                         sku=candidate.sku,
                     )
                     continue
+                if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip unrelated ecommerce search hit: {result.url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    continue
+                fetch_browser = use_browser if platform != "JD" else False
+                if platform == "Taobao/Tmall" and not (self.tmall_taobao.credentials.cookie or "").strip():
+                    fetch_browser = False
                 try:
                     snapshot = self.resilient.fetch(
                         target_url,
                         task_id=task_id,
                         # JD prefers HTTP(+Cookie)/mgets; only escalate when page is weak.
-                        use_browser=use_browser if platform != "JD" else False,
+                        use_browser=fetch_browser,
                         storage_state_path=storage_state_path,
                         sku=candidate.sku,
                     )
@@ -295,6 +335,14 @@ class EcommerceSourceCollector:
                         platform,
                         f"skip redirected non-product page: {target_url} -> {snapshot.url}",
                         level="warning",
+                        sku=candidate.sku,
+                    )
+                    continue
+                if not self._page_matches_target(candidate.sku, result.title, snapshot):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip ecommerce page that does not match target sku: {snapshot.url}",
+                        level="info",
                         sku=candidate.sku,
                     )
                     continue
@@ -322,7 +370,12 @@ class EcommerceSourceCollector:
                     sku=candidate.sku,
                 )
                 merged_markup = "\n".join([snapshot.markup, *detail_payloads])
-                extracted = extract_specs_from_markup(merged_markup, snapshot.url, candidate.category)
+                extracted = extract_specs_from_markup(
+                    merged_markup,
+                    snapshot.url,
+                    candidate.category,
+                    profile=self.category_profile,
+                )
                 for spec in extracted:
                     specs_by_name.setdefault(spec.name, spec)
                 detail_images = extract_detail_image_urls(merged_markup)
@@ -355,6 +408,83 @@ class EcommerceSourceCollector:
                     )
         return list(specs_by_name.values()), highlights
 
+    def probe_detail_images(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+        max_images: int = 8,
+    ) -> list[str]:
+        """Light probe: return detail image URLs without filling spec slots."""
+        images: list[str] = []
+        seen: set[str] = set()
+        for platform, query in ecommerce_search_queries(candidate.sku, modifiers=self._search_modifiers()):
+            for result in self.http.search(query, max_results=3):
+                adapter = self.registry.for_platform(platform)
+                if adapter is not None and hasattr(adapter, "normalize_url"):
+                    target_url = adapter.normalize_url(result.url)
+                else:
+                    target_url = result.url
+                if not self._is_product_result(platform, target_url, result.url):
+                    continue
+                if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
+                    continue
+                fetch_browser = use_browser if platform != "JD" else False
+                if platform == "Taobao/Tmall" and not (self.tmall_taobao.credentials.cookie or "").strip():
+                    fetch_browser = False
+                try:
+                    snapshot = self.resilient.fetch(
+                        target_url,
+                        task_id=task_id,
+                        use_browser=fetch_browser,
+                        storage_state_path=storage_state_path,
+                        sku=candidate.sku,
+                    )
+                except Exception as exc:
+                    if not self._soft_skip_auth(platform, target_url, exc, candidate.sku):
+                        raise
+                    continue
+                if not snapshot.markup:
+                    continue
+                if not self._final_url_is_product(platform, target_url, snapshot.url):
+                    continue
+                if not self._page_matches_target(candidate.sku, result.title, snapshot):
+                    continue
+                detail_api_urls = self._detail_api_urls_for_platform(platform, snapshot.url, snapshot.markup)
+                detail_payloads = self._fetch_detail_payloads(
+                    detail_api_urls,
+                    platform=platform,
+                    referer_url=snapshot.url,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                    sku=candidate.sku,
+                )
+                merged_markup = "\n".join([snapshot.markup, *detail_payloads])
+                for url in extract_detail_image_urls(merged_markup):
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    images.append(url)
+                    if len(images) >= max_images:
+                        self.diagnostics.record(
+                            platform,
+                            f"schema probe captured {len(images)} detail images",
+                            level="info",
+                            sku=candidate.sku,
+                        )
+                        return images
+        if images:
+            self.diagnostics.record(
+                "ecommerce",
+                f"schema probe captured {len(images)} detail images",
+                level="info",
+                sku=candidate.sku,
+            )
+        return images
+
     def _is_product_result(self, platform: str, normalized_url: str, raw_url: str = "") -> bool:
         if is_noisy_ecommerce_url(normalized_url) or is_noisy_ecommerce_url(raw_url):
             return False
@@ -375,6 +505,26 @@ class EcommerceSourceCollector:
         if final_url.rstrip("/") == requested_url.rstrip("/"):
             return True
         return self._is_product_result(platform, final_url, requested_url)
+
+    def _page_matches_target(self, sku: str, search_title: str, snapshot: object) -> bool:
+        """Reject listings whose on-page title clearly belongs to another product."""
+        if not sku or not sku.strip():
+            return True
+        title = ""
+        text = ""
+        url = ""
+        page = getattr(snapshot, "page", None)
+        if page is not None:
+            title = str(getattr(page, "title", "") or "")
+        text = str(getattr(snapshot, "text", "") or "")
+        url = str(getattr(snapshot, "url", "") or "")
+        if title.strip() and len(title.strip()) >= 8 and not evidence_mentions_sku(sku, title, url):
+            # A concrete alternate product title means DDG ranked a wrong item.
+            if primary_model_code(title) or len(title.strip()) >= 12:
+                return False
+        if page_matches_sku(sku, title=title or search_title, text=text, url=url):
+            return True
+        return evidence_mentions_sku(sku, search_title)
 
     def _soft_skip_auth(self, platform: str, url: str, exc: Exception, sku: str) -> bool:
         """Return True when the caller should continue instead of pausing the pipeline.

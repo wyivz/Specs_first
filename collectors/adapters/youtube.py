@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from collectors.adapters.youtube_comments import YouTubeCommentFetcher
 from collectors.diagnostics import CollectorDiagnostics
-from collectors.extractors import build_evidence, evidence_from_page
+from collectors.extractors import build_evidence, evidence_from_page, evidence_mentions_sku
 from collectors.http import HttpClient, clip
 from collectors.rate_limit import PlatformRateLimiter, get_rate_limiter
 from schemas import EvidenceItem
@@ -53,11 +53,19 @@ class YouTubeAdapter:
         *,
         confidence: float = 0.6,
         use_browser: bool = True,
+        sku: str = "",
     ) -> list[EvidenceItem]:
         if not self.supports(url):
             return []
         video_id = self.extract_video_id(url)
         watch_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else url
+        # Search already SKU-filtered; only reject when the page title clearly mismatches.
+        if sku:
+            from collectors.http import extract_title
+
+            title = extract_title(markup)
+            if title and not evidence_mentions_sku(sku, title, watch_url):
+                return []
         evidence = evidence_from_page("YouTube", watch_url, markup, confidence=confidence - 0.08)
 
         transcript = self.fetch_transcript(

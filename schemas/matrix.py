@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from schemas.category_profile import DynamicCategoryProfile, canonical_slots
 from schemas.models import (
     CellStatus,
     ColumnDefinition,
@@ -10,9 +11,7 @@ from schemas.models import (
 )
 
 
-# Default columns for any product category - dynamically derived from official_specs
-# The spec column names are determined by the product category at runtime,
-# not hardcoded to any specific product type like lenses.
+# Default columns for any product category - JIT profile slots drive hard columns.
 DEFAULT_BASE_COLUMNS = [
     ColumnDefinition("sku", "SKU"),
     ColumnDefinition("brand", "Brand"),
@@ -26,28 +25,36 @@ DEFAULT_TRAILER_COLUMNS = [
 ]
 
 
-def build_comparison_matrix(assets: list[ProductAsset]) -> ComparisonMatrix:
-    """Build a comparison matrix from product assets.
-    
-    The spec columns are dynamically derived from the official_specs in each asset,
-    making this function work for any product category (lenses, phones, keyboards, etc.).
+def build_comparison_matrix(
+    assets: list[ProductAsset],
+    profile: DynamicCategoryProfile | None = None,
+) -> ComparisonMatrix:
+    """Build a comparison matrix aligned to JIT profile hard slots.
+
+    When ``profile`` is provided, columns are exactly ``profile.slots`` (missing
+    values marked MISSING). Extra non-slot specs stay on assets as highlights
+    and are not expanded into matrix columns.
     """
-    if not assets:
+    if not assets and profile is None:
         return ComparisonMatrix(columns=DEFAULT_BASE_COLUMNS + DEFAULT_TRAILER_COLUMNS, rows=[])
-    
-    # Collect all unique spec names across all assets (preserving order)
-    all_spec_names: list[str] = []
-    seen_spec_names: set[str] = set()
-    for asset in assets:
-        for spec in asset.official_specs:
-            if spec.name not in seen_spec_names:
-                all_spec_names.append(spec.name)
-                seen_spec_names.add(spec.name)
-    
-    # Build column definitions
-    spec_columns = [ColumnDefinition(name, name.replace("_", " ").title()) for name in all_spec_names]
+
+    category = assets[0].category if assets else ""
+    slot_names = list(canonical_slots(category, profile=profile))
+    if not slot_names:
+        # Fallback: union of seen names when no slots (should not happen).
+        seen: set[str] = set()
+        slot_names = []
+        for asset in assets:
+            for spec in asset.official_specs:
+                if spec.name not in seen:
+                    slot_names.append(spec.name)
+                    seen.add(spec.name)
+
+    spec_columns = [ColumnDefinition(name, name.replace("_", " ").title()) for name in slot_names]
     columns = DEFAULT_BASE_COLUMNS + spec_columns + DEFAULT_TRAILER_COLUMNS
-    
+    if not assets:
+        return ComparisonMatrix(columns=columns, rows=[])
+
     rows: list[dict[str, ComparisonCell]] = []
 
     for asset in assets:
@@ -61,8 +68,7 @@ def build_comparison_matrix(assets: list[ProductAsset]) -> ComparisonMatrix:
             "brand": ComparisonCell(asset.brand, CellStatus.NORMAL),
         }
 
-        # Dynamically handle all spec columns
-        for key in all_spec_names:
+        for key in slot_names:
             spec = specs.get(key)
             warning = conflict_by_field.get(key)
             if warning:
@@ -114,8 +120,11 @@ def build_comparison_matrix(assets: list[ProductAsset]) -> ComparisonMatrix:
     return ComparisonMatrix(columns=columns, rows=rows)
 
 
-def build_partial_row(asset: ProductAsset) -> dict:
-    row = build_comparison_matrix([asset]).rows[0]
+def build_partial_row(
+    asset: ProductAsset,
+    profile: DynamicCategoryProfile | None = None,
+) -> dict:
+    row = build_comparison_matrix([asset], profile=profile).rows[0]
     return {
         key: {
             "value": cell.value,

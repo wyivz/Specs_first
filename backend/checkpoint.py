@@ -25,6 +25,7 @@ class TaskCheckpoint:
     pause_url: str = ""
     storage_state_path: str = ""
     in_progress_payload: dict[str, Any] | None = None
+    category_profile: dict[str, Any] | None = None
     state: TaskState = TaskState.PAUSED_NEED_AUTH
     updated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 

@@ -21,6 +21,7 @@ from collectors.sources import (
 )
 from collectors.extractors import dedupe_evidence
 from schemas import EvidenceItem, OfficialSpec, PriceFinding, ProductCandidate
+from schemas.category_profile import DynamicCategoryProfile
 
 
 @dataclass
@@ -31,6 +32,7 @@ class RealCollector(Collector):
     router: SpecExtractionRouter | None = None
     registry: AdapterRegistry | None = None
     browser: Any | None = None
+    category_profile: DynamicCategoryProfile | None = None
 
     def __post_init__(self) -> None:
         browser = self.browser if self.browser is not None else PlaywrightCapture()
@@ -59,6 +61,32 @@ class RealCollector(Collector):
             router=self.router,
         )
         self.injected = UrlInjectionCollector(self.http, self.diagnostics, self.resilient)
+        self.set_category_profile(self.category_profile)
+
+    def set_category_profile(self, profile: DynamicCategoryProfile | None) -> None:
+        self.category_profile = profile
+        for part in (self.official, self.video, self.forum, self.ecommerce):
+            if hasattr(part, "category_profile"):
+                part.category_profile = profile
+        if self.router is not None and hasattr(self.router, "set_category_profile"):
+            self.router.set_category_profile(profile)  # type: ignore[attr-defined]
+
+    def probe_detail_images(
+        self,
+        candidate: ProductCandidate,
+        *,
+        task_id: str = "",
+        use_browser: bool = False,
+        storage_state_path: str = "",
+        max_images: int = 8,
+    ) -> list[str]:
+        return self.ecommerce.probe_detail_images(
+            candidate,
+            task_id=task_id,
+            use_browser=use_browser,
+            storage_state_path=storage_state_path,
+            max_images=max_images,
+        )
 
     def _trace_context(self, task_id: str):
         trace = create_collection_trace(self.diagnostics, task_id=task_id)
@@ -80,6 +108,12 @@ class RealCollector(Collector):
         use_browser: bool = False,
         storage_state_path: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
+        self.diagnostics.record(
+            "official",
+            f"开始采集官方/电商规格 · {candidate.sku}",
+            level="info",
+            sku=candidate.sku,
+        )
         ecommerce_specs, ecommerce_highlights = self.ecommerce.collect_official_specs(
             candidate,
             task_id=task_id,
@@ -98,6 +132,12 @@ class RealCollector(Collector):
             merged.setdefault(spec.name, spec)
         # Prefer official/manufacturer highlights over empty ecommerce metadata.
         highlights = [*official_highlights, *ecommerce_highlights]
+        self.diagnostics.record(
+            "official",
+            f"规格采集完成 · {len(merged)} 项",
+            level="info",
+            sku=candidate.sku,
+        )
         return list(merged.values()), highlights[:5]
 
     def collect_real_world_corpus(
@@ -114,6 +154,12 @@ class RealCollector(Collector):
                 if trace:
                     trace.log("collect", f"real_world_corpus sku={candidate.sku}", sku=candidate.sku)
                 evidence = []
+                self.diagnostics.record(
+                    "video",
+                    f"开始搜索视频评测（B站/YouTube）· {candidate.sku}",
+                    level="info",
+                    sku=candidate.sku,
+                )
                 evidence.extend(
                     self.video.collect(
                         candidate,
@@ -121,6 +167,12 @@ class RealCollector(Collector):
                         use_browser=use_browser,
                         storage_state_path=storage_state_path,
                     )
+                )
+                self.diagnostics.record(
+                    "forum",
+                    f"开始搜索论坛口碑（Chiphell/Reddit）· {candidate.sku}",
+                    level="info",
+                    sku=candidate.sku,
                 )
                 evidence.extend(
                     self.forum.collect(
@@ -130,6 +182,13 @@ class RealCollector(Collector):
                         storage_state_path=storage_state_path,
                     )
                 )
+                if self.source_urls:
+                    self.diagnostics.record(
+                        "url",
+                        f"开始抓取用户补充链接 · {len(self.source_urls)} 条",
+                        level="info",
+                        sku=candidate.sku,
+                    )
                 evidence.extend(
                     self.injected.collect_evidence(
                         self.source_urls,
@@ -141,6 +200,12 @@ class RealCollector(Collector):
                 )
                 if trace:
                     trace.log("collect", f"real_world_corpus done evidence={len(evidence)}", sku=candidate.sku)
+                self.diagnostics.record(
+                    "collect",
+                    f"真实口碑语料就绪 · {len(evidence)} 条证据",
+                    level="info",
+                    sku=candidate.sku,
+                )
                 return dedupe_evidence(evidence)
             finally:
                 self._restore_trace(previous)
@@ -158,6 +223,12 @@ class RealCollector(Collector):
             try:
                 if trace:
                     trace.log("collect", f"prices sku={candidate.sku}", sku=candidate.sku)
+                self.diagnostics.record(
+                    "ecommerce",
+                    f"开始搜索电商到手价（京东/淘宝）· {candidate.sku}",
+                    level="info",
+                    sku=candidate.sku,
+                )
                 prices = []
                 prices.extend(
                     self.ecommerce.collect(
@@ -177,6 +248,12 @@ class RealCollector(Collector):
                         trace=trace,
                         sku=candidate.sku,
                     )
+                )
+                self.diagnostics.record(
+                    "ecommerce",
+                    f"到手价采集完成 · {len(prices)} 条",
+                    level="info",
+                    sku=candidate.sku,
                 )
                 if trace:
                     trace.log("collect", f"prices done count={len(prices)}", sku=candidate.sku)
