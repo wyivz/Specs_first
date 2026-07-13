@@ -284,17 +284,17 @@ def ecommerce_search_queries(
 ) -> list[tuple[str, str]]:
     # Prefer product hosts — bare site:jd.com / site:taobao.com returns campus,
     # music, brand and price-index junk that used to trigger false captcha pauses.
+    # Intentionally ignore review ``search_modifiers``: product listing queries
+    # must stay SKU + host only (评测/色散 etc. starve DDG of item.jd.com hits).
+    del modifiers
     from collectors.extractors import sku_search_phrase
 
     phrase = sku_search_phrase(sku)
     return [
-        ("JD", _append_modifiers(f"{phrase} site:item.jd.com", modifiers)),
+        ("JD", f"{phrase} site:item.jd.com"),
         (
             "Taobao/Tmall",
-            _append_modifiers(
-                f"{phrase} (site:detail.tmall.com OR site:item.taobao.com)",
-                modifiers,
-            ),
+            f"{phrase} (site:detail.tmall.com OR site:item.taobao.com)",
         ),
     ]
 

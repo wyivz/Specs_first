@@ -22,6 +22,12 @@ class EcommerceProductUrlGuardTest(unittest.TestCase):
         self.assertFalse(is_noisy_ecommerce_url("https://item.jd.com/100010708487.html"))
         self.assertFalse(is_noisy_ecommerce_url("https://detail.tmall.com/item.htm?id=123"))
 
+    def test_ecommerce_queries_ignore_review_modifiers(self) -> None:
+        queries = dict(ecommerce_search_queries("SEL50F12GM", modifiers=["评测", "色散"]))
+        self.assertNotIn("评测", queries["JD"])
+        self.assertNotIn("色散", queries["Taobao/Tmall"])
+        self.assertIn("site:item.jd.com", queries["JD"])
+
     def test_ecommerce_queries_prefer_item_hosts(self) -> None:
         queries = dict(ecommerce_search_queries("SEL50F12GM"))
         self.assertIn("site:item.jd.com", queries["JD"])

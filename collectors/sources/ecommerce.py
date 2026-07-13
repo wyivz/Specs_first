@@ -47,11 +47,6 @@ class EcommerceSourceCollector:
         self.jd = self.registry.require(JdAdapter)
         self.tmall_taobao = self.registry.require(TmallTaobaoAdapter)
 
-    def _search_modifiers(self) -> list[str] | None:
-        if self.category_profile and self.category_profile.search_modifiers:
-            return list(self.category_profile.search_modifiers)
-        return None
-
     def collect(
         self,
         candidate: ProductCandidate,
@@ -63,10 +58,18 @@ class EcommerceSourceCollector:
     ) -> list[PriceFinding]:
         findings: list[PriceFinding] = []
         active_trace = trace or self.resilient.trace
-        for platform, query in ecommerce_search_queries(candidate.sku, modifiers=self._search_modifiers()):
+        for platform, query in ecommerce_search_queries(candidate.sku):
             if active_trace:
                 active_trace.log("ecommerce", f"search platform={platform} query={query}", sku=candidate.sku)
-            for result in self.http.search(query, max_results=5):
+            results = self.http.search(query, max_results=5)
+            if not results:
+                self.diagnostics.record(
+                    platform,
+                    f"search empty: {query}",
+                    level="warning",
+                    sku=candidate.sku,
+                )
+            for result in results:
                 adapter = self.registry.for_platform(platform)
                 if adapter is not None and hasattr(adapter, "normalize_url"):
                     target_url = adapter.normalize_url(result.url)
@@ -291,8 +294,16 @@ class EcommerceSourceCollector:
     ) -> tuple[list[OfficialSpec], list[str]]:
         specs_by_name: dict[str, OfficialSpec] = {}
         highlights: list[str] = []
-        for platform, query in ecommerce_search_queries(candidate.sku, modifiers=self._search_modifiers()):
-            for result in self.http.search(query, max_results=4):
+        for platform, query in ecommerce_search_queries(candidate.sku):
+            results = self.http.search(query, max_results=4)
+            if not results:
+                self.diagnostics.record(
+                    platform,
+                    f"search empty: {query}",
+                    level="warning",
+                    sku=candidate.sku,
+                )
+            for result in results:
                 adapter = self.registry.for_platform(platform)
                 if adapter is not None and hasattr(adapter, "normalize_url"):
                     target_url = adapter.normalize_url(result.url)
@@ -420,8 +431,16 @@ class EcommerceSourceCollector:
         """Light probe: return detail image URLs without filling spec slots."""
         images: list[str] = []
         seen: set[str] = set()
-        for platform, query in ecommerce_search_queries(candidate.sku, modifiers=self._search_modifiers()):
-            for result in self.http.search(query, max_results=3):
+        for platform, query in ecommerce_search_queries(candidate.sku):
+            results = self.http.search(query, max_results=3)
+            if not results:
+                self.diagnostics.record(
+                    platform,
+                    f"search empty: {query}",
+                    level="warning",
+                    sku=candidate.sku,
+                )
+            for result in results:
                 adapter = self.registry.for_platform(platform)
                 if adapter is not None and hasattr(adapter, "normalize_url"):
                     target_url = adapter.normalize_url(result.url)

@@ -490,14 +490,16 @@ def evidence_from_page(
     if sku and not evidence_mentions_sku(sku, text[:4000], url):
         return []
     evidence: list[EvidenceItem] = []
-    for index, pattern in enumerate(NEGATIVE_PATTERNS):
+    # Accept defect OR review wording (same-excerpt double gate was starving live pages).
+    gate_patterns = list(NEGATIVE_PATTERNS) + list(REVIEW_PATTERNS)
+    for index, pattern in enumerate(gate_patterns):
         match = re.search(pattern, text, re.I)
         if not match:
             continue
         start = max(0, match.start() - 180)
         end = min(len(text), match.end() + 220)
         excerpt = text[start:end]
-        if not any(re.search(review_pattern, excerpt, re.I) for review_pattern in REVIEW_PATTERNS):
+        if len(excerpt.strip()) < 24:
             continue
         evidence.append(
             build_evidence(
@@ -524,7 +526,9 @@ def evidence_from_search_result(
         return None
     if sku and not evidence_mentions_sku(sku, combined, result.url):
         return None
-    if not any(re.search(pattern, combined, re.I) for pattern in NEGATIVE_PATTERNS):
+    if not any(re.search(pattern, combined, re.I) for pattern in NEGATIVE_PATTERNS) and not any(
+        re.search(pattern, combined, re.I) for pattern in REVIEW_PATTERNS
+    ):
         return None
     return build_evidence(platform, result.url, domain_author(result.url), "search-result", combined, confidence)
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from collectors.extractors import (
+    evidence_from_page,
+    evidence_from_search_result,
     evidence_mentions_sku,
     extract_specs_from_text,
     page_matches_sku,
@@ -136,6 +138,25 @@ class EvidenceRelevanceAndSpecQualityTest(unittest.TestCase):
 
     def test_jd_homepage_is_noisy(self) -> None:
         self.assertTrue(is_noisy_ecommerce_url("https://www.jd.com/?from=pc_item_sd"))
+
+    def test_evidence_from_page_accepts_defect_without_review_word(self) -> None:
+        markup = (
+            "<html><body><h1>SEL50F12GM 开箱</h1>"
+            "<p>这支镜头偶发色散和紫边，整体画质还不错。</p>"
+            "</body></html>"
+        )
+        items = evidence_from_page("Chiphell", "https://www.chiphell.com/t1", markup, sku="SEL50F12GM")
+        self.assertTrue(items)
+        self.assertTrue(any("色散" in item.excerpt or "紫边" in item.excerpt for item in items))
+
+    def test_evidence_from_search_accepts_review_wording(self) -> None:
+        result = SearchResult(
+            "SEL50F12GM 长期体验",
+            "https://www.bilibili.com/video/BVx",
+            "开箱评测记录日常使用感受",
+        )
+        item = evidence_from_search_result("Bilibili", result, sku="SEL50F12GM")
+        self.assertIsNotNone(item)
 
     def test_skips_jd_footer_labels(self) -> None:
         text = (

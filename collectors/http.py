@@ -123,6 +123,9 @@ class HttpClient:
         results = self._search_duckduckgo_html(query, max_results)
         if results:
             return results[:max_results]
+        results = self._search_duckduckgo_lite(query, max_results)
+        if results:
+            return results[:max_results]
         results = self._search_duckduckgo_ddgs(query, max_results)
         return results[:max_results]
 
@@ -139,6 +142,15 @@ class HttpClient:
         if not result.ok:
             return []
         parsed = parse_duckduckgo_results(result.text)
+        return parsed[:max_results]
+
+    def _search_duckduckgo_lite(self, query: str, max_results: int) -> list[SearchResult]:
+        """Fallback when html.duckduckgo.com is empty/CAPTCHA'd — lite markup is more stable."""
+        url = f"https://lite.duckduckgo.com/lite/?{urlencode({'q': query})}"
+        result = self.fetch(url)
+        if not result.ok:
+            return []
+        parsed = parse_duckduckgo_lite_results(result.text)
         return parsed[:max_results]
 
     @staticmethod
@@ -212,37 +224,79 @@ def extract_title(markup: str, fallback: str = "") -> str:
     return fallback
 
 
+def _unwrap_ddg_redirect(url: str) -> str:
+    url = html.unescape(url)
+    if "uddg=" in url:
+        url_match = re.search(r"uddg=([^&]+)", url)
+        if url_match:
+            from urllib.parse import unquote
+
+            return unquote(url_match.group(1))
+    return url
+
+
 def parse_duckduckgo_results(markup: str) -> list[SearchResult]:
     results: list[SearchResult] = []
+    # Classic html.duckduckgo.com result cards.
     for match in re.finditer(
-        r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?'
-        r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+        r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?'
+        r'(?:<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>|'
+        r'<td[^>]+class="[^"]*result-snippet[^"]*"[^>]*>(.*?)</td>)',
         markup,
         re.I | re.S,
     ):
-        url = html.unescape(match.group(1))
-        if "uddg=" in url:
-            url_match = re.search(r"uddg=([^&]+)", url)
-            if url_match:
-                from urllib.parse import unquote
-
-                url = unquote(url_match.group(1))
+        url = _unwrap_ddg_redirect(match.group(1))
+        snippet = match.group(3) if match.group(3) is not None else (match.group(4) or "")
         results.append(
             SearchResult(
                 title=normalize_whitespace(html.unescape(strip_tags(match.group(2)))),
                 url=url,
-                snippet=normalize_whitespace(html.unescape(strip_tags(match.group(3)))),
+                snippet=normalize_whitespace(html.unescape(strip_tags(snippet))),
             )
         )
+    if results:
+        return dedupe_results(results)
+
+    # Looser fallback: any result__a without requiring sibling snippet markup.
+    for match in re.finditer(
+        r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+        markup,
+        re.I | re.S,
+    ):
+        url = _unwrap_ddg_redirect(match.group(1))
+        title = normalize_whitespace(html.unescape(strip_tags(match.group(2))))
+        if url.startswith("http") and len(title) > 4:
+            results.append(SearchResult(title=title, url=url, snippet=""))
     if results:
         return dedupe_results(results)
 
     extractor = TextExtractor()
     extractor.feed(markup)
     for title, url in extractor.links:
-        if url.startswith("http") and len(title) > 8:
-            results.append(SearchResult(title=title, url=url, snippet=""))
+        resolved = _unwrap_ddg_redirect(url)
+        if resolved.startswith("http") and len(title) > 8:
+            results.append(SearchResult(title=title, url=resolved, snippet=""))
     return dedupe_results(results)
+
+
+def parse_duckduckgo_lite_results(markup: str) -> list[SearchResult]:
+    """Parse lite.duckduckgo.com/lite/ table rows (A/uddg links)."""
+    results: list[SearchResult] = []
+    for match in re.finditer(
+        r'<a[^>]+rel="nofollow"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+        markup,
+        re.I | re.S,
+    ):
+        url = _unwrap_ddg_redirect(match.group(1))
+        title = normalize_whitespace(html.unescape(strip_tags(match.group(2))))
+        if not url.startswith("http") or len(title) < 4:
+            continue
+        if "duckduckgo.com" in url.lower():
+            continue
+        results.append(SearchResult(title=title, url=url, snippet=""))
+    if results:
+        return dedupe_results(results)
+    return parse_duckduckgo_results(markup)
 
 
 def dedupe_results(results: Iterable[SearchResult]) -> list[SearchResult]:

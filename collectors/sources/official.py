@@ -47,6 +47,15 @@ class OfficialSourceCollector:
     def discover_candidates(self, query: str, category: str, max_results: int = 10) -> list[ProductCandidate]:
         search_query = f"{query} {category} official specifications"
         results = self.http.search(search_query, max_results=max_results * 2)
+        if not results:
+            # Broader fallback when "official specifications" returns nothing from DDG.
+            results = self.http.search(f"{query} {category} specs 规格", max_results=max_results * 2)
+            if not results:
+                self.diagnostics.record(
+                    "official",
+                    f"search empty: {search_query}",
+                    level="warning",
+                )
         candidates: list[ProductCandidate] = []
         for result in results:
             if not self._looks_relevant(result, query=query):
@@ -56,6 +65,16 @@ class OfficialSourceCollector:
             if primary_model_code(query):
                 candidate.sku = query.strip()[:120]
             candidates.append(candidate)
+        if not candidates:
+            # Soft path: SKU mention without requiring "official/规格" in the snippet.
+            for result in results:
+                if not self._looks_relevant(result, query=query, soft=True):
+                    continue
+                candidate = candidate_from_search_result(result, category)
+                if primary_model_code(query):
+                    candidate.sku = query.strip()[:120]
+                candidate.confidence = min(candidate.confidence, 0.45)
+                candidates.append(candidate)
         if not candidates:
             # Do not attach an unrelated first hit URL — keep an explicit low-confidence stub.
             candidates = [
@@ -79,10 +98,14 @@ class OfficialSourceCollector:
         extra_urls: list[str] | None = None,
     ) -> tuple[list[OfficialSpec], list[str]]:
         urls = [*(extra_urls or []), candidate.source_url]
+        search_hits = self.http.search(f"{candidate.sku} official specifications", max_results=5)
+        if not search_hits:
+            search_hits = self.http.search(f"{candidate.sku} specs 规格 参数", max_results=5)
         urls.extend(
             result.url
-            for result in self.http.search(f"{candidate.sku} official specifications", max_results=5)
+            for result in search_hits
             if self._looks_relevant(result, query=candidate.sku)
+            or self._looks_relevant(result, query=candidate.sku, soft=True)
         )
 
         specs_by_name: dict[str, OfficialSpec] = {}
@@ -179,11 +202,11 @@ class OfficialSourceCollector:
             specs_by_name.setdefault(spec.name, spec)
         return list(specs_by_name.values()), highlights
 
-    def _looks_relevant(self, result: SearchResult, *, query: str = "") -> bool:
+    def _looks_relevant(self, result: SearchResult, *, query: str = "", soft: bool = False) -> bool:
         if is_noisy_ecommerce_url(result.url):
             return False
         combined = f"{result.title} {result.snippet} {result.url}".lower()
-        if not any(hint in combined for hint in self.OFFICIAL_HINTS):
+        if not soft and not any(hint in combined for hint in self.OFFICIAL_HINTS):
             return False
         if query and not evidence_mentions_sku(query, result.title, result.snippet, result.url):
             return False

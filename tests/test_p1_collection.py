@@ -45,14 +45,28 @@ class DuckDuckGoSearchTest(unittest.TestCase):
     def test_search_falls_back_to_ddgs(self) -> None:
         client = HttpClient(retries=0)
         with patch.object(client, "_search_duckduckgo_html", return_value=[]):
-            with patch.object(
-                client,
-                "_search_duckduckgo_ddgs",
-                return_value=[SearchResult(title="JD item", url="https://item.jd.com/1.html", snippet="")],
-            ):
-                results = client.search("site:jd.com phone", max_results=3)
+            with patch.object(client, "_search_duckduckgo_lite", return_value=[]):
+                with patch.object(
+                    client,
+                    "_search_duckduckgo_ddgs",
+                    return_value=[SearchResult(title="JD item", url="https://item.jd.com/1.html", snippet="")],
+                ):
+                    results = client.search("site:jd.com phone", max_results=3)
         self.assertEqual(len(results), 1)
         self.assertIn("jd.com", results[0].url)
+
+    def test_search_falls_back_to_lite_before_ddgs(self) -> None:
+        client = HttpClient(retries=0)
+        with patch.object(client, "_search_duckduckgo_html", return_value=[]):
+            with patch.object(
+                client,
+                "_search_duckduckgo_lite",
+                return_value=[SearchResult(title="Lite hit", url="https://item.jd.com/2.html", snippet="")],
+            ):
+                with patch.object(client, "_search_duckduckgo_ddgs") as ddgs:
+                    results = client.search("SEL50F12GM", max_results=3)
+        self.assertEqual(len(results), 1)
+        ddgs.assert_not_called()
 
 
 class TaobaoMtopP1Test(unittest.TestCase):

@@ -560,14 +560,20 @@ class YouTubeAdapter:
         if not transcript:
             return []
         snippets: list[str] = []
+        soft: list[str] = []
         for sentence in re.split(r"(?<=[.!?。！？])\s+", transcript):
             sentence = clip(sentence.strip(), 360)
-            if len(sentence) >= 20 and self.REVIEW_HINTS.search(sentence):
+            if len(sentence) < 20:
+                continue
+            if self.REVIEW_HINTS.search(sentence):
                 snippets.append(sentence)
+            elif len(sentence) >= 48:
+                soft.append(sentence)
         if snippets:
             return snippets
-        # Do not fall back to arbitrary transcript chunks — they are often unrelated.
-        return []
+        # Title/SKU already gated upstream; keep a few long transcript sentences so
+        # Phase 2 is not empty when captions omit explicit "defect/review" wording.
+        return soft[:3]
 
     def _extract_comment_snippets(self, markup: str) -> list[str]:
         data = self._extract_embedded_json(markup, "ytInitialData")

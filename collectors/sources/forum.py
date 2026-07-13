@@ -8,7 +8,7 @@ from collectors.extractors import (
     evidence_from_search_result,
     evidence_mentions_sku,
 )
-from collectors.http import HttpClient
+from collectors.http import HttpClient, SearchResult
 from collectors.resilient_fetch import ResilientFetcher
 from schemas import EvidenceItem, ProductCandidate
 from schemas.category_profile import (
@@ -19,6 +19,8 @@ from schemas.category_profile import (
 
 
 class ForumSourceCollector:
+    _PROVISIONAL_FETCH_LIMIT = 2
+
     def __init__(
         self,
         http: HttpClient,
@@ -35,6 +37,35 @@ class ForumSourceCollector:
             return list(self.category_profile.search_modifiers)
         return None
 
+    def _search_platform(
+        self,
+        platform: str,
+        query: str,
+        *,
+        base_query: str,
+        max_results: int,
+        sku: str,
+    ) -> list[SearchResult]:
+        results = self.http.search(query, max_results=max_results)
+        if results:
+            return results
+        if base_query and base_query != query:
+            self.diagnostics.record(
+                platform,
+                f"search empty with modifiers; retrying without: {base_query}",
+                level="info",
+                sku=sku,
+            )
+            results = self.http.search(base_query, max_results=max_results)
+        if not results:
+            self.diagnostics.record(
+                platform,
+                f"search empty: {query}",
+                level="warning",
+                sku=sku,
+            )
+        return results
+
     def collect(
         self,
         candidate: ProductCandidate,
@@ -46,17 +77,28 @@ class ForumSourceCollector:
         evidence: list[EvidenceItem] = []
         include_reddit = load_reddit_credentials().configured
         max_results = 3 if not use_browser else 8
+        modifiers = self._search_modifiers()
+        base_by_platform = dict(
+            forum_search_queries(candidate.sku, include_reddit=include_reddit, modifiers=None)
+        )
         for platform, query in forum_search_queries(
             candidate.sku,
             include_reddit=include_reddit,
-            modifiers=self._search_modifiers(),
+            modifiers=modifiers,
         ):
             ranked = rank_search_results_for_reviews(
-                self.http.search(query, max_results=max_results),
+                self._search_platform(
+                    platform,
+                    query,
+                    base_query=base_by_platform.get(platform, query),
+                    max_results=max_results,
+                    sku=candidate.sku,
+                ),
                 sku=candidate.sku,
             )
-            for result in ranked:
-                if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
+            for index, result in enumerate(ranked):
+                sku_ok = evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url)
+                if not sku_ok and index >= self._PROVISIONAL_FETCH_LIMIT:
                     self.diagnostics.record(
                         platform,
                         f"skip unrelated search hit: {result.url}",
@@ -64,6 +106,13 @@ class ForumSourceCollector:
                         sku=candidate.sku,
                     )
                     continue
+                if not sku_ok:
+                    self.diagnostics.record(
+                        platform,
+                        f"provisional fetch of thin-snippet hit: {result.url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
                 search_evidence = evidence_from_search_result(
                     platform, result, confidence=0.57, sku=candidate.sku
                 )
