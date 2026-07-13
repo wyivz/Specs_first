@@ -95,6 +95,21 @@ class OfficialSourceCollector:
                 storage_state_path=storage_state_path,
                 sku=candidate.sku,
             )
+            # One retry for transient timeouts on manufacturer pages.
+            if (not snapshot.ok) and "timed out" in (snapshot.error or "").lower():
+                self.diagnostics.record(
+                    "official",
+                    f"retry after timeout for {url}",
+                    level="info",
+                    sku=candidate.sku,
+                )
+                snapshot = self.resilient.fetch(
+                    url,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                    sku=candidate.sku,
+                )
             if is_noisy_ecommerce_url(snapshot.url):
                 self.diagnostics.record(
                     "official",

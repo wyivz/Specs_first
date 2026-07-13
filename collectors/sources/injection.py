@@ -6,6 +6,7 @@ from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import build_evidence, dedupe_evidence, evidence_from_page, extract_price, platform_from_url
 from collectors.http import HttpClient, clip
 from collectors.resilient_fetch import ResilientFetcher
+from collectors.url_guards import is_noisy_ecommerce_url
 from schemas import EvidenceItem, PriceFinding
 
 
@@ -60,6 +61,15 @@ class UrlInjectionCollector:
         for url in urls:
             if active_trace:
                 active_trace.log("injection", f"price url={url}", sku=sku)
+            # Official/manual pages are for specs, not price scraping.
+            if not self._is_price_candidate_url(url):
+                self.diagnostics.record(
+                    "url",
+                    f"skip non-commerce url for price injection: {url}",
+                    level="info",
+                    sku=sku,
+                )
+                continue
             page = self.resilient.fetch(
                 url,
                 task_id=task_id,
@@ -67,12 +77,13 @@ class UrlInjectionCollector:
                 storage_state_path=storage_state_path,
                 sku=sku,
             )
-            if not page.ok and not page.markup:
+            if not page.ok and not page.markup and not self.jd.is_product_url(url):
                 continue
-            if self.jd.supports(page.url) and page.markup:
+            if self.jd.is_product_url(url):
+                markup = page.markup if self.jd.is_product_url(page.url) else ""
                 jd_finding = self.jd.build_price_finding(
-                    page.url,
-                    page.markup,
+                    url,
+                    markup,
                     platform="JD",
                     http=self.http,
                     trace=active_trace,
@@ -80,7 +91,22 @@ class UrlInjectionCollector:
                 )
                 if jd_finding:
                     prices.append(jd_finding)
-                    continue
+                elif is_noisy_ecommerce_url(page.url):
+                    self.diagnostics.record(
+                        "JD",
+                        f"skip redirected non-product price page: {url} -> {page.url}",
+                        level="warning",
+                        sku=sku,
+                    )
+                continue
+            if is_noisy_ecommerce_url(page.url) or not self._is_price_candidate_url(page.url):
+                self.diagnostics.record(
+                    "url",
+                    f"skip redirected/non-product price page: {url} -> {page.url}",
+                    level="warning",
+                    sku=sku,
+                )
+                continue
             parsed = extract_price(page.text)
             if not parsed:
                 continue
@@ -115,3 +141,16 @@ class UrlInjectionCollector:
                 )
             )
         return sorted(prices, key=lambda item: item.final_price)
+
+    @staticmethod
+    def _is_price_candidate_url(url: str) -> bool:
+        lower = (url or "").lower()
+        return any(
+            hint in lower
+            for hint in (
+                "item.jd.com/",
+                "item.m.jd.com/",
+                "item.taobao.com/",
+                "detail.tmall.com/",
+            )
+        )

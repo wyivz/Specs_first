@@ -91,6 +91,18 @@ class EcommerceSourceCollector:
                         level="warning",
                         sku=candidate.sku,
                     )
+                    # JD HTML often redirects home without Cookie; mgets can still price by sku id.
+                    if platform == "JD" and self.jd.is_product_url(target_url):
+                        jd_finding = self.jd.build_price_finding(
+                            target_url,
+                            "",
+                            platform="JD",
+                            http=self.http,
+                            trace=active_trace,
+                            sku=candidate.sku,
+                        )
+                        if jd_finding:
+                            findings.append(jd_finding)
                     continue
                 try:
                     if platform == "Taobao/Tmall":
@@ -107,7 +119,7 @@ class EcommerceSourceCollector:
                 combined_text = f"{combined_text} {snapshot.text}"
                 if platform == "JD" and snapshot.markup:
                     jd_finding = self.jd.build_price_finding(
-                        snapshot.url,
+                        target_url,
                         snapshot.markup,
                         platform="JD",
                         http=self.http,

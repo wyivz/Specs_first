@@ -95,20 +95,30 @@ def _probe_http_fetch(name: str, url: str, *, min_chars: int = 200) -> SmokeProb
 def probe_jd_page() -> SmokeProbe:
     adapter = JdAdapter()
     url = adapter.normalize_url(_SMOKE_JD_URL)
-    probe = _probe_http_fetch("jd_page", url, min_chars=500)
-    if probe.status != "pass":
-        return probe
     http = HttpClient(timeout_seconds=15, retries=1)
-    markup = http.fetch(url).text
-    has_title = "jd.com" in markup.lower() or len(markup) > 1000
+    result = http.fetch(url, platform="JD")
+    final_url = result.url or url
+    if not adapter.is_product_url(final_url):
+        return SmokeProbe(
+            "jd_page",
+            "fail",
+            f"JD product URL redirected away from item page ({final_url})",
+            {"url": url, "final_url": final_url, "status": result.status},
+        )
+    markup = result.text or ""
+    if len(markup) < 500:
+        return SmokeProbe(
+            "jd_page",
+            "fail",
+            "JD page markup looks empty or blocked",
+            {"url": final_url, "status": result.status},
+        )
     sku = adapter._extract_sku_id(url, markup)  # noqa: SLF001 — smoke script
     mgets_price = None
     if sku:
         parsed = adapter.fetch_price_from_mgets(http, sku)
         if parsed:
             mgets_price = parsed.final_price
-    if not has_title:
-        return SmokeProbe("jd_page", "fail", "JD page markup looks empty or blocked", {"url": url})
     message = f"JD product page reachable (sku={sku or 'unknown'}"
     if mgets_price is not None:
         message += f", mgets_price={mgets_price}"
@@ -117,7 +127,7 @@ def probe_jd_page() -> SmokeProbe:
         "jd_page",
         "pass",
         message,
-        {"url": url, "sku": sku, "mgets_price": mgets_price},
+        {"url": final_url, "sku": sku, "mgets_price": mgets_price},
     )
 
 
