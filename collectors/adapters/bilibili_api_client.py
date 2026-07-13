@@ -52,7 +52,7 @@ class BilibiliApiClient:
             video_obj = video.Video(bvid=bvid, credential=credential)
 
             self.rate_limiter.wait("bilibili")  # type: ignore[union-attr]
-            pages = sync.sync(video_obj.get_pages())
+            pages = sync(video_obj.get_pages())
             if not pages:
                 return self._fetch_subtitle_via_asr(bvid)
             cid = pages[0].get("cid")
@@ -60,7 +60,7 @@ class BilibiliApiClient:
                 return self._fetch_subtitle_via_asr(bvid)
 
             self.rate_limiter.wait("bilibili")  # type: ignore[union-attr]
-            subtitle_meta = sync.sync(video_obj.get_subtitle(cid=cid))
+            subtitle_meta = sync(video_obj.get_subtitle(cid=cid))
         except Exception as exc:
             self._record("bilibili", f"subtitle API failed for {bvid}: {exc}", level="warning")
             if is_verification_error(str(exc)):
@@ -142,7 +142,7 @@ class BilibiliApiClient:
             credential = self.credentials.to_credential()
             video_obj = video.Video(bvid=bvid, credential=credential)
             self.rate_limiter.wait("bilibili")  # type: ignore[union-attr]
-            info = sync.sync(video_obj.get_info())
+            info = sync(video_obj.get_info())
             oid = int(info.get("aid") or 0)
             if not oid:
                 return []
@@ -152,7 +152,7 @@ class BilibiliApiClient:
             while len(comments) < self.max_comments_per_video:
                 self.rate_limiter.wait("bilibili")  # type: ignore[union-attr]
                 try:
-                    page = sync.sync(
+                    page = sync(
                         comment.get_comments(
                             oid,
                             CommentResourceType.VIDEO,
@@ -203,7 +203,7 @@ class BilibiliApiClient:
             credential = self.credentials.to_credential()
             video_obj = video.Video(bvid=bvid, credential=credential)
             self.rate_limiter.wait("bilibili")  # type: ignore[union-attr]
-            info = sync.sync(video_obj.get_info())
+            info = sync(video_obj.get_info())
             return str(info.get("title") or "").strip()
         except Exception as exc:
             self._record("bilibili", f"title API failed for {bvid}: {exc}", level="warning")
