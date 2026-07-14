@@ -63,24 +63,24 @@ class ModelRouterTest(unittest.TestCase):
 
     def test_gemini_cached_content_skips_cache_below_char_floor(self) -> None:
         router = HybridModelRouter.__new__(HybridModelRouter)
-        with router._gemini_cached_content("too short", "system") as model:
-            self.assertIsNone(model)
+        with router._gemini_cached_content("too short", "system") as cache_name:
+            self.assertIsNone(cache_name)
 
     def test_gemini_cached_content_disabled_via_settings(self) -> None:
         router = HybridModelRouter.__new__(HybridModelRouter)
         disabled = dataclasses.replace(settings, gemini_context_cache_enabled=False)
-        with patch("backend.model_router.settings", disabled):
-            with router._gemini_cached_content("x" * 20000, "system") as model:
-                self.assertIsNone(model)
+        with patch("backend.gemini_client.settings", disabled):
+            with router._gemini_cached_content("x" * 20000, "system") as cache_name:
+                self.assertIsNone(cache_name)
 
     def test_gemini_cached_content_falls_back_when_cache_create_fails(self) -> None:
         router = HybridModelRouter.__new__(HybridModelRouter)
         boosted = dataclasses.replace(settings, gemini_context_cache_min_chars=10, gemini_api_key="fake-key")
-        with patch("backend.model_router.settings", boosted):
-            # google.generativeai isn't installed in the test environment, so
-            # cache creation raises ImportError and we fall back to None.
-            with router._gemini_cached_content("x" * 100, "system") as model:
-                self.assertIsNone(model)
+        with patch("backend.gemini_client.settings", boosted):
+            with patch("backend.gemini_client.GeminiClient._new_client") as new_client:
+                new_client.return_value.caches.create.side_effect = RuntimeError("cache unavailable")
+                with router._gemini_cached_content("x" * 100, "system") as cache_name:
+                    self.assertIsNone(cache_name)
 
     def test_keyword_router_image_spec_extraction_returns_empty(self) -> None:
         router = KeywordModelRouter()

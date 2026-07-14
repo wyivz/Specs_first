@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from collectors.adapters.jd import JdAdapter
@@ -22,8 +23,10 @@ from collectors.extractors import (
 from collectors.http import HttpClient, clip
 from collectors.platform_auth import PlatformAuthRequired
 from collectors.protocols import SpecExtractionRouter
+from collectors.parallel import run_platform_tasks
 from collectors.rate_limit import get_host_backoff, human_pause
 from collectors.resilient_fetch import ResilientFetcher
+from collectors.settings import settings
 from collectors.url_guards import is_noisy_ecommerce_url
 from schemas import OfficialSpec, PriceFinding, ProductCandidate
 from schemas.category_profile import DynamicCategoryProfile, ecommerce_search_queries
@@ -109,50 +112,160 @@ class EcommerceSourceCollector:
         storage_state_path: str = "",
         trace: CollectionTrace | None = None,
     ) -> list[PriceFinding]:
-        findings: list[PriceFinding] = []
         active_trace = trace or self.resilient.trace
+        deadline = time.monotonic() + settings.ecommerce_collect_timeout_seconds
+        hinted: set[str] = set()
+        queries = list(ecommerce_search_queries(candidate.sku))
+
+        def _collect_one(platform: str, query: str) -> list[PriceFinding]:
+            return self._collect_platform_prices(
+                candidate,
+                platform,
+                query,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+                active_trace=active_trace,
+                deadline=deadline,
+                hinted=hinted,
+            )
+
+        batches = run_platform_tasks(
+            [(platform, lambda p=platform, q=query: _collect_one(p, q)) for platform, query in queries],
+            enabled=settings.collection_parallel_platforms,
+        )
+        findings: list[PriceFinding] = []
+        for batch in batches:
+            findings.extend(batch)
+        return sorted(findings, key=lambda item: item.final_price)[:5]
+
+    def _collect_platform_prices(
+        self,
+        candidate: ProductCandidate,
+        platform: str,
+        query: str,
+        *,
+        task_id: str,
+        use_browser: bool,
+        storage_state_path: str,
+        active_trace: CollectionTrace | None,
+        deadline: float,
+        hinted: set[str],
+    ) -> list[PriceFinding]:
+        findings: list[PriceFinding] = []
         max_urls = self._max_urls_per_platform()
-        for platform, query in ecommerce_search_queries(candidate.sku):
-            human_pause(0.5, 1.5)
-            platform_hits = 0
-            if active_trace:
-                active_trace.log("ecommerce", f"search platform={platform} query={query}", sku=candidate.sku)
-            results = self.http.search(query, max_results=5)
-            if not results:
+        human_pause(0.5, 1.5)
+        platform_hits = 0
+        if active_trace:
+            active_trace.log("ecommerce", f"search platform={platform} query={query}", sku=candidate.sku)
+        results = self.http.search(query, max_results=5)
+        if not results:
+            self.diagnostics.record(
+                platform,
+                f"search empty: {query}",
+                level="warning",
+                sku=candidate.sku,
+            )
+        for result in results:
+            if time.monotonic() > deadline:
                 self.diagnostics.record(
-                    platform,
-                    f"search empty: {query}",
+                    "ecommerce",
+                    f"价格采集超时（{settings.ecommerce_collect_timeout_seconds:.0f}s），已停止 {platform}",
                     level="warning",
                     sku=candidate.sku,
                 )
-            for result in results:
-                if platform_hits >= max_urls:
-                    break
-                adapter = self.registry.for_platform(platform)
-                if adapter is not None and hasattr(adapter, "normalize_url"):
-                    target_url = adapter.normalize_url(result.url)
-                else:
-                    target_url = result.url
-                if not self._is_product_result(platform, target_url, result.url):
+                break
+            if platform_hits >= max_urls:
+                break
+            adapter = self.registry.for_platform(platform)
+            if adapter is not None and hasattr(adapter, "normalize_url"):
+                target_url = adapter.normalize_url(result.url)
+            else:
+                target_url = result.url
+            if not self._is_product_result(platform, target_url, result.url):
+                self.diagnostics.record(
+                    platform,
+                    f"skip non-product ecommerce url: {result.url}",
+                    level="info",
+                    sku=candidate.sku,
+                )
+                continue
+            if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
+                self.diagnostics.record(
+                    platform,
+                    f"skip unrelated ecommerce search hit: {result.url}",
+                    level="info",
+                    sku=candidate.sku,
+                )
+                continue
+            combined_text = f"{result.title}. {result.snippet}"
+            # JD: price via mgets first — avoids HTML/home redirect/freq-control cycles.
+            if platform == "JD" and self.jd.is_product_url(target_url):
+                get_host_backoff().wait_if_needed(target_url)
+                jd_finding = self.jd.build_price_finding(
+                    target_url,
+                    "",
+                    platform="JD",
+                    http=self.http,
+                    trace=active_trace,
+                    sku=candidate.sku,
+                )
+                if jd_finding:
+                    findings.append(jd_finding)
+                    platform_hits += 1
                     self.diagnostics.record(
                         platform,
-                        f"skip non-product ecommerce url: {result.url}",
+                        f"mgets-first price without page fetch: {target_url}",
                         level="info",
                         sku=candidate.sku,
                     )
                     continue
-                if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
+            # Taobao: signed mtop-first when Cookie configured.
+            if platform == "Taobao/Tmall" and self.tmall_taobao.is_product_url(target_url):
+                tb_finding = self._try_taobao_mtop_price(
+                    target_url,
+                    task_id=task_id,
+                    use_browser=use_browser,
+                    storage_state_path=storage_state_path,
+                    sku=candidate.sku,
+                    active_trace=active_trace,
+                )
+                if tb_finding:
+                    findings.append(tb_finding)
+                    platform_hits += 1
                     self.diagnostics.record(
                         platform,
-                        f"skip unrelated ecommerce search hit: {result.url}",
+                        f"mtop-first price without page fetch: {target_url}",
                         level="info",
                         sku=candidate.sku,
                     )
                     continue
-                combined_text = f"{result.title}. {result.snippet}"
-                # JD: price via mgets first — avoids HTML/home redirect/freq-control cycles.
+            # JD in frequency-control backoff: do not reopen product pages.
+            if platform == "JD" and get_host_backoff().in_backoff(target_url):
+                self.diagnostics.record(
+                    platform,
+                    f"skip page fetch during JD backoff: {target_url}",
+                    level="info",
+                    sku=candidate.sku,
+                )
+                continue
+            fetch_browser = use_browser
+            if platform == "Taobao/Tmall" and not (self.tmall_taobao.credentials.cookie or "").strip():
+                # Without Cookie, headed captcha windows are useless noise — stay HTTP-only.
+                fetch_browser = False
+            try:
+                snapshot = self.resilient.fetch(
+                    target_url,
+                    task_id=task_id,
+                    use_browser=fetch_browser,
+                    storage_state_path=storage_state_path,
+                    sku=candidate.sku,
+                )
+            except Exception as exc:
+                if not self._soft_skip_auth(platform, target_url, exc, candidate.sku):
+                    raise
+                # Auth/slider soft-skip: still try JD mgets if we have a product URL.
                 if platform == "JD" and self.jd.is_product_url(target_url):
-                    get_host_backoff().wait_if_needed(target_url)
                     jd_finding = self.jd.build_price_finding(
                         target_url,
                         "",
@@ -164,141 +277,121 @@ class EcommerceSourceCollector:
                     if jd_finding:
                         findings.append(jd_finding)
                         platform_hits += 1
-                        self.diagnostics.record(
-                            platform,
-                            f"mgets-first price without page fetch: {target_url}",
-                            level="info",
-                            sku=candidate.sku,
-                        )
-                        continue
-                # Taobao: signed mtop-first when Cookie configured.
-                if platform == "Taobao/Tmall" and self.tmall_taobao.is_product_url(target_url):
-                    tb_finding = self._try_taobao_mtop_price(
-                        target_url,
-                        task_id=task_id,
-                        use_browser=use_browser,
-                        storage_state_path=storage_state_path,
-                        sku=candidate.sku,
-                        active_trace=active_trace,
-                    )
-                    if tb_finding:
-                        findings.append(tb_finding)
-                        platform_hits += 1
-                        self.diagnostics.record(
-                            platform,
-                            f"mtop-first price without page fetch: {target_url}",
-                            level="info",
-                            sku=candidate.sku,
-                        )
-                        continue
-                # JD in frequency-control backoff: do not reopen product pages.
-                if platform == "JD" and get_host_backoff().in_backoff(target_url):
-                    self.diagnostics.record(
-                        platform,
-                        f"skip page fetch during JD backoff: {target_url}",
-                        level="info",
-                        sku=candidate.sku,
-                    )
-                    continue
-                fetch_browser = use_browser
-                if platform == "Taobao/Tmall" and not (self.tmall_taobao.credentials.cookie or "").strip():
-                    # Without Cookie, headed captcha windows are useless noise — stay HTTP-only.
-                    fetch_browser = False
-                try:
-                    snapshot = self.resilient.fetch(
-                        target_url,
-                        task_id=task_id,
-                        use_browser=fetch_browser,
-                        storage_state_path=storage_state_path,
-                        sku=candidate.sku,
-                    )
-                except Exception as exc:
-                    if not self._soft_skip_auth(platform, target_url, exc, candidate.sku):
-                        raise
-                    # Auth/slider soft-skip: still try JD mgets if we have a product URL.
-                    if platform == "JD" and self.jd.is_product_url(target_url):
-                        jd_finding = self.jd.build_price_finding(
-                            target_url,
-                            "",
-                            platform="JD",
-                            http=self.http,
-                            trace=active_trace,
-                            sku=candidate.sku,
-                        )
-                        if jd_finding:
-                            findings.append(jd_finding)
-                            platform_hits += 1
-                    continue
-                if not self._final_url_is_product(platform, target_url, snapshot.url):
-                    self.diagnostics.record(
-                        platform,
-                        f"skip redirected non-product page: {target_url} -> {snapshot.url}",
-                        level="warning",
-                        sku=candidate.sku,
-                    )
-                    # JD HTML often redirects home / freq-control; mgets can still price by sku id.
-                    if platform == "JD" and self.jd.is_product_url(target_url):
-                        jd_finding = self.jd.build_price_finding(
-                            target_url,
-                            "",
-                            platform="JD",
-                            http=self.http,
-                            trace=active_trace,
-                            sku=candidate.sku,
-                        )
-                        if jd_finding:
-                            findings.append(jd_finding)
-                            platform_hits += 1
-                    continue
-                if not self._page_matches_target(candidate.sku, result.title, snapshot):
-                    self.diagnostics.record(
-                        platform,
-                        f"skip ecommerce page that does not match target sku: {snapshot.url}",
-                        level="info",
-                        sku=candidate.sku,
-                    )
-                    continue
-                try:
-                    if platform == "Taobao/Tmall":
-                        self.tmall_taobao.maybe_raise_page_auth(
-                            snapshot.text,
-                            snapshot.page.blockers,
-                            snapshot.url,
-                        )
-                except PlatformAuthRequired as exc:
-                    if not self._soft_skip_auth(platform, snapshot.url or target_url, exc, candidate.sku):
-                        raise
-                    continue
-                screenshot_paths = list(snapshot.screenshot_paths)
-                combined_text = f"{combined_text} {snapshot.text}"
-                if platform == "JD" and snapshot.markup:
+                continue
+            if not self._final_url_is_product(platform, target_url, snapshot.url):
+                self.diagnostics.record(
+                    platform,
+                    f"skip redirected non-product page: {target_url} -> {snapshot.url}",
+                    level="warning",
+                    sku=candidate.sku,
+                )
+                self._record_recovery_hint(
+                    platform,
+                    sku=candidate.sku,
+                    use_browser=use_browser,
+                    reason=f"商品页被重定向 ({snapshot.url})",
+                    hinted=hinted,
+                )
+                # JD HTML often redirects home / freq-control; mgets can still price by sku id.
+                if platform == "JD" and self.jd.is_product_url(target_url):
                     jd_finding = self.jd.build_price_finding(
                         target_url,
-                        snapshot.markup,
+                        "",
                         platform="JD",
                         http=self.http,
                         trace=active_trace,
                         sku=candidate.sku,
                     )
                     if jd_finding:
-                        findings.append(
-                            PriceFinding(
-                                platform=jd_finding.platform,
-                                list_price=jd_finding.list_price,
-                                coupon_discount=jd_finding.coupon_discount,
-                                subsidy_discount=jd_finding.subsidy_discount,
-                                cross_store_discount=jd_finding.cross_store_discount,
-                                final_price=jd_finding.final_price,
-                                screenshot_path=",".join(screenshot_paths),
-                                captured_at=jd_finding.captured_at,
-                                evidence=jd_finding.evidence,
-                            )
-                        )
+                        findings.append(jd_finding)
                         platform_hits += 1
+                continue
+            if not self._page_matches_target(candidate.sku, result.title, snapshot):
+                self.diagnostics.record(
+                    platform,
+                    f"skip ecommerce page that does not match target sku: {snapshot.url}",
+                    level="info",
+                    sku=candidate.sku,
+                )
+                continue
+            try:
+                if platform == "Taobao/Tmall":
+                    self.tmall_taobao.maybe_raise_page_auth(
+                        snapshot.text,
+                        snapshot.page.blockers,
+                        snapshot.url,
+                    )
+            except PlatformAuthRequired as exc:
+                if not self._soft_skip_auth(platform, snapshot.url or target_url, exc, candidate.sku):
+                    raise
+                continue
+            screenshot_paths = list(snapshot.screenshot_paths)
+            combined_text = f"{combined_text} {snapshot.text}"
+            if platform == "JD" and snapshot.markup:
+                jd_finding = self.jd.build_price_finding(
+                    target_url,
+                    snapshot.markup,
+                    platform="JD",
+                    http=self.http,
+                    trace=active_trace,
+                    sku=candidate.sku,
+                )
+                if jd_finding:
+                    findings.append(
+                        PriceFinding(
+                            platform=jd_finding.platform,
+                            list_price=jd_finding.list_price,
+                            coupon_discount=jd_finding.coupon_discount,
+                            subsidy_discount=jd_finding.subsidy_discount,
+                            cross_store_discount=jd_finding.cross_store_discount,
+                            final_price=jd_finding.final_price,
+                            screenshot_path=",".join(screenshot_paths),
+                            captured_at=jd_finding.captured_at,
+                            evidence=jd_finding.evidence,
+                        )
+                    )
+                    platform_hits += 1
+                    continue
+            if platform == "Taobao/Tmall" and snapshot.markup:
+                tb_finding = self.tmall_taobao.build_price_finding(
+                    snapshot.url, snapshot.markup, platform="Taobao/Tmall"
+                )
+                if tb_finding:
+                    findings.append(
+                        PriceFinding(
+                            platform=tb_finding.platform,
+                            list_price=tb_finding.list_price,
+                            coupon_discount=tb_finding.coupon_discount,
+                            subsidy_discount=tb_finding.subsidy_discount,
+                            cross_store_discount=tb_finding.cross_store_discount,
+                            final_price=tb_finding.final_price,
+                            screenshot_path=",".join(screenshot_paths),
+                            captured_at=tb_finding.captured_at,
+                            evidence=tb_finding.evidence,
+                        )
+                    )
+                    platform_hits += 1
+                    continue
+                detail_urls = self.tmall_taobao.detail_api_urls(snapshot.url, snapshot.markup)
+                for detail_url in detail_urls[:2]:
+                    if "sign=" not in detail_url:
                         continue
-                if platform == "Taobao/Tmall" and snapshot.markup:
+                    try:
+                        raw = self.tmall_taobao.fetch_mtop_payload(
+                            self.http,
+                            detail_url,
+                            referer=snapshot.url,
+                            browser=self.browser,
+                            task_id=task_id,
+                            storage_state_path=storage_state_path,
+                            use_browser=use_browser,
+                        )
+                    except PlatformAuthRequired as exc:
+                        if not self._soft_skip_auth(platform, snapshot.url or target_url, exc, candidate.sku):
+                            raise
+                        break
                     tb_finding = self.tmall_taobao.build_price_finding(
-                        snapshot.url, snapshot.markup, platform="Taobao/Tmall"
+                        snapshot.url, raw, platform="Taobao/Tmall"
                     )
                     if tb_finding:
                         findings.append(
@@ -315,102 +408,92 @@ class EcommerceSourceCollector:
                             )
                         )
                         platform_hits += 1
-                        continue
-                    detail_urls = self.tmall_taobao.detail_api_urls(snapshot.url, snapshot.markup)
-                    for detail_url in detail_urls[:2]:
-                        if "sign=" not in detail_url:
-                            continue
-                        try:
-                            raw = self.tmall_taobao.fetch_mtop_payload(
-                                self.http,
-                                detail_url,
-                                referer=snapshot.url,
-                                browser=self.browser,
-                                task_id=task_id,
-                                storage_state_path=storage_state_path,
-                                use_browser=use_browser,
-                            )
-                        except PlatformAuthRequired as exc:
-                            if not self._soft_skip_auth(platform, snapshot.url or target_url, exc, candidate.sku):
-                                raise
-                            break
-                        tb_finding = self.tmall_taobao.build_price_finding(
-                            snapshot.url, raw, platform="Taobao/Tmall"
-                        )
-                        if tb_finding:
-                            findings.append(
-                                PriceFinding(
-                                    platform=tb_finding.platform,
-                                    list_price=tb_finding.list_price,
-                                    coupon_discount=tb_finding.coupon_discount,
-                                    subsidy_discount=tb_finding.subsidy_discount,
-                                    cross_store_discount=tb_finding.cross_store_discount,
-                                    final_price=tb_finding.final_price,
-                                    screenshot_path=",".join(screenshot_paths),
-                                    captured_at=tb_finding.captured_at,
-                                    evidence=tb_finding.evidence,
-                                )
-                            )
-                            platform_hits += 1
-                            break
-                    if findings and findings[-1].platform == "Taobao/Tmall":
-                        continue
-                if not snapshot.ok:
-                    self.diagnostics.record(
-                        platform,
-                        f"weak ecommerce snapshot for {target_url}: {snapshot.error or snapshot.page.blockers}",
-                        level="warning",
-                        sku=candidate.sku,
-                    )
-                parsed = extract_price(combined_text)
-                if not parsed:
-                    if active_trace:
-                        active_trace.log_price(
-                            platform,
-                            snapshot.url,
-                            source="text",
-                            detail="no price parsed",
-                            sku=candidate.sku,
-                        )
-                    self.diagnostics.record(
-                        platform,
-                        f"no price parsed for {target_url}",
-                        level="info",
-                        sku=candidate.sku,
-                    )
+                        break
+                if findings and findings[-1].platform == "Taobao/Tmall":
                     continue
+            if not snapshot.ok:
+                self.diagnostics.record(
+                    platform,
+                    f"weak ecommerce snapshot for {target_url}: {snapshot.error or snapshot.page.blockers}",
+                    level="warning",
+                    sku=candidate.sku,
+                )
+            parsed = extract_price(combined_text)
+            if not parsed:
                 if active_trace:
                     active_trace.log_price(
                         platform,
                         snapshot.url,
-                        source=f"text-{snapshot.method}",
-                        list_price=parsed.list_price,
-                        final_price=parsed.final_price,
+                        source="text",
+                        detail="no price parsed",
                         sku=candidate.sku,
                     )
-                evidence = build_evidence(
-                    platform=platform_from_url(target_url) or platform,
-                    url=snapshot.url,
-                    author=platform,
-                    locator=f"price-text-{snapshot.method}",
-                    excerpt=clip(combined_text, 360),
-                    confidence=0.68 if snapshot.method == "browser" else 0.55,
+                self.diagnostics.record(
+                    platform,
+                    f"no price parsed for {target_url}",
+                    level="info",
+                    sku=candidate.sku,
                 )
-                findings.append(
-                    PriceFinding(
-                        platform=platform,
-                        list_price=parsed.list_price,
-                        coupon_discount=parsed.coupon_discount,
-                        subsidy_discount=parsed.subsidy_discount,
-                        cross_store_discount=parsed.cross_store_discount,
-                        final_price=parsed.final_price,
-                        screenshot_path=",".join(screenshot_paths),
-                        captured_at=evidence.captured_at,
-                        evidence=evidence,
-                    )
+                continue
+            if active_trace:
+                active_trace.log_price(
+                    platform,
+                    snapshot.url,
+                    source=f"text-{snapshot.method}",
+                    list_price=parsed.list_price,
+                    final_price=parsed.final_price,
+                    sku=candidate.sku,
                 )
-                platform_hits += 1
-        return sorted(findings, key=lambda item: item.final_price)[:5]
+            evidence = build_evidence(
+                platform=platform_from_url(target_url) or platform,
+                url=snapshot.url,
+                author=platform,
+                locator=f"price-text-{snapshot.method}",
+                excerpt=clip(combined_text, 360),
+                confidence=0.68 if snapshot.method == "browser" else 0.55,
+            )
+            findings.append(
+                PriceFinding(
+                    platform=platform,
+                    list_price=parsed.list_price,
+                    coupon_discount=parsed.coupon_discount,
+                    subsidy_discount=parsed.subsidy_discount,
+                    cross_store_discount=parsed.cross_store_discount,
+                    final_price=parsed.final_price,
+                    screenshot_path=",".join(screenshot_paths),
+                    captured_at=evidence.captured_at,
+                    evidence=evidence,
+                )
+            )
+            platform_hits += 1
+        return findings
+
+    def _record_recovery_hint(
+        self,
+        platform: str,
+        *,
+        sku: str,
+        use_browser: bool,
+        reason: str,
+        hinted: set[str],
+    ) -> None:
+        if platform in hinted:
+            return
+        hinted.add(platform)
+        if platform == "JD":
+            browser_note = "已开启 Playwright；" if use_browser else "请开启 Playwright；"
+            message = (
+                f"京东 {reason}。{browser_note}"
+                "更新 .env 的 JD_COOKIE（含 pt_key/pt_pin），或在 Source URLs 贴可打开的 item.jd.com 直链。"
+            )
+        elif platform == "Taobao/Tmall":
+            message = (
+                f"淘宝/天猫 {reason}。浏览器登录后更新 TAOBAO_COOKIE 与 _m_h5_tk；"
+                "滑块请在弹出浏览器完成后再续传。"
+            )
+        else:
+            message = f"{platform} {reason}"
+        self.diagnostics.record(platform, message, level="warning", sku=sku)
 
     def collect_official_specs(
         self,

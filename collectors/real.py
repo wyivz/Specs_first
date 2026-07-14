@@ -10,7 +10,9 @@ from collectors.collection_trace import create_collection_trace
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.http import HttpClient
 from collectors.protocols import SpecExtractionRouter
+from collectors.parallel import run_platform_tasks
 from collectors.rate_limit import get_collection_guard, human_pause
+from collectors.settings import settings
 from collectors.resilient_fetch import ResilientFetcher
 from collectors.sources import (
     EcommerceSourceCollector,
@@ -114,19 +116,30 @@ class RealCollector(Collector):
             level="info",
             sku=candidate.sku,
         )
-        ecommerce_specs, ecommerce_highlights = self.ecommerce.collect_official_specs(
-            candidate,
-            task_id=task_id,
-            use_browser=use_browser,
-            storage_state_path=storage_state_path,
+
+        def _official() -> tuple[list[OfficialSpec], list[str]]:
+            return self.official.collect_specs(
+                candidate,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+                extra_urls=self.source_urls,
+            )
+
+        def _ecommerce() -> tuple[list[OfficialSpec], list[str]]:
+            return self.ecommerce.collect_official_specs(
+                candidate,
+                task_id=task_id,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+            )
+
+        batches = run_platform_tasks(
+            [("official", _official), ("ecommerce", _ecommerce)],
+            enabled=settings.collection_parallel_platforms,
         )
-        official_specs, official_highlights = self.official.collect_specs(
-            candidate,
-            task_id=task_id,
-            use_browser=use_browser,
-            storage_state_path=storage_state_path,
-            extra_urls=self.source_urls,
-        )
+        official_specs, official_highlights = batches[0]
+        ecommerce_specs, ecommerce_highlights = batches[1]
         merged: dict[str, OfficialSpec] = {spec.name: spec for spec in official_specs}
         for spec in ecommerce_specs:
             merged.setdefault(spec.name, spec)
@@ -153,36 +166,40 @@ class RealCollector(Collector):
             try:
                 if trace:
                     trace.log("collect", f"real_world_corpus sku={candidate.sku}", sku=candidate.sku)
-                evidence = []
-                self.diagnostics.record(
-                    "video",
-                    f"开始搜索视频评测（B站/YouTube）· {candidate.sku}",
-                    level="info",
-                    sku=candidate.sku,
-                )
-                evidence.extend(
-                    self.video.collect(
+
+                def _video() -> list[EvidenceItem]:
+                    self.diagnostics.record(
+                        "video",
+                        f"开始搜索视频评测（B站/YouTube）· {candidate.sku}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    return self.video.collect(
                         candidate,
                         task_id=task_id,
                         use_browser=use_browser,
                         storage_state_path=storage_state_path,
                     )
-                )
-                human_pause(0.5, 2.0)
-                self.diagnostics.record(
-                    "forum",
-                    f"开始搜索论坛口碑（Chiphell/Reddit）· {candidate.sku}",
-                    level="info",
-                    sku=candidate.sku,
-                )
-                evidence.extend(
-                    self.forum.collect(
+
+                def _forum() -> list[EvidenceItem]:
+                    self.diagnostics.record(
+                        "forum",
+                        f"开始搜索论坛口碑（Chiphell/Reddit）· {candidate.sku}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    return self.forum.collect(
                         candidate,
                         task_id=task_id,
                         use_browser=use_browser,
                         storage_state_path=storage_state_path,
                     )
+
+                video_evidence, forum_evidence = run_platform_tasks(
+                    [("video", _video), ("forum", _forum)],
+                    enabled=settings.collection_parallel_platforms,
                 )
+                evidence = [*video_evidence, *forum_evidence]
                 if self.source_urls:
                     self.diagnostics.record(
                         "url",

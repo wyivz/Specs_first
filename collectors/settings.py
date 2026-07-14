@@ -45,7 +45,7 @@ class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     openai_model: str = os.getenv("DEFAULT_OPENAI_MODEL", "gpt-4o-mini")
-    gemini_model: str = os.getenv("DEFAULT_GEMINI_MODEL", "gemini-2.5-flash")
+    gemini_model: str = os.getenv("DEFAULT_GEMINI_MODEL", "gemini-3.5-flash")
 
     gemini_context_cache_enabled: bool = os.getenv("GEMINI_CONTEXT_CACHE_ENABLED", "true").strip().lower() not in {
         "0",
@@ -55,6 +55,8 @@ class Settings:
     gemini_context_cache_min_chars: int = _int_env("GEMINI_CONTEXT_CACHE_MIN_CHARS", 6000)
     gemini_context_cache_ttl_seconds: int = _int_env("GEMINI_CONTEXT_CACHE_TTL_SECONDS", 300)
     gemini_call_timeout_seconds: float = _float_env("GEMINI_CALL_TIMEOUT_SECONDS", 45.0)
+    # Gemini 3.x thinking level: minimal | low | medium | high (see Gemini 3.5 Flash docs)
+    gemini_thinking_level: str = os.getenv("GEMINI_THINKING_LEVEL", "").strip()
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     vault_path: Path = Path(os.getenv("OBSIDIAN_VAULT_PATH", "vault_output"))
     default_mode: str = os.getenv("SPECS_FIRST_MODE", "mock")
@@ -62,6 +64,12 @@ class Settings:
     collection_min_interval_seconds: float = _float_env("COLLECTION_MIN_INTERVAL_SECONDS", 1.0)
     ecommerce_min_interval_seconds: float = _float_env("ECOMMERCE_MIN_INTERVAL_SECONDS", 3.0)
     ecommerce_max_urls_per_platform: int = _int_env("ECOMMERCE_MAX_URLS_PER_PLATFORM", 2)
+    ecommerce_collect_timeout_seconds: float = _float_env("ECOMMERCE_COLLECT_TIMEOUT_SECONDS", 300.0)
+    collection_parallel_platforms: bool = os.getenv("COLLECTION_PARALLEL_PLATFORMS", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
     bilibili_comment_page_delay_seconds: float = _float_env("BILIBILI_COMMENT_PAGE_DELAY_SECONDS", 3.0)
     youtube_comment_delay_min: float = _float_env("YOUTUBE_COMMENT_DELAY_MIN", 1.0)
     youtube_comment_delay_max: float = _float_env("YOUTUBE_COMMENT_DELAY_MAX", 3.0)

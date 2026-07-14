@@ -165,7 +165,7 @@ python scripts/smoke_platforms.py --health-only
 ```env
 GEMINI_API_KEY=...
 OPENAI_API_KEY=...
-DEFAULT_GEMINI_MODEL=gemini-2.5-flash
+DEFAULT_GEMINI_MODEL=gemini-3.5-flash
 DEFAULT_OPENAI_MODEL=gpt-4o-mini
 OBSIDIAN_VAULT_PATH=./vault_output
 ```

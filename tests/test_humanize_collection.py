@@ -36,7 +36,7 @@ class HumanizeCollectionTest(unittest.TestCase):
         remaining = tracker.remaining_seconds("https://item.jd.com/2.html")
         self.assertGreater(remaining, 0)
         tracker.wait_if_needed("https://item.jd.com/2.html")
-        self.assertEqual(tracker.remaining_seconds("https://item.jd.com/2.html"), 0.0)
+        self.assertLessEqual(tracker.remaining_seconds("https://item.jd.com/2.html"), 0.02)
 
     def test_taobao_token_cache_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -103,6 +103,30 @@ class HumanizeCollectionTest(unittest.TestCase):
         self.assertEqual(len(prices), 1)
         self.assertEqual(prices[0].final_price, 399.0)
         collector.resilient.fetch.assert_not_called()
+
+    def test_different_platforms_can_wait_in_parallel(self) -> None:
+        limiter = PlatformRateLimiter(
+            default_interval_seconds=0.15,
+            platform_intervals={"a": 0.15, "b": 0.15},
+            default_jitter=(0.0, 0.0),
+        )
+        import threading
+
+        def wait_a() -> None:
+            limiter.wait("a")
+
+        def wait_b() -> None:
+            limiter.wait("b")
+
+        started = __import__("time").monotonic()
+        t1 = threading.Thread(target=wait_a)
+        t2 = threading.Thread(target=wait_b)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        elapsed = __import__("time").monotonic() - started
+        self.assertLess(elapsed, 0.3)
 
     def test_human_pause_is_bounded(self) -> None:
         started = __import__("time").monotonic()

@@ -3,44 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from backend.config import settings
-
-# Models shut down per https://ai.google.dev/gemini-api/docs/deprecations (2026-07).
-RETIRED_GEMINI_MODELS: frozenset[str] = frozenset(
-    {
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-8b",
-        "gemini-1.5-flash-001",
-        "gemini-1.5-flash-002",
-        "gemini-1.5-pro",
-        "gemini-1.5-pro-001",
-        "gemini-1.5-pro-002",
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-001",
-        "gemini-2.0-flash-lite",
-        "gemini-2.0-flash-lite-001",
-    }
+from backend.gemini_client import (
+    RECOMMENDED_GEMINI_MODEL,
+    get_gemini_client,
+    is_retired_gemini_model,
+    resolve_gemini_model,
 )
 
-RETIRED_GEMINI_MODEL_PREFIXES: tuple[str, ...] = ("gemini-1.5-", "gemini-2.0-")
-
-RECOMMENDED_GEMINI_MODEL = "gemini-2.5-flash"
-
-
-def resolve_gemini_model(model: str | None = None) -> str:
-    """Return a live Gemini model id, upgrading known-retired defaults."""
-    raw = (model or settings.gemini_model).strip()
-    if is_retired_gemini_model(raw):
-        return RECOMMENDED_GEMINI_MODEL
-    return raw or RECOMMENDED_GEMINI_MODEL
-
-
-def is_retired_gemini_model(model: str) -> bool:
-    normalized = model.strip().lower()
-    if not normalized:
-        return False
-    if normalized in RETIRED_GEMINI_MODELS:
-        return True
-    return any(normalized.startswith(prefix) for prefix in RETIRED_GEMINI_MODEL_PREFIXES)
+__all__ = [
+    "RECOMMENDED_GEMINI_MODEL",
+    "GeminiHealthStatus",
+    "build_gemini_health",
+    "is_retired_gemini_model",
+    "resolve_gemini_model",
+]
 
 
 @dataclass(frozen=True)
@@ -71,8 +47,7 @@ def build_gemini_health(*, live_probe: bool = False) -> GeminiHealthStatus:
 
     if model_retired:
         message = (
-            f"Model '{model}' is retired. Set DEFAULT_GEMINI_MODEL={RECOMMENDED_GEMINI_MODEL} "
-            "or gemini-3.5-flash in .env."
+            f"Model '{model}' is retired. Set DEFAULT_GEMINI_MODEL={RECOMMENDED_GEMINI_MODEL} in .env."
         )
         return GeminiHealthStatus(
             model=effective,
@@ -116,15 +91,15 @@ def build_gemini_health(*, live_probe: bool = False) -> GeminiHealthStatus:
 
 def _live_probe_gemini(model: str) -> tuple[bool, str]:
     try:
-        import google.generativeai as genai
+        from google import genai  # noqa: F401
     except ImportError:
-        return False, "google-generativeai is not installed"
+        return False, "google-genai is not installed (required for gemini-3.5-flash)"
 
     try:
-        genai.configure(api_key=settings.gemini_api_key)
-        response = genai.GenerativeModel(model).generate_content(
+        text = get_gemini_client().generate_text(
             "Reply with exactly: ok",
-            generation_config={"max_output_tokens": 16, "temperature": 0},
+            task="probe",
+            model=model,
         )
     except Exception as exc:
         lowered = str(exc).lower()
@@ -132,7 +107,6 @@ def _live_probe_gemini(model: str) -> tuple[bool, str]:
             return False, f"Model '{model}' is unavailable: {exc}"
         return False, str(exc)
 
-    text = (getattr(response, "text", None) or "").strip()
     if text:
         return True, ""
-    return False, f"Model '{model}' returned an empty response"
+    return False, f"Model '{model}' returned an empty response (check thinking_level / output budget)"

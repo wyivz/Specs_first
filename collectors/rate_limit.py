@@ -31,8 +31,10 @@ class PlatformRateLimiter:
             delay = max(0.0, interval - (now - last))
             if jitter_range[1] > 0:
                 delay += random.uniform(jitter_range[0], jitter_range[1])
-            if delay:
-                time.sleep(delay)
+        # Sleep outside the lock so different platforms can pace in parallel.
+        if delay:
+            time.sleep(delay)
+        with self._lock:
             self._last_request_at[platform] = time.monotonic()
 
 

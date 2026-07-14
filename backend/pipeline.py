@@ -52,7 +52,7 @@ class TaskResult:
 @dataclass
 class SpecsFirstPipeline:
     collector: Collector = field(default_factory=MockCollector)
-    router: object = field(default_factory=create_model_router)
+    router: object = field(default_factory=lambda: create_model_router("keyword"))
     event_bus: InMemoryEventBus = field(default_factory=InMemoryEventBus)
     vault_path: Path = Path("vault_output")
     checkpoint_store: CheckpointStore = field(default_factory=create_checkpoint_store)
@@ -781,9 +781,10 @@ def create_pipeline(
     checkpoint_store: CheckpointStore | None = None,
 ) -> SpecsFirstPipeline:
     collector = RealCollector(source_urls=source_urls or []) if mode == "real" else MockCollector()
+    resolved_router_mode = model_mode or ("keyword" if mode == "mock" else None)
     return SpecsFirstPipeline(
         collector=collector,
-        router=create_model_router(model_mode),
+        router=create_model_router(resolved_router_mode),
         event_bus=event_bus or InMemoryEventBus(),
         vault_path=Path(vault_path),
         checkpoint_store=checkpoint_store or create_checkpoint_store(),

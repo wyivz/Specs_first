@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 
 from backend.config import settings
-from backend.gemini_health import resolve_gemini_model
+from backend.gemini_client import get_gemini_client, resolve_gemini_model
 from backend.retry import retry_call
 from backend.router_keyword import KeywordModelRouter
 from backend.router_schemas import ARBITRATION_SCHEMA, CATEGORY_PROFILE_SCHEMA, parse_json_payload
@@ -253,42 +253,11 @@ class HybridModelRouter(KeywordModelRouter):
         del slots
         return normalized
 
-    def _gemini_model(self):
-        import google.generativeai as genai
-
-        genai.configure(api_key=settings.gemini_api_key)
-        return genai.GenerativeModel(resolve_gemini_model())
-
     @contextmanager
     def _gemini_cached_content(self, corpus_text: str, system_instruction: str) -> Iterator[Any]:
-        cache = None
-        model = None
-        if settings.gemini_context_cache_enabled and len(corpus_text) >= settings.gemini_context_cache_min_chars:
-            try:
-                import datetime
-
-                import google.generativeai as genai
-                from google.generativeai import caching
-
-                genai.configure(api_key=settings.gemini_api_key)
-                cache = caching.CachedContent.create(
-                    model=resolve_gemini_model(),
-                    system_instruction=system_instruction,
-                    contents=[corpus_text],
-                    ttl=datetime.timedelta(seconds=settings.gemini_context_cache_ttl_seconds),
-                )
-                model = genai.GenerativeModel.from_cached_content(cached_content=cache)
-            except Exception:
-                cache = None
-                model = None
-        try:
-            yield model
-        finally:
-            if cache is not None:
-                try:
-                    cache.delete()
-                except Exception:
-                    pass
+        client = get_gemini_client()
+        with client.cached_corpus(corpus_text, system_instruction) as cache_name:
+            yield cache_name
 
     def _gemini_survey_product_from_images(
         self,
@@ -318,12 +287,13 @@ class HybridModelRouter(KeywordModelRouter):
             if downloaded is None:
                 continue
             try:
-                gemini_response = self._gemini_model().generate_content(
-                    [prompt, {"mime_type": downloaded.mime_type, "data": downloaded.data}]
+                text = get_gemini_client().generate_multimodal(
+                    [prompt, {"mime_type": downloaded.mime_type, "data": downloaded.data}],
+                    task="vision_json",
                 )
             except Exception:
                 continue
-            payload = parse_json_payload(gemini_response.text or "", default={})
+            payload = parse_json_payload(text or "", default={})
             if payload.get("likely_category") and not clues["likely_category"]:
                 clues["likely_category"] = str(payload.get("likely_category", "")).strip()
             for key in ("parameter_clues", "packaging_or_detail_notes", "other_signals"):
@@ -421,14 +391,24 @@ class HybridModelRouter(KeywordModelRouter):
             "Include only factual values present in the text."
         )
 
-        with self._gemini_cached_content(corpus, system_instruction) as cached_model:
-            def _call():
-                if cached_model is not None:
-                    return cached_model.generate_content(instruction)
-                return self._gemini_model().generate_content(f"{instruction}\n\n{corpus}")
+        with self._gemini_cached_content(corpus, system_instruction) as cached_content:
+            def _call() -> str:
+                client = get_gemini_client()
+                if cached_content:
+                    return client.generate_text(
+                        instruction,
+                        task="corpus_extract",
+                        system_instruction=system_instruction,
+                        cached_content=cached_content,
+                    )
+                return client.generate_text(
+                    f"{instruction}\n\n{corpus}",
+                    task="corpus_extract",
+                    system_instruction=system_instruction,
+                )
 
-            response = retry_call(_call, attempts=2)
-        payload = parse_json_payload(response.text or "", default={"specs": [], "highlights": []})
+            text = retry_call(_call, attempts=2)
+        payload = parse_json_payload(text or "", default={"specs": [], "highlights": []})
         specs = [
             OfficialSpec(
                 name=str(item.get("name", "")).strip(),
@@ -458,14 +438,24 @@ class HybridModelRouter(KeywordModelRouter):
             "Each finding must reference one evidence_index from the corpus."
         )
 
-        with self._gemini_cached_content(corpus_text, system_instruction) as cached_model:
-            def _call():
-                if cached_model is not None:
-                    return cached_model.generate_content(instruction)
-                return self._gemini_model().generate_content(f"{instruction}\n\n{corpus_text}")
+        with self._gemini_cached_content(corpus_text, system_instruction) as cached_content:
+            def _call() -> str:
+                client = get_gemini_client()
+                if cached_content:
+                    return client.generate_text(
+                        instruction,
+                        task="corpus_extract",
+                        system_instruction=system_instruction,
+                        cached_content=cached_content,
+                    )
+                return client.generate_text(
+                    f"{instruction}\n\n{corpus_text}",
+                    task="corpus_extract",
+                    system_instruction=system_instruction,
+                )
 
-            response = retry_call(_call, attempts=2)
-        payload = parse_json_payload(response.text or "", default={"findings": []})
+            text = retry_call(_call, attempts=2)
+        payload = parse_json_payload(text or "", default={"findings": []})
         findings: list[RealWorldFinding] = []
         for item in payload.get("findings", []):
             index = int(item.get("evidence_index", -1))
@@ -491,13 +481,14 @@ class HybridModelRouter(KeywordModelRouter):
             '{"list_price":0,"coupon_discount":0,"subsidy_discount":0,"cross_store_discount":0,"final_price":0}. '
             f"Source URL for context: {source_url}"
         )
-        response = self._gemini_model().generate_content(
+        text = get_gemini_client().generate_multimodal(
             [
                 prompt,
                 {"mime_type": "image/png", "data": screenshot.read_bytes()},
-            ]
+            ],
+            task="vision_json",
         )
-        payload = parse_json_payload(response.text or "", default={})
+        payload = parse_json_payload(text or "", default={})
         final_price = float(payload.get("final_price", 0) or 0)
         if final_price <= 0:
             return None
@@ -532,12 +523,13 @@ class HybridModelRouter(KeywordModelRouter):
             if downloaded is None:
                 continue
             try:
-                gemini_response = self._gemini_model().generate_content(
-                    [prompt, {"mime_type": downloaded.mime_type, "data": downloaded.data}]
+                text = get_gemini_client().generate_multimodal(
+                    [prompt, {"mime_type": downloaded.mime_type, "data": downloaded.data}],
+                    task="vision_json",
                 )
             except Exception:
                 continue
-            payload = parse_json_payload(gemini_response.text or "", default={"specs": [], "highlights": []})
+            payload = parse_json_payload(text or "", default={"specs": [], "highlights": []})
             for item in payload.get("specs", []):
                 name = str(item.get("name", "")).strip()
                 value = str(item.get("value", "")).strip()

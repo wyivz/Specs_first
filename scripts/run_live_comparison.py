@@ -43,11 +43,31 @@ QUERY = os.getenv("LIVE_QUERY", "Sony FE 50mm f1.2 GM")
 CATEGORY = os.getenv("LIVE_CATEGORY", "Lens")
 # Prefer model code — marketing titles from DDG drift and used to select 0 SKUs.
 SELECTED_SKUS = [os.getenv("LIVE_SKU", "SEL50F12GM").strip()]
-USE_BROWSER = os.getenv("LIVE_USE_BROWSER", "false").strip().lower() in {"1", "true", "yes"}
+USE_BROWSER = os.getenv("LIVE_USE_BROWSER", "true").strip().lower() not in {"0", "false", "no"}
 MODEL_MODE = os.getenv("LIVE_MODEL_MODE", "").strip() or None
 
 
+def _preflight() -> None:
+    missing: list[str] = []
+    try:
+        import google.generativeai  # noqa: F401
+    except ImportError:
+        missing.append("google-generativeai")
+    try:
+        import openai  # noqa: F401
+    except ImportError:
+        missing.append("openai")
+    if missing:
+        print(
+            "WARN: missing AI packages:",
+            ", ".join(missing),
+            "— hybrid JIT/arbitration will degrade. Run: pip install -e .",
+            flush=True,
+        )
+
+
 def main() -> int:
+    _preflight()
     source_urls = _optional_source_urls()
     router = create_model_router(MODEL_MODE)
     collector = RealCollector(source_urls=source_urls, router=router)

@@ -16,7 +16,7 @@ class GeminiHealthTest(unittest.TestCase):
     def test_is_retired_gemini_model(self) -> None:
         self.assertTrue(is_retired_gemini_model("gemini-1.5-flash"))
         self.assertTrue(is_retired_gemini_model("gemini-2.0-flash-lite-001"))
-        self.assertFalse(is_retired_gemini_model("gemini-2.5-flash"))
+        self.assertFalse(is_retired_gemini_model("gemini-3.5-flash"))
 
     def test_resolve_gemini_model_upgrades_retired_default(self) -> None:
         with patch("backend.gemini_health.settings") as mock_settings:
@@ -30,7 +30,7 @@ class GeminiHealthTest(unittest.TestCase):
 
     def test_build_gemini_health_without_key(self) -> None:
         with patch("backend.gemini_health.settings") as mock_settings:
-            mock_settings.gemini_model = "gemini-2.5-flash"
+            mock_settings.gemini_model = "gemini-3.5-flash"
             mock_settings.has_gemini = False
             status = build_gemini_health()
             self.assertTrue(status.healthy)
@@ -48,7 +48,7 @@ class GeminiHealthTest(unittest.TestCase):
 class PlatformHealthTest(unittest.TestCase):
     def test_build_platform_health_overall_ok_without_keys(self) -> None:
         with patch("backend.platform_health.settings") as mock_settings:
-            mock_settings.gemini_model = "gemini-2.5-flash"
+            mock_settings.gemini_model = "gemini-3.5-flash"
             mock_settings.has_gemini = False
             mock_settings.has_openai = False
             mock_settings.openai_model = "gpt-4o-mini"

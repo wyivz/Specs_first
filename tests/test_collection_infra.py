@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from collectors.credentials import BilibiliCredentials, TaobaoCredentials
+from collectors.parallel import run_platform_tasks
 from collectors.rate_limit import CollectionGuard, PlatformRateLimiter, get_collection_guard, platform_for_url
 
 
@@ -53,6 +54,30 @@ class CollectionInfraTest(unittest.TestCase):
 
     def test_get_collection_guard_is_singleton(self) -> None:
         self.assertIs(get_collection_guard(), get_collection_guard())
+
+    def test_run_platform_tasks_preserves_order(self) -> None:
+        results = run_platform_tasks(
+            [
+                ("a", lambda: 1),
+                ("b", lambda: 2),
+            ],
+            enabled=True,
+        )
+        self.assertEqual(results, [1, 2])
+
+    def test_run_platform_tasks_serial_when_disabled(self) -> None:
+        calls: list[str] = []
+
+        def mark(name: str) -> str:
+            calls.append(name)
+            return name
+
+        results = run_platform_tasks(
+            [("a", lambda: mark("a")), ("b", lambda: mark("b"))],
+            enabled=False,
+        )
+        self.assertEqual(results, ["a", "b"])
+        self.assertEqual(calls, ["a", "b"])
 
 
 class HttpRateLimitTest(unittest.TestCase):
