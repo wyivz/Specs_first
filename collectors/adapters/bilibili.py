@@ -92,9 +92,11 @@ class BilibiliAdapter:
                 )
             )
 
+        # API enrichment is cookie/rate-limit gated — independent of Playwright.
+        # use_browser only affects page capture escalation upstream.
+        del use_browser
         if (
-            use_browser
-            and self._api_client
+            self._api_client
             and self._api_video_budget > 0
             and BilibiliApiClient.extract_bvid(url)
         ):

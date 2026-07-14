@@ -187,11 +187,13 @@ class TaobaoCredentials:
 
 
 def load_taobao_credentials() -> TaobaoCredentials:
+    from collectors.session_cache import load_taobao_m_h5_tk
     from collectors.settings import settings
 
+    cached = load_taobao_m_h5_tk()
     return TaobaoCredentials(
         cookie=settings.taobao_cookie,
-        m_h5_tk=settings.taobao_m_h5_tk,
+        m_h5_tk=settings.taobao_m_h5_tk or cached,
     )
 
 

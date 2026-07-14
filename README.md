@@ -179,6 +179,25 @@ OBSIDIAN_VAULT_PATH=./vault_output
 
 **推荐流程：** Streamlit 选 `real` → 勾选 Playwright → 品类提示可留空 →「开始对比」→ 遇验证码在页内浏览器完成后续传。Source URLs 可选；有直链更稳。
 
+### 跑通验收清单（Real）
+
+目标不是「全平台全满」，而是：**矩阵有槽 + 至少一侧价或规格 + 若干条证据**。
+
+1. **配齐 P0 凭证**（写入 `.env`，勿提交）：
+   - `GEMINI_API_KEY` + `OPENAI_API_KEY` + `SPECS_FIRST_MODE=real`
+   - `JD_COOKIE`；`TAOBAO_COOKIE` + `TAOBAO_M_H5_TK`；B 站 `SESSDATA` / `BILI_JCT` / `DEDEUSERID`
+   - 可选：`YOUTUBE_COOKIE`、`REDDIT_COOKIE`
+2. **先跑 smoke**（哪段红修哪段）：
+   ```powershell
+   python scripts/smoke_platforms.py --probe-gemini
+   ```
+3. **注入直链保底发现**（绕过 DDG 单点）：侧边栏 Source URLs 或 `.env` 的 `OPTIONAL_SOURCE_URLS` 各贴  
+   1 个京东商品、1 个淘宝/天猫商品、1–2 个真实评测 BV/YouTube（勿用镇站之宝）。
+4. Streamlit：`real` + Playwright；输入明确型号后开始对比。
+5. 采集节奏：电商默认约 3s 间隔 + 抖动；京东频控后自动退避，勿对 `pc-frequent-pro` 反复开浏览器。
+
+大陆网络访问京东/淘宝更稳；Cookie 用日常登录浏览器复制，过期即换。
+
 ---
 
 ## 目录结构

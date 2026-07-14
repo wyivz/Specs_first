@@ -10,7 +10,7 @@ from collectors.collection_trace import create_collection_trace
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.http import HttpClient
 from collectors.protocols import SpecExtractionRouter
-from collectors.rate_limit import get_collection_guard
+from collectors.rate_limit import get_collection_guard, human_pause
 from collectors.resilient_fetch import ResilientFetcher
 from collectors.sources import (
     EcommerceSourceCollector,
@@ -168,6 +168,7 @@ class RealCollector(Collector):
                         storage_state_path=storage_state_path,
                     )
                 )
+                human_pause(0.5, 2.0)
                 self.diagnostics.record(
                     "forum",
                     f"开始搜索论坛口碑（Chiphell/Reddit）· {candidate.sku}",

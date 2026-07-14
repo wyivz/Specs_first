@@ -336,6 +336,19 @@ class TmallTaobaoAdapter:
         new_tk = extract_m_h5_tk(combined)
         if new_tk:
             self.credentials = self.credentials.with_m_h5_tk(new_tk)
+            try:
+                from collectors.session_cache import save_taobao_m_h5_tk
+
+                save_taobao_m_h5_tk(new_tk)
+            except Exception:
+                pass
+
+    def sync_credentials_from_storage_state(self, storage_state_path: str = "") -> None:
+        from collectors.session_cache import sync_taobao_token_from_storage_state
+
+        token = sync_taobao_token_from_storage_state(storage_state_path)
+        if token:
+            self.credentials = self.credentials.with_m_h5_tk(token)
 
     def _rebuild_signed_url(self, url: str) -> str:
         parsed = urlparse(url)

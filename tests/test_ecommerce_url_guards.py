@@ -69,6 +69,46 @@ class EcommerceProductUrlGuardTest(unittest.TestCase):
         collector.collect(candidate)  # type: ignore[arg-type]
         self.assertEqual(fetched, ["https://item.jd.com/100010708487.html"])
 
+    def test_jd_mgets_first_skips_page_fetch(self) -> None:
+        from schemas import EvidenceItem, PriceFinding
+
+        http = MagicMock()
+        http.search.return_value = [
+            SearchResult("索尼 SEL50F12GM", "https://item.jd.com/100010708487.html", "SEL50F12GM 到手价"),
+        ]
+        registry = AdapterRegistry()
+        registry.register(JdAdapter())
+        registry.register(TmallTaobaoAdapter())
+        collector = EcommerceSourceCollector(http=http, registry=registry, browser=MagicMock())
+        collector.resilient.fetch = MagicMock(side_effect=AssertionError("page fetch must be skipped"))  # type: ignore[method-assign]
+        evidence = EvidenceItem(
+            platform="JD",
+            url="https://item.jd.com/100010708487.html",
+            author="JD",
+            locator="mgets",
+            captured_at="2026-01-01T00:00:00Z",
+            excerpt="mgets price",
+            confidence=0.66,
+        )
+        finding = PriceFinding(
+            platform="JD",
+            list_price=4899.0,
+            coupon_discount=300.0,
+            subsidy_discount=0.0,
+            cross_store_discount=0.0,
+            final_price=4599.0,
+            screenshot_path="",
+            captured_at="2026-01-01T00:00:00Z",
+            evidence=evidence,
+        )
+        collector.jd.build_price_finding = MagicMock(return_value=finding)  # type: ignore[method-assign]
+        candidate = type("C", (), {"sku": "SEL50F12GM", "category": "Lens"})()
+        prices = collector.collect(candidate)  # type: ignore[arg-type]
+        self.assertEqual(len(prices), 1)
+        self.assertEqual(prices[0].final_price, 4599.0)
+        collector.resilient.fetch.assert_not_called()
+        collector.jd.build_price_finding.assert_called()
+
     def test_headed_captcha_only_for_product_urls(self) -> None:
         self.assertTrue(PlaywrightCapture.is_ecommerce_product_url("https://item.jd.com/1.html"))
         self.assertFalse(PlaywrightCapture.is_ecommerce_product_url("https://campus.jd.com/"))

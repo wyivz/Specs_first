@@ -244,6 +244,126 @@ class PlaywrightCapture:
             finally:
                 browser.close()
 
+    def capture_param_region_shots(
+        self,
+        url: str,
+        *,
+        task_id: str = "manual",
+        storage_state_path: Path | None = None,
+        max_shots: int = 3,
+    ) -> list[Path]:
+        """Screenshot parameter / spec regions for Gemini when CDN image URLs are scarce.
+
+        Unlike full-page slice capture, this keeps images enabled and targets
+        参数/规格 blocks (or mid-page fallbacks) so packaging tables stay readable.
+        """
+        try:
+            from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise RuntimeError("Install playwright before param screenshot capture.") from exc
+
+        if not url.startswith("http"):
+            return []
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        resolved_state = storage_state_path or (self.output_dir / f"{task_id}_storage_state.json")
+        user_agent = MOBILE_UA if any(host in url.lower() for host in self.MOBILE_HOSTS) else DESKTOP_UA
+        shots: list[Path] = []
+
+        with sync_playwright() as playwright:
+            browser = _launch_browser(playwright, headless=True)
+            context_kwargs: dict = {
+                "viewport": {"width": 390, "height": 844} if user_agent == MOBILE_UA else {"width": 1365, "height": 1100},
+                "user_agent": user_agent,
+                "locale": "zh-CN",
+            }
+            if resolved_state.exists():
+                context_kwargs["storage_state"] = str(resolved_state)
+            context = browser.new_context(**context_kwargs)
+            self._inject_platform_cookies(context, url)
+            # Allow images — param graphics / tables matter for vision fallback.
+            context.route("**/*", self._route_filter_allow_images)
+            page = context.new_page()
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=35_000)
+                page.wait_for_timeout(1000)
+                self._dismiss_noise(page)
+                page_url = page.url or url
+                page_html = page.content()
+                body_text = self._extract_main_text(page)
+                blockers = detect_page_blockers(page_url, page_html, body_text, page.title())
+                from collectors.url_guards import is_rate_limited_ecommerce_url
+
+                if is_rate_limited_ecommerce_url(page_url) or any(
+                    blocker.kind in {"rate_limited", "auth_or_captcha"} for blocker in blockers
+                ):
+                    context.storage_state(path=str(resolved_state))
+                    return []
+
+                selectors = [
+                    "text=/规格参数|商品参数|产品参数|详细参数|参数信息/",
+                    "text=/规格|参数/",
+                    "#detail .Ptable",
+                    ".Ptable",
+                    "#product-detail",
+                    ".product-detail",
+                    "[class*='parameter']",
+                    "[class*='spec']",
+                    "[id*='parameter']",
+                    "[id*='spec']",
+                ]
+                for selector in selectors:
+                    if len(shots) >= max_shots:
+                        break
+                    try:
+                        locator = page.locator(selector).first
+                        if locator.count() == 0:
+                            continue
+                        locator.scroll_into_view_if_needed(timeout=2500)
+                        page.wait_for_timeout(350)
+                        path = self.output_dir / f"{task_id}_param_{len(shots):02d}.png"
+                        # Prefer element shot; fall back to viewport.
+                        try:
+                            locator.screenshot(path=str(path), timeout=5000)
+                        except Exception:
+                            page.screenshot(path=str(path), full_page=False)
+                        if path.exists() and path.stat().st_size >= 256:
+                            shots.append(path)
+                    except Exception:
+                        continue
+
+                if not shots:
+                    # Mid-page fallback: scroll through a few viewports looking for 参数/规格 text.
+                    page_height = int(
+                        page.evaluate(
+                            "() => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)"
+                        )
+                        or 2000
+                    )
+                    for index, y in enumerate(range(400, max(page_height, 401), 900)):
+                        if len(shots) >= max_shots:
+                            break
+                        page.evaluate("(scrollY) => window.scrollTo(0, scrollY)", y)
+                        page.wait_for_timeout(250)
+                        snippet = page.evaluate("() => (document.body && document.body.innerText || '').slice(0, 4000)")
+                        if not any(token in str(snippet) for token in ("参数", "规格", "规格参数", "Spec")):
+                            if index > 0:
+                                continue
+                        path = self.output_dir / f"{task_id}_param_fallback_{len(shots):02d}.png"
+                        page.screenshot(path=str(path), full_page=False)
+                        if path.exists() and path.stat().st_size >= 256:
+                            shots.append(path)
+
+                context.storage_state(path=str(resolved_state))
+                return shots[:max_shots]
+            except PlaywrightTimeoutError:
+                context.storage_state(path=str(resolved_state))
+                return shots
+            except Exception:
+                return shots
+            finally:
+                browser.close()
+
     def _solve_captcha_headed(
         self,
         playwright,
@@ -468,6 +588,13 @@ class PlaywrightCapture:
 
     def _route_filter(self, route, request) -> None:
         if request.resource_type in {"image", "media", "font"}:
+            route.abort()
+            return
+        route.continue_()
+
+    def _route_filter_allow_images(self, route, request) -> None:
+        """Softer filter for param-region vision shots — keep product images."""
+        if request.resource_type in {"media", "font"}:
             route.abort()
             return
         route.continue_()

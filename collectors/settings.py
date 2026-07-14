@@ -60,6 +60,8 @@ class Settings:
     default_mode: str = os.getenv("SPECS_FIRST_MODE", "mock")
 
     collection_min_interval_seconds: float = _float_env("COLLECTION_MIN_INTERVAL_SECONDS", 1.0)
+    ecommerce_min_interval_seconds: float = _float_env("ECOMMERCE_MIN_INTERVAL_SECONDS", 3.0)
+    ecommerce_max_urls_per_platform: int = _int_env("ECOMMERCE_MAX_URLS_PER_PLATFORM", 2)
     bilibili_comment_page_delay_seconds: float = _float_env("BILIBILI_COMMENT_PAGE_DELAY_SECONDS", 3.0)
     youtube_comment_delay_min: float = _float_env("YOUTUBE_COMMENT_DELAY_MIN", 1.0)
     youtube_comment_delay_max: float = _float_env("YOUTUBE_COMMENT_DELAY_MAX", 3.0)

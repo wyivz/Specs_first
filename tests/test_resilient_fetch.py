@@ -41,6 +41,11 @@ class FakeBrowser:
 
 
 class ResilientFetcherTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from collectors.rate_limit import reset_host_backoff_for_tests
+
+        reset_host_backoff_for_tests()
+
     def test_uses_http_when_page_is_usable(self) -> None:
         html = """
         <html><head><title>Specs</title></head>
@@ -213,6 +218,40 @@ class ResilientFetcherTest(unittest.TestCase):
         snapshot = fetcher.fetch("https://www.youtube.com/watch?v=abc", use_browser=False)
         self.assertEqual(snapshot.method, "http")
         self.assertEqual(browser.calls, [])
+
+    def test_jd_rate_limited_redirect_skips_browser_escalation(self) -> None:
+        freq_html = (
+            "<html><body><title>访问频繁</title>"
+            "<p>访问过于频繁，请稍后再试 pc-frequent-pro</p></body></html>"
+        )
+
+        class FreqRedirectHttp:
+            def fetch(self, url: str, *, platform: str = "", extra_headers=None) -> FetchResult:
+                return FetchResult(
+                    url="https://pc-frequent-pro.pf.jd.com/?from=pc_item&reason=403",
+                    status=403,
+                    text=freq_html,
+                    content_type="text/html",
+                )
+
+        browser = FakeBrowser(
+            BrowserCapture(
+                url="https://item.jd.com/100010708487.html",
+                screenshot_paths=[],
+                page_text="should not run",
+                page_html="<html><body>should not run</body></html>",
+            )
+        )
+        fetcher = ResilientFetcher(FreqRedirectHttp(), browser=browser)  # type: ignore[arg-type]
+        snapshot = fetcher.fetch(
+            "https://item.jd.com/100010708487.html",
+            use_browser=True,
+            task_id="task-jd-freq",
+        )
+        self.assertEqual(browser.calls, [])
+        self.assertEqual(snapshot.method, "http")
+        self.assertIn("pc-frequent-pro", snapshot.url)
+        self.assertTrue(any(b.kind == "rate_limited" for b in snapshot.page.blockers))
 
     def test_invalid_url_returns_error(self) -> None:
         fetcher = ResilientFetcher(FakeHttp({}))  # type: ignore[arg-type]

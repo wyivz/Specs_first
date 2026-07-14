@@ -352,18 +352,32 @@ with st.sidebar:
     use_browser = st.checkbox(
         "启用 Playwright 浏览器采集",
         value=True,
-        help="real 模式建议开启：B站/YouTube/弱页面会升级浏览器；遇验证码会挂起任务",
+        help=(
+            "建议开启：淘宝弱页、YouTube PoToken、参数区截图兜底会用到。"
+            "不是每个 URL 的第一选择——京东价优先 mgets，淘宝有 Cookie 优先 mtop。"
+            "遇验证码会挂起任务；京东频控页不会弹 headed。"
+        ),
     )
     vault_path = st.text_input("Obsidian vault path", "vault_output")
     source_urls_text = st.text_area(
-        "Source URLs（可选）",
+        "Source URLs（强烈建议 · 跑通保底）",
         "",
-        placeholder="每行一个 URL；留空即可，Real 模式会按 SKU 自动搜索官网/评测/电商",
+        placeholder="每行一个：京东商品 + 淘宝商品 + 评测 BV/YouTube",
         help=(
-            "可选补充：粘贴已知商品页、评测视频或论坛帖。留空时 Real 模式仍会按 SKU "
-            "自动搜索 B 站/YouTube/京东/淘宝等；贴直链通常更稳。"
+            "发现层依赖搜索时易空。跑通请至少贴：1 个 item.jd.com、1 个 detail.tmall/"
+            "item.taobao、1–2 个真实评测视频。验收：矩阵有槽 + 有价或规格 + 有证据即可，"
+            "不要求全平台全满。也可用 .env 的 OPTIONAL_SOURCE_URLS。"
         ),
     )
+    with st.expander("Real 跑通清单", expanded=False):
+        st.markdown(
+            """
+1. `.env`：Gemini + OpenAI；`JD_COOKIE`；淘宝 Cookie/`_m_h5_tk`；B 站三 Cookie  
+2. `python scripts/smoke_platforms.py --probe-gemini`  
+3. 上方贴商品/评测直链 → `real` + Playwright → 开始对比  
+4. 通过标准：JIT 槽位非空，且至少有价/规格/证据之一  
+            """.strip()
+        )
     st.markdown("---")
     st.markdown("**双脑模式**")
     st.markdown("- **Gemini**：Phase 1/2/3 文本吞噬 + OCR")

@@ -92,6 +92,35 @@ class ResilientFetcher:
         http_snapshot = self._fetch_http(url)
         needs_escalation = self._needs_browser_escalation(http_snapshot, strategy, requested_url=url)
 
+        from collectors.url_guards import is_rate_limited_ecommerce_url
+        from collectors.rate_limit import get_host_backoff
+
+        if is_rate_limited_ecommerce_url(http_snapshot.url) or any(
+            blocker.kind == "rate_limited" for blocker in http_snapshot.page.blockers
+        ):
+            cooldown = get_host_backoff().note_rate_limited(http_snapshot.url or url)
+            self.diagnostics.record(
+                "fetch",
+                f"rate-limited ecommerce page; skipping browser escalation "
+                f"(backoff {cooldown:.0f}s): {http_snapshot.url}",
+                level="warning",
+                sku=sku,
+            )
+            self._log_snapshot(http_snapshot, sku=sku)
+            return http_snapshot
+
+        # Sticky cooldown: do not reopen Playwright against a just-throttled host.
+        if use_browser and get_host_backoff().in_backoff(url):
+            remaining = get_host_backoff().remaining_seconds(url)
+            self.diagnostics.record(
+                "fetch",
+                f"host backoff active ({remaining:.0f}s left); HTTP-only for {url}",
+                level="info",
+                sku=sku,
+            )
+            self._log_snapshot(http_snapshot, sku=sku)
+            return http_snapshot
+
         # Hard HTTP-only when caller disables browser (CLI live / checkbox off).
         # Previously browser_first sites and weak pages still escalated to Playwright
         # and could hang Phase 2 on YouTube/Bilibili even with use_browser=False.
@@ -144,6 +173,7 @@ class ResilientFetcher:
             )
             if browser_snapshot.ok:
                 self._log_snapshot(browser_snapshot, sku=sku)
+                self._sync_taobao_session(storage_state_path)
                 return browser_snapshot
             # Prefer thin browser product HTML over a fat HTTP homepage redirect.
             if self._product_url_redirected_away(url, http_snapshot.url) and browser_snapshot.markup:
@@ -154,6 +184,7 @@ class ResilientFetcher:
                     sku=sku,
                 )
                 self._log_snapshot(browser_snapshot, sku=sku)
+                self._sync_taobao_session(storage_state_path)
                 return browser_snapshot
             if http_snapshot.markup:
                 self.diagnostics.record(
@@ -205,20 +236,23 @@ class ResilientFetcher:
 
         extra_headers = request_headers_for_url(url)
         result = self.http.fetch(url, extra_headers=extra_headers)
+        final_url = result.url or url
         if not result.ok:
-            page = sanitize_html(url, "")
-            page.blockers.append(PageBlocker("http_error", result.error or f"HTTP {result.status}"))
+            # Keep body when present so rate_limited / captcha markers still detect.
+            page = sanitize_html(final_url, result.text or "")
+            if not any(blocker.kind == "http_error" for blocker in page.blockers):
+                page.blockers.append(PageBlocker("http_error", result.error or f"HTTP {result.status}"))
             return PageSnapshot(
-                url=result.url,
+                url=final_url,
                 markup=result.text,
                 page=page,
                 method="http",
                 status=result.status,
                 error=result.error or f"HTTP {result.status}",
             )
-        page = sanitize_html(result.url, result.text)
+        page = sanitize_html(final_url, result.text)
         return PageSnapshot(
-            url=result.url,
+            url=final_url,
             markup=result.text,
             page=page,
             method="http",
@@ -258,6 +292,16 @@ class ResilientFetcher:
             screenshot_paths=tuple(str(path) for path in capture.screenshot_paths),
         )
 
+    def _sync_taobao_session(self, storage_state_path: str) -> None:
+        if not storage_state_path:
+            return
+        try:
+            from collectors.session_cache import sync_taobao_token_from_storage_state
+
+            sync_taobao_token_from_storage_state(storage_state_path)
+        except Exception:
+            pass
+
     def _needs_browser_escalation(
         self,
         snapshot: PageSnapshot,
@@ -265,6 +309,13 @@ class ResilientFetcher:
         *,
         requested_url: str = "",
     ) -> bool:
+        from collectors.url_guards import is_rate_limited_ecommerce_url
+
+        # JD pc-frequent-pro / rate_limited: never escalate — headed captcha cannot clear it.
+        if is_rate_limited_ecommerce_url(snapshot.url) or any(
+            blocker.kind == "rate_limited" for blocker in snapshot.blockers
+        ):
+            return False
         if snapshot.status in {403, 429, 503}:
             return True
         if len(snapshot.text.strip()) < max(strategy.min_chars, 80):

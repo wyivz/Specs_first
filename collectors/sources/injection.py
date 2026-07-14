@@ -78,6 +78,25 @@ class UrlInjectionCollector:
                     sku=sku,
                 )
                 continue
+            # JD product URLs: mgets-first avoids page fetch / freq-control / homepage redirect.
+            if self.jd.is_product_url(url):
+                jd_finding = self.jd.build_price_finding(
+                    url,
+                    "",
+                    platform="JD",
+                    http=self.http,
+                    trace=active_trace,
+                    sku=sku,
+                )
+                if jd_finding:
+                    prices.append(jd_finding)
+                    self.diagnostics.record(
+                        "JD",
+                        f"mgets-first price without page fetch: {url}",
+                        level="info",
+                        sku=sku,
+                    )
+                    continue
             page = self.resilient.fetch(
                 url,
                 task_id=task_id,

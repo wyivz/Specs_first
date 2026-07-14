@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from collectors.adapters.jd import JdAdapter
 from collectors.adapters.registry import AdapterRegistry, create_default_registry
 from collectors.adapters.tmall_taobao import TmallTaobaoAdapter
@@ -20,6 +22,7 @@ from collectors.extractors import (
 from collectors.http import HttpClient, clip
 from collectors.platform_auth import PlatformAuthRequired
 from collectors.protocols import SpecExtractionRouter
+from collectors.rate_limit import get_host_backoff, human_pause
 from collectors.resilient_fetch import ResilientFetcher
 from collectors.url_guards import is_noisy_ecommerce_url
 from schemas import OfficialSpec, PriceFinding, ProductCandidate
@@ -47,6 +50,56 @@ class EcommerceSourceCollector:
         self.jd = self.registry.require(JdAdapter)
         self.tmall_taobao = self.registry.require(TmallTaobaoAdapter)
 
+    def _max_urls_per_platform(self) -> int:
+        from collectors.settings import settings
+
+        return max(1, int(settings.ecommerce_max_urls_per_platform))
+
+    def _try_taobao_mtop_price(
+        self,
+        target_url: str,
+        *,
+        task_id: str,
+        use_browser: bool,
+        storage_state_path: str,
+        sku: str,
+        active_trace: CollectionTrace | None,
+    ) -> PriceFinding | None:
+        if not self.tmall_taobao.credentials.configured:
+            return None
+        if storage_state_path:
+            self.tmall_taobao.sync_credentials_from_storage_state(storage_state_path)
+        detail_urls = self.tmall_taobao.detail_api_urls(target_url, "")
+        for detail_url in detail_urls[:2]:
+            if "sign=" not in detail_url:
+                continue
+            try:
+                raw = self.tmall_taobao.fetch_mtop_payload(
+                    self.http,
+                    detail_url,
+                    referer=target_url,
+                    browser=self.browser,
+                    task_id=task_id,
+                    storage_state_path=storage_state_path,
+                    use_browser=use_browser,
+                )
+            except PlatformAuthRequired as exc:
+                self._soft_skip_auth("Taobao/Tmall", target_url, exc, sku)
+                return None
+            finding = self.tmall_taobao.build_price_finding(target_url, raw, platform="Taobao/Tmall")
+            if finding:
+                if active_trace:
+                    active_trace.log_price(
+                        "Taobao/Tmall",
+                        target_url,
+                        source="mtop-first",
+                        list_price=finding.list_price,
+                        final_price=finding.final_price,
+                        sku=sku,
+                    )
+                return finding
+        return None
+
     def collect(
         self,
         candidate: ProductCandidate,
@@ -58,7 +111,10 @@ class EcommerceSourceCollector:
     ) -> list[PriceFinding]:
         findings: list[PriceFinding] = []
         active_trace = trace or self.resilient.trace
+        max_urls = self._max_urls_per_platform()
         for platform, query in ecommerce_search_queries(candidate.sku):
+            human_pause(0.5, 1.5)
+            platform_hits = 0
             if active_trace:
                 active_trace.log("ecommerce", f"search platform={platform} query={query}", sku=candidate.sku)
             results = self.http.search(query, max_results=5)
@@ -70,6 +126,8 @@ class EcommerceSourceCollector:
                     sku=candidate.sku,
                 )
             for result in results:
+                if platform_hits >= max_urls:
+                    break
                 adapter = self.registry.for_platform(platform)
                 if adapter is not None and hasattr(adapter, "normalize_url"):
                     target_url = adapter.normalize_url(result.url)
@@ -92,6 +150,56 @@ class EcommerceSourceCollector:
                     )
                     continue
                 combined_text = f"{result.title}. {result.snippet}"
+                # JD: price via mgets first — avoids HTML/home redirect/freq-control cycles.
+                if platform == "JD" and self.jd.is_product_url(target_url):
+                    get_host_backoff().wait_if_needed(target_url)
+                    jd_finding = self.jd.build_price_finding(
+                        target_url,
+                        "",
+                        platform="JD",
+                        http=self.http,
+                        trace=active_trace,
+                        sku=candidate.sku,
+                    )
+                    if jd_finding:
+                        findings.append(jd_finding)
+                        platform_hits += 1
+                        self.diagnostics.record(
+                            platform,
+                            f"mgets-first price without page fetch: {target_url}",
+                            level="info",
+                            sku=candidate.sku,
+                        )
+                        continue
+                # Taobao: signed mtop-first when Cookie configured.
+                if platform == "Taobao/Tmall" and self.tmall_taobao.is_product_url(target_url):
+                    tb_finding = self._try_taobao_mtop_price(
+                        target_url,
+                        task_id=task_id,
+                        use_browser=use_browser,
+                        storage_state_path=storage_state_path,
+                        sku=candidate.sku,
+                        active_trace=active_trace,
+                    )
+                    if tb_finding:
+                        findings.append(tb_finding)
+                        platform_hits += 1
+                        self.diagnostics.record(
+                            platform,
+                            f"mtop-first price without page fetch: {target_url}",
+                            level="info",
+                            sku=candidate.sku,
+                        )
+                        continue
+                # JD in frequency-control backoff: do not reopen product pages.
+                if platform == "JD" and get_host_backoff().in_backoff(target_url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip page fetch during JD backoff: {target_url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    continue
                 fetch_browser = use_browser
                 if platform == "Taobao/Tmall" and not (self.tmall_taobao.credentials.cookie or "").strip():
                     # Without Cookie, headed captcha windows are useless noise — stay HTTP-only.
@@ -107,15 +215,7 @@ class EcommerceSourceCollector:
                 except Exception as exc:
                     if not self._soft_skip_auth(platform, target_url, exc, candidate.sku):
                         raise
-                    continue
-                if not self._final_url_is_product(platform, target_url, snapshot.url):
-                    self.diagnostics.record(
-                        platform,
-                        f"skip redirected non-product page: {target_url} -> {snapshot.url}",
-                        level="warning",
-                        sku=candidate.sku,
-                    )
-                    # JD HTML often redirects home without Cookie; mgets can still price by sku id.
+                    # Auth/slider soft-skip: still try JD mgets if we have a product URL.
                     if platform == "JD" and self.jd.is_product_url(target_url):
                         jd_finding = self.jd.build_price_finding(
                             target_url,
@@ -127,6 +227,28 @@ class EcommerceSourceCollector:
                         )
                         if jd_finding:
                             findings.append(jd_finding)
+                            platform_hits += 1
+                    continue
+                if not self._final_url_is_product(platform, target_url, snapshot.url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip redirected non-product page: {target_url} -> {snapshot.url}",
+                        level="warning",
+                        sku=candidate.sku,
+                    )
+                    # JD HTML often redirects home / freq-control; mgets can still price by sku id.
+                    if platform == "JD" and self.jd.is_product_url(target_url):
+                        jd_finding = self.jd.build_price_finding(
+                            target_url,
+                            "",
+                            platform="JD",
+                            http=self.http,
+                            trace=active_trace,
+                            sku=candidate.sku,
+                        )
+                        if jd_finding:
+                            findings.append(jd_finding)
+                            platform_hits += 1
                     continue
                 if not self._page_matches_target(candidate.sku, result.title, snapshot):
                     self.diagnostics.record(
@@ -172,6 +294,7 @@ class EcommerceSourceCollector:
                                 evidence=jd_finding.evidence,
                             )
                         )
+                        platform_hits += 1
                         continue
                 if platform == "Taobao/Tmall" and snapshot.markup:
                     tb_finding = self.tmall_taobao.build_price_finding(
@@ -191,6 +314,7 @@ class EcommerceSourceCollector:
                                 evidence=tb_finding.evidence,
                             )
                         )
+                        platform_hits += 1
                         continue
                     detail_urls = self.tmall_taobao.detail_api_urls(snapshot.url, snapshot.markup)
                     for detail_url in detail_urls[:2]:
@@ -206,8 +330,10 @@ class EcommerceSourceCollector:
                                 storage_state_path=storage_state_path,
                                 use_browser=use_browser,
                             )
-                        except PlatformAuthRequired:
-                            raise
+                        except PlatformAuthRequired as exc:
+                            if not self._soft_skip_auth(platform, snapshot.url or target_url, exc, candidate.sku):
+                                raise
+                            break
                         tb_finding = self.tmall_taobao.build_price_finding(
                             snapshot.url, raw, platform="Taobao/Tmall"
                         )
@@ -225,6 +351,7 @@ class EcommerceSourceCollector:
                                     evidence=tb_finding.evidence,
                                 )
                             )
+                            platform_hits += 1
                             break
                     if findings and findings[-1].platform == "Taobao/Tmall":
                         continue
@@ -282,6 +409,7 @@ class EcommerceSourceCollector:
                         evidence=evidence,
                     )
                 )
+                platform_hits += 1
         return sorted(findings, key=lambda item: item.final_price)[:5]
 
     def collect_official_specs(
@@ -294,7 +422,10 @@ class EcommerceSourceCollector:
     ) -> tuple[list[OfficialSpec], list[str]]:
         specs_by_name: dict[str, OfficialSpec] = {}
         highlights: list[str] = []
+        max_urls = self._max_urls_per_platform()
         for platform, query in ecommerce_search_queries(candidate.sku):
+            human_pause(0.5, 1.5)
+            platform_hits = 0
             results = self.http.search(query, max_results=4)
             if not results:
                 self.diagnostics.record(
@@ -304,6 +435,8 @@ class EcommerceSourceCollector:
                     sku=candidate.sku,
                 )
             for result in results:
+                if platform_hits >= max_urls:
+                    break
                 adapter = self.registry.for_platform(platform)
                 if adapter is not None and hasattr(adapter, "normalize_url"):
                     target_url = adapter.normalize_url(result.url)
@@ -321,6 +454,51 @@ class EcommerceSourceCollector:
                     self.diagnostics.record(
                         platform,
                         f"skip unrelated ecommerce search hit: {result.url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    continue
+                # Taobao mtop-first for specs when signed APIs available.
+                if (
+                    platform == "Taobao/Tmall"
+                    and self.tmall_taobao.credentials.configured
+                    and self.tmall_taobao.is_product_url(target_url)
+                ):
+                    if storage_state_path:
+                        self.tmall_taobao.sync_credentials_from_storage_state(storage_state_path)
+                    detail_api_urls = self.tmall_taobao.detail_api_urls(target_url, "")
+                    detail_payloads = self._fetch_detail_payloads(
+                        detail_api_urls,
+                        platform=platform,
+                        referer_url=target_url,
+                        task_id=task_id,
+                        use_browser=use_browser,
+                        storage_state_path=storage_state_path,
+                        sku=candidate.sku,
+                    )
+                    if detail_payloads:
+                        merged_markup = "\n".join(detail_payloads)
+                        extracted = extract_specs_from_markup(
+                            merged_markup,
+                            target_url,
+                            candidate.category,
+                            profile=self.category_profile,
+                        )
+                        for spec in extracted:
+                            specs_by_name.setdefault(spec.name, spec)
+                        if extracted:
+                            platform_hits += 1
+                            self.diagnostics.record(
+                                platform,
+                                "mtop-first parameter block captured",
+                                level="info",
+                                sku=candidate.sku,
+                            )
+                            continue
+                if platform == "JD" and get_host_backoff().in_backoff(target_url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip specs page fetch during JD backoff: {target_url}",
                         level="info",
                         sku=candidate.sku,
                     )
@@ -389,7 +567,8 @@ class EcommerceSourceCollector:
                 for spec in extracted:
                     specs_by_name.setdefault(spec.name, spec)
                 detail_images = extract_detail_image_urls(merged_markup)
-                if self.router is not None and use_browser:
+                # Vision fill is independent of Playwright — only needs reachable image URLs + Gemini.
+                if self.router is not None and detail_images:
                     image_specs, image_highlights = self.router.extract_official_specs_from_images(
                         candidate.sku,
                         detail_images,
@@ -416,6 +595,7 @@ class EcommerceSourceCollector:
                         level="info",
                         sku=candidate.sku,
                     )
+                platform_hits += 1
         return list(specs_by_name.values()), highlights
 
     def probe_detail_images(
@@ -427,10 +607,16 @@ class EcommerceSourceCollector:
         storage_state_path: str = "",
         max_images: int = 8,
     ) -> list[str]:
-        """Light probe: return detail image URLs without filling spec slots."""
+        """Light probe: return ranked detail image URLs without filling spec slots."""
+        from collectors.extractors import rank_detail_image_urls
+
         images: list[str] = []
         seen: set[str] = set()
+        max_urls = self._max_urls_per_platform()
+        screenshot_threshold = max(2, max_images // 2)
         for platform, query in ecommerce_search_queries(candidate.sku):
+            human_pause(0.4, 1.2)
+            platform_hits = 0
             results = self.http.search(query, max_results=3)
             if not results:
                 self.diagnostics.record(
@@ -440,6 +626,8 @@ class EcommerceSourceCollector:
                     sku=candidate.sku,
                 )
             for result in results:
+                if platform_hits >= max_urls:
+                    break
                 adapter = self.registry.for_platform(platform)
                 if adapter is not None and hasattr(adapter, "normalize_url"):
                     target_url = adapter.normalize_url(result.url)
@@ -448,6 +636,8 @@ class EcommerceSourceCollector:
                 if not self._is_product_result(platform, target_url, result.url):
                     continue
                 if not evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url):
+                    continue
+                if platform == "JD" and get_host_backoff().in_backoff(target_url):
                     continue
                 fetch_browser = use_browser
                 if platform == "Taobao/Tmall" and not (self.tmall_taobao.credentials.cookie or "").strip():
@@ -486,22 +676,57 @@ class EcommerceSourceCollector:
                         continue
                     seen.add(url)
                     images.append(url)
-                    if len(images) >= max_images:
+                platform_hits += 1
+                # Screenshot only when CDN images are scarce (not every product page).
+                if (
+                    use_browser
+                    and self.browser is not None
+                    and len(images) < screenshot_threshold
+                    and hasattr(self.browser, "capture_param_region_shots")
+                ):
+                    try:
+                        from collectors.detail_images import path_to_file_url
+
+                        shots = self.browser.capture_param_region_shots(
+                            snapshot.url or target_url,
+                            task_id=task_id or "schema-probe",
+                            storage_state_path=Path(storage_state_path) if storage_state_path else None,
+                            max_shots=min(3, max_images - len(images)),
+                        )
+                        for path in shots:
+                            file_url = path_to_file_url(path)
+                            if file_url in seen:
+                                continue
+                            seen.add(file_url)
+                            images.append(file_url)
+                        if storage_state_path:
+                            self.tmall_taobao.sync_credentials_from_storage_state(storage_state_path)
+                    except Exception as exc:
                         self.diagnostics.record(
                             platform,
-                            f"schema probe captured {len(images)} detail images",
+                            f"param screenshot fallback failed: {exc}",
                             level="info",
                             sku=candidate.sku,
                         )
-                        return images
-        if images:
+                # Collect a buffer then rank — don't stop on first noisy thumbs.
+                if len(images) >= max_images * 2:
+                    ranked = rank_detail_image_urls(images)[:max_images]
+                    self.diagnostics.record(
+                        platform,
+                        f"schema probe captured {len(ranked)} detail images",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    return ranked
+        ranked = rank_detail_image_urls(images)[:max_images]
+        if ranked:
             self.diagnostics.record(
                 "ecommerce",
-                f"schema probe captured {len(images)} detail images",
+                f"schema probe captured {len(ranked)} detail images",
                 level="info",
                 sku=candidate.sku,
             )
-        return images
+        return ranked
 
     def _is_product_result(self, platform: str, normalized_url: str, raw_url: str = "") -> bool:
         if is_noisy_ecommerce_url(normalized_url) or is_noisy_ecommerce_url(raw_url):

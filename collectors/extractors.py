@@ -52,7 +52,17 @@ APERTURE_PATTERN = re.compile(r"\bf\s*/\s*([0-9]+(?:\.[0-9]+)?)\b", re.I)
 TABLE_ROW_PATTERN = re.compile(r"<tr[^>]*>\s*(.*?)\s*</tr>", re.I | re.S)
 TABLE_CELL_PATTERN = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.I | re.S)
 DETAIL_IMAGE_PATTERN = re.compile(
-    r"""(?:src|data-src|data-lazyload|original|file-url)\s*=\s*["']([^"']+\.(?:jpg|jpeg|png|webp)(?:\?[^"']*)?)["']""",
+    r"""(?:src|data-src|data-lazyload|data-lazy-img|data-original|original|file-url)\s*=\s*["']([^"']+\.(?:jpg|jpeg|png|webp)(?:\?[^"']*)?)["']""",
+    re.I,
+)
+# JSON / script blobs often embed CDN paths without HTML attributes.
+DETAIL_IMAGE_JSON_PATTERN = re.compile(
+    r"""["'](?:image(?:Url|Path|url)?|img(?:Url|url)?|pic(?:Url|url)?|src)["']\s*:\s*["']((?:https?:)?//[^"']+\.(?:jpg|jpeg|png|webp)(?:\?[^"']*)?)["']""",
+    re.I,
+)
+# JD / Ali CDN paths sometimes omit a file extension in the path segment.
+DETAIL_IMAGE_CDN_PATTERN = re.compile(
+    r"""((?:https?:)?//(?:img\d*\.360buyimg\.com|[^"'\\\s]*\.alicdn\.com)/[^"'\\\s<>]+(?:\.(?:jpg|jpeg|png|webp)|/[ns]\d+/|/imgextra/)[^"'\\\s<>]*)""",
     re.I,
 )
 DESC_API_PATTERN = re.compile(r"""["']((?:https?:)?//[^"']*(?:getdesc|desc|description)[^"']*)["']""", re.I)
@@ -293,14 +303,91 @@ def extract_specs_from_markup(
 def extract_detail_image_urls(markup: str) -> list[str]:
     seen: set[str] = set()
     urls: list[str] = []
-    for match in DETAIL_IMAGE_PATTERN.finditer(markup):
-        url = match.group(1).strip()
-        if url.startswith("//"):
-            url = "https:" + url
-        if url.startswith("http") and url not in seen:
+    if not markup:
+        return []
+    patterns = (DETAIL_IMAGE_PATTERN, DETAIL_IMAGE_JSON_PATTERN, DETAIL_IMAGE_CDN_PATTERN)
+    for pattern in patterns:
+        for match in pattern.finditer(markup):
+            url = _normalize_detail_image_url(match.group(1))
+            if not url or url in seen or _is_noise_detail_image_url(url):
+                continue
             seen.add(url)
             urls.append(url)
-    return urls
+    return rank_detail_image_urls(urls)
+
+
+def rank_detail_image_urls(urls: list[str]) -> list[str]:
+    """Prefer packaging/spec/detail graphics over icons and tiny thumbnails."""
+
+    def score(url: str) -> tuple[int, int]:
+        lower = url.lower()
+        points = 0
+        for hint in (
+            "参数",
+            "规格",
+            "包装",
+            "detail",
+            "desc",
+            "spec",
+            "package",
+            "imgextra",
+            "/n0/",
+            "/n1/",
+            "/n12/",
+            "_param_",
+            "param_fallback",
+        ):
+            if hint in lower:
+                points += 4
+        if lower.startswith("file:"):
+            points += 3
+        for hint in ("800x", "1000x", "1200x", "1500x", "790x", "750x"):
+            if hint in lower:
+                points += 2
+        for hint in (
+            "avatar",
+            "sprite",
+            "placeholder",
+            "blank",
+            "1x1",
+            "pixel",
+            "/n5/",
+            "/n7/",
+            "s40x40",
+            "s50x50",
+            "s60x60",
+            "icon",
+            "logo",
+        ):
+            if hint in lower:
+                points -= 6
+        # Prefer longer paths (often real assets) as a weak tie-breaker.
+        return (points, min(len(url), 400))
+
+    return sorted(dict.fromkeys(urls), key=score, reverse=True)
+
+
+def _normalize_detail_image_url(raw: str) -> str:
+    url = (raw or "").strip().strip("\\")
+    if not url:
+        return ""
+    if url.startswith("//"):
+        url = "https:" + url
+    if not url.startswith("http"):
+        return ""
+    return url.split()[0].rstrip("\\\",'")
+
+
+def _is_noise_detail_image_url(url: str) -> bool:
+    lower = url.lower()
+    if any(ext in lower for ext in (".gif", ".svg", ".ico")):
+        return True
+    if any(hint in lower for hint in ("data:image", "about:blank")):
+        return True
+    # Extremely small JD thumbs / tracking pixels (s50x50.jpg or s50x50_jfs).
+    if re.search(r"(?:^|/)(?:s|_)?(?:[1-6]0)x(?:[1-6]0)(?:[._/]|$)", lower):
+        return True
+    return False
 
 
 def extract_desc_api_urls(markup: str, base_url: str = "") -> list[str]:

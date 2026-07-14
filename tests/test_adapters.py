@@ -41,6 +41,32 @@ class AdapterTest(unittest.TestCase):
         self.assertTrue(any("fringing" in item.excerpt.lower() for item in evidence))
         self.assertTrue(any(item.author == "bilibili_comment" for item in evidence))
 
+    @patch.object(BilibiliApiClient, "collect_api_evidence")
+    def test_bilibili_api_runs_without_use_browser(self, collect_api) -> None:
+        from schemas import EvidenceItem
+
+        collect_api.return_value = [
+            EvidenceItem(
+                platform="Bilibili",
+                url="https://www.bilibili.com/video/BV1ABCD12345",
+                author="bilibili_subtitle",
+                locator="api-subtitle",
+                excerpt="wide open purple fringing review",
+                confidence=0.7,
+                captured_at="2026-01-01T00:00:00Z",
+            )
+        ]
+        adapter = BilibiliAdapter(credentials=BilibiliCredentials("s", "j", "d"))
+        markup = "<html><head><title>SEL50F12GM 评测</title></head><body>开箱</body></html>"
+        evidence = adapter.extract_evidence(
+            "https://www.bilibili.com/video/BV1ABCD12345",
+            markup,
+            use_browser=False,
+            sku="SEL50F12GM",
+        )
+        collect_api.assert_called_once()
+        self.assertTrue(any("fringing" in item.excerpt.lower() for item in evidence))
+
     def test_bilibili_subtitle_asr_fallback_when_no_native_subtitle(self) -> None:
         client = BilibiliApiClient(credentials=BilibiliCredentials("s", "j", "d"))
         fake_asr_module = type(

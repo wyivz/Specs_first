@@ -54,12 +54,16 @@ class HybridModelRouter(KeywordModelRouter):
         sku: str,
         image_urls: list[str],
         query: str = "",
+        *,
+        referer: str = "",
     ) -> dict[str, Any]:
         if not (settings.has_gemini and image_urls):
             return {}
         try:
             return self._run_with_timeout(
-                lambda: self._gemini_survey_product_from_images(sku, image_urls, query)
+                lambda: self._gemini_survey_product_from_images(
+                    sku, image_urls, query, referer=referer
+                )
             )
         except Exception:
             return {}
@@ -291,8 +295,10 @@ class HybridModelRouter(KeywordModelRouter):
         sku: str,
         image_urls: list[str],
         query: str,
+        *,
+        referer: str = "",
     ) -> dict[str, Any]:
-        from urllib.request import Request, urlopen
+        from collectors.detail_images import download_detail_image
 
         prompt = (
             f"Survey product images for SKU '{sku}' (user query: {query or 'n/a'}). "
@@ -308,13 +314,15 @@ class HybridModelRouter(KeywordModelRouter):
             "other_signals": [],
         }
         for url in image_urls[:6]:
-            request = Request(url, headers={"User-Agent": "SpecsFirst/0.1"})
-            with urlopen(request, timeout=12) as response:
-                data = response.read(4_000_000)
-                mime_type = response.headers.get_content_type() or "image/jpeg"
-            gemini_response = self._gemini_model().generate_content(
-                [prompt, {"mime_type": mime_type, "data": data}]
-            )
+            downloaded = download_detail_image(url, referer=referer)
+            if downloaded is None:
+                continue
+            try:
+                gemini_response = self._gemini_model().generate_content(
+                    [prompt, {"mime_type": downloaded.mime_type, "data": downloaded.data}]
+                )
+            except Exception:
+                continue
             payload = parse_json_payload(gemini_response.text or "", default={})
             if payload.get("likely_category") and not clues["likely_category"]:
                 clues["likely_category"] = str(payload.get("likely_category", "")).strip()
@@ -508,7 +516,7 @@ class HybridModelRouter(KeywordModelRouter):
         source_url: str,
         category: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
-        from urllib.request import Request, urlopen
+        from collectors.detail_images import download_detail_image
 
         slots = canonical_slots(category, profile=self.category_profile)
         prompt = (
@@ -520,13 +528,15 @@ class HybridModelRouter(KeywordModelRouter):
         specs_by_name: dict[str, OfficialSpec] = {}
         highlights: list[str] = []
         for url in image_urls[:8]:
-            request = Request(url, headers={"User-Agent": "SpecsFirst/0.1"})
-            with urlopen(request, timeout=12) as response:
-                data = response.read(4_000_000)
-                mime_type = response.headers.get_content_type() or "image/jpeg"
-            gemini_response = self._gemini_model().generate_content(
-                [prompt, {"mime_type": mime_type, "data": data}]
-            )
+            downloaded = download_detail_image(url, referer=source_url)
+            if downloaded is None:
+                continue
+            try:
+                gemini_response = self._gemini_model().generate_content(
+                    [prompt, {"mime_type": downloaded.mime_type, "data": downloaded.data}]
+                )
+            except Exception:
+                continue
             payload = parse_json_payload(gemini_response.text or "", default={"specs": [], "highlights": []})
             for item in payload.get("specs", []):
                 name = str(item.get("name", "")).strip()

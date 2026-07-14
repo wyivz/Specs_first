@@ -264,11 +264,29 @@ class SpecsFirstPipeline:
         vision_clues: dict[str, Any] = {}
         if image_urls and hasattr(self.router, "survey_product_from_images"):
             try:
+                referer = ""
+                for candidate in selected[:2]:
+                    if getattr(candidate, "sku", "") == probe_sku and getattr(candidate, "source_url", ""):
+                        referer = str(candidate.source_url)
+                        break
+                if not referer and selected:
+                    referer = str(getattr(selected[0], "source_url", "") or "")
                 vision_clues = self.router.survey_product_from_images(  # type: ignore[attr-defined]
                     probe_sku,
                     image_urls,
                     query,
+                    referer=referer,
                 ) or {}
+            except TypeError:
+                # Older routers without referer kwarg.
+                try:
+                    vision_clues = self.router.survey_product_from_images(  # type: ignore[attr-defined]
+                        probe_sku,
+                        image_urls,
+                        query,
+                    ) or {}
+                except Exception:
+                    vision_clues = {}
             except Exception:
                 vision_clues = {}
 

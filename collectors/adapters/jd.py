@@ -266,6 +266,9 @@ class JdAdapter:
         return None
 
     def _extract_sku_id(self, product_url: str, markup: str = "") -> str:
+        match = self.PRODUCT_URL_RE.search(product_url)
+        if match:
+            return match.group(1)
         match = re.search(r"item\.jd\.com/(\d+)\.html", product_url, re.I)
         if match:
             return match.group(1)

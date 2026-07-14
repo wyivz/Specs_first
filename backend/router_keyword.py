@@ -27,7 +27,10 @@ class KeywordModelRouter:
         sku: str,
         image_urls: list[str],
         query: str = "",
+        *,
+        referer: str = "",
     ) -> dict:
+        del sku, image_urls, query, referer
         return {}
 
     def build_category_profile(

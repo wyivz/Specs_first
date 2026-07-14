@@ -179,6 +179,16 @@ OBSIDIAN_VAULT_PATH=./vault_output
 
 **Suggested flow:** Streamlit `real` → Playwright on → leave category hint empty → Start compare → solve captcha in-page if needed. Source URLs are optional; direct product links are more reliable.
 
+### Real-run checklist
+
+Pass criteria: **non-empty JIT slots + at least one of price/specs/evidence** (not “every platform full”).
+
+1. Configure P0 secrets in `.env`: Gemini + OpenAI, `SPECS_FIRST_MODE=real`, `JD_COOKIE`, Taobao cookie/`_m_h5_tk`, Bilibili cookie trio.
+2. `python scripts/smoke_platforms.py --probe-gemini`
+3. Paste into Source URLs (or `OPTIONAL_SOURCE_URLS`): one JD item, one Taobao/Tmall item, 1–2 real review videos.
+4. Streamlit `real` + Playwright; use a concrete model number.
+5. Ecommerce pacing defaults to ~3s + jitter; JD frequency-control triggers host backoff (no headed captcha spam).
+
 ---
 
 ## Repository layout
