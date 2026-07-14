@@ -29,6 +29,20 @@ class ApiTest(unittest.TestCase):
         self.assertTrue(candidates)
         self.assertIn("sku", candidates[0])
 
+    def test_discover_mock_follows_mouse_query_not_hardcoded_lenses(self) -> None:
+        response = self.client.post(
+            "/discover",
+            json={"query": "罗技 G304 无线鼠标", "category": "Product", "mode": "mock"},
+        )
+        self.assertEqual(response.status_code, 200)
+        skus = [item["sku"] for item in response.json()["candidates"]]
+        self.assertGreaterEqual(len(skus), 1)
+        joined = " ".join(skus).lower()
+        self.assertTrue(any(token in joined for token in ("罗技", "g304", "无线鼠标", "鼠标")))
+        self.assertNotIn("zeiss", joined)
+        self.assertNotIn("sigma 50mm", joined)
+        self.assertNotIn("sony fe 50mm", joined)
+
     def test_create_task_and_poll_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             response = self.client.post(

@@ -55,10 +55,11 @@ Phase 1 官方规格 ──► Phase 2 民间脱水 ──► Phase 3 到手价/
 
 ```
 Streamlit UI（frontend/app.py）
-    ├── frontend/ui/input_panel.py      # 输入与侧边栏配置
-    ├── frontend/ui/status_panel.py     # 运行状态（st.fragment 局部刷新）
-    ├── frontend/ui/output_panel.py     # 矩阵与导出
-    ├── frontend/event_listener.py      # EventBus 后台订阅
+    ├── frontend/ui/input_panel.py       # 输入、候选卡片、新手/高级
+    ├── frontend/ui/live_workspace.py    # 运行中左右分栏 + 实时矩阵
+    ├── frontend/ui/health_panel.py      # Health 缓存与 Real 阻断
+    ├── frontend/ui/output_panel.py      # 完成态矩阵与 CSV 导出
+    ├── frontend/event_listener.py       # EventBus 后台订阅
     └── frontend/api_client.py
             └── backend/task_runner.py
                     └── pipeline.py（含 JIT schema bootstrap）
@@ -87,7 +88,7 @@ Streamlit UI（frontend/app.py）
 - [x] AdapterRegistry 运行时接线；采集层依赖倒置
 - [x] Obsidian + Dataview + CSV
 - [x] 健康检查：`GET /health`、`scripts/smoke_platforms.py`
-- [x] **单元测试 138 项** + GitHub Actions CI
+- [x] **单元测试 186 项** + GitHub Actions CI
 
 ### 需本机实调
 
@@ -133,12 +134,13 @@ streamlit run frontend/app.py
 
 | 区域 | 内容 |
 |------|------|
-| **输入** | 对比查询、品类提示、SKU 发现/勾选、侧边栏运行配置（mock/real、Playwright、Source URLs） |
-| **运行状态** | 平台 Health、进度条、阶段 pill、实时事件流、采集诊断、验证码嵌入式浏览器 |
-| **输出** | 渐进式对比矩阵、证据卡、Obsidian 路径、CSV 下载 |
+| **输入** | 对比查询、搜索候选 SKU（卡片勾选）、Mock/Real 模式 |
+| **运行状态** | Health 就绪检查、左右分栏（进度 + 实时矩阵）、可折叠事件日志 |
+| **输出** | 最终对比矩阵、证据链、CSV 下载 |
 
-- 侧边栏选 `mock` 或 `real`；Real 建议勾选 Playwright
-- 任务进行中通过局部刷新（`st.fragment`）更新状态，输入框不会整页重刷丢焦点
+- 默认 **Mock 模式** 无需 API Key；Real 模式 Health 未通过时会阻断启动
+- 任务进行中矩阵在右侧**逐行实时刷新**；完成后可下载 CSV
+- 侧边栏「高级选项」展开 Playwright、Source URLs、ASR 等配置
 - 遇验证码挂起时，侧边栏点击「续传任务」
 
 ### API（可选）
@@ -164,7 +166,7 @@ uvicorn backend.api:app --reload
 python -m unittest discover -s tests
 ```
 
-当前 **175** 项单元测试通过（不含 live smoke）。
+当前 **186** 项单元测试通过（不含 live smoke）。
 
 ```powershell
 python scripts/smoke_platforms.py --health-only
@@ -224,7 +226,7 @@ Specs-first/
 ├── schemas/           # 模型 + DynamicCategoryProfile + matrix
 ├── obsidian/          # Vault 写入 + CSV
 ├── scripts/           # smoke_platforms.py
-├── tests/             # 138 项测试
+├── tests/             # 186 项测试
 ├── plan.md            # 架构计划
 └── .github/workflows/ # CI
 ```

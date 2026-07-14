@@ -1,49 +1,53 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
 from collectors.base import Collector
+from collectors.extractors import infer_brand
 from schemas import EvidenceItem, OfficialSpec, PriceFinding, ProductCandidate
+from schemas.category_profile import DynamicCategoryProfile, canonical_slots
 
 
 CAPTURED_AT = datetime(2026, 7, 7, 12, 0, tzinfo=UTC).isoformat()
 
+_DISCOVER_STOP_WORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "official",
+    "specifications",
+    "product",
+    "品类",
+    "通用",
+    "对比",
+    "评测",
+}
+
 
 class MockCollector(Collector):
-    """Mock collector for demonstration and testing.
-    
-    NOTE: The lens-related SKUs and parameters below are provided as EXAMPLES ONLY
-    for demonstration purposes. The system is designed to be category-agnostic and
-    will work with any product type (phones, keyboards, cameras, appliances, etc.).
-    
-    In production, the RealCollector will fetch actual product data based on the
-    category parameter, and the spec columns will be dynamically determined from
-    the official specs extracted from product pages.
-    """
-    
+    """Query-driven mock collector for offline demos — not tied to any product category."""
+
+    category_profile: DynamicCategoryProfile | None = None
+
+    def set_category_profile(self, profile: DynamicCategoryProfile | None) -> None:
+        self.category_profile = profile
+
     def discover_candidates(self, query: str, category: str) -> list[ProductCandidate]:
+        seed = (query or "").strip() or (category or "").strip() or "Demo Product"
+        brand = infer_brand(seed)
+        labels = _mock_compare_labels(seed)
+        resolved_category = (category or "Product").strip() or "Product"
         return [
             ProductCandidate(
-                sku="Zeiss Makro-Planar T* 50mm f/2",
-                brand="Zeiss",
-                category=category or "Lens",
-                source_url="https://www.zeiss.com/mock/makro-planar-50-f2",
-                confidence=0.95,
-            ),
-            ProductCandidate(
-                sku="Sony FE 50mm F1.2 GM",
-                brand="Sony",
-                category=category or "Lens",
-                source_url="https://www.sony.com/mock/fe-50mm-f12-gm",
-                confidence=0.91,
-            ),
-            ProductCandidate(
-                sku="Sigma 50mm F1.4 DG DN Art",
-                brand="Sigma",
-                category=category or "Lens",
-                source_url="https://www.sigma-global.com/mock/50mm-f14-dg-dn-art",
-                confidence=0.89,
-            ),
+                sku=label,
+                brand=brand,
+                category=resolved_category,
+                source_url=f"https://example.invalid/mock/{index}",
+                confidence=0.95 - index * 0.03,
+            )
+            for index, label in enumerate(labels)
         ]
 
     def collect_official_specs(
@@ -54,43 +58,20 @@ class MockCollector(Collector):
         use_browser: bool = False,
         storage_state_path: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
-        by_brand = {
-            "Zeiss": {
-                "focal_length": "50mm",
-                "max_aperture": "f/2",
-                "weight": "530g",
-                "optical_structure": "6 groups / 8 elements",
-                "minimum_focus_distance": "0.24m",
-                "filter_thread": "67mm",
-            },
-            "Sony": {
-                "focal_length": "50mm",
-                "max_aperture": "f/1.2",
-                "weight": "778g",
-                "optical_structure": "10 groups / 14 elements",
-                "minimum_focus_distance": "0.4m",
-                "filter_thread": "72mm",
-            },
-            "Sigma": {
-                "focal_length": "50mm",
-                "max_aperture": "f/1.4",
-                "weight": "670g",
-                "optical_structure": "11 groups / 14 elements",
-                "minimum_focus_distance": "0.45m",
-                "filter_thread": "72mm",
-            },
-        }
-        spec_values = by_brand[candidate.brand]
+        del task_id, use_browser, storage_state_path
+        slots = list(canonical_slots(candidate.category, profile=self.category_profile))
+        demo_values = _demo_values_for_slots(slots, candidate.sku)
         specs = [
-            OfficialSpec(name=name, value=value, unit="", source_url=candidate.source_url)
-            for name, value in spec_values.items()
+            OfficialSpec(
+                name=slot,
+                value=demo_values.get(slot, f"demo-{slot}"),
+                unit="",
+                source_url=candidate.source_url,
+            )
+            for slot in slots[:8]
         ]
-        highlights = {
-            "Zeiss": ["floating elements", "T* coating"],
-            "Sony": ["extreme aspherical elements", "linear XD motors"],
-            "Sigma": ["HLA motor", "Art series optical formula"],
-        }
-        return specs, highlights[candidate.brand]
+        highlights = [f"Mock highlight for {candidate.sku}"]
+        return specs, highlights
 
     def collect_real_world_corpus(
         self,
@@ -100,49 +81,33 @@ class MockCollector(Collector):
         use_browser: bool = False,
         storage_state_path: str = "",
     ) -> list[EvidenceItem]:
-        if candidate.brand == "Zeiss":
-            return [
-                EvidenceItem(
-                    platform="Bilibili",
-                    url="https://www.bilibili.com/video/AV12345",
-                    author="UP_AV12345",
-                    locator="hot-comment-42",
-                    captured_at=CAPTURED_AT,
-                    excerpt="Wide open, the frame edge has obvious purple fringing in backlit scenes.",
-                    confidence=0.88,
-                ),
-                EvidenceItem(
-                    platform="Chiphell",
-                    url="https://www.chiphell.com/thread-8876-1-1.html#887",
-                    author="chiphell_floor_887",
-                    locator="floor-887",
-                    captured_at=CAPTURED_AT,
-                    excerpt="My copy has uneven focus ring damping, with a slight sticky spot near close focus.",
-                    confidence=0.84,
-                ),
-            ]
-        if candidate.brand == "Sony":
-            return [
-                EvidenceItem(
-                    platform="Reddit",
-                    url="https://www.reddit.com/r/SonyAlpha/comments/mock50gm/",
-                    author="field_user_50gm",
-                    locator="comment-c12",
-                    captured_at=CAPTURED_AT,
-                    excerpt="Autofocus is excellent, but the lens is front-heavy on smaller bodies.",
-                    confidence=0.79,
-                )
-            ]
+        del task_id, use_browser, storage_state_path
+        sku = candidate.sku
         return [
             EvidenceItem(
-                platform="YouTube",
-                url="https://www.youtube.com/watch?v=mock-sigma-50-art",
-                author="reviewer_sigma_art",
-                locator="caption-00:12:18",
+                platform="Forum",
+                url=f"https://example.invalid/mock/{sku}/forum",
+                author="mock_user",
+                locator="post-1",
                 captured_at=CAPTURED_AT,
-                excerpt="Strong center sharpness, but longitudinal CA is visible before stopping down.",
+                excerpt=(
+                    f"{sku}: occasional quality-control variation reported after extended daily use; "
+                    "not a universal defect but worth checking recent batches."
+                ),
+                confidence=0.84,
+            ),
+            EvidenceItem(
+                platform="Video",
+                url=f"https://example.invalid/mock/{sku}/review",
+                author="mock_reviewer",
+                locator="caption-03:12",
+                captured_at=CAPTURED_AT,
+                excerpt=(
+                    f"{sku}: performance is solid for the price, though ergonomics and battery "
+                    "endurance may disappoint power users."
+                ),
                 confidence=0.81,
-            )
+            ),
         ]
 
     def collect_prices(
@@ -153,19 +118,19 @@ class MockCollector(Collector):
         use_browser: bool = False,
         storage_state_path: str = "",
     ) -> list[PriceFinding]:
-        prices = {
-            "Zeiss": (5999, 500, 600, 0, 4899, "vault_output/mock_screenshots/zeiss_price.png"),
-            "Sony": (14999, 1200, 1800, 300, 11699, "vault_output/mock_screenshots/sony_price.png"),
-            "Sigma": (6499, 400, 700, 0, 5399, "vault_output/mock_screenshots/sigma_price.png"),
-        }
-        list_price, coupon, subsidy, cross_store, final, screenshot = prices[candidate.brand]
+        del task_id, use_browser, storage_state_path
+        index = abs(hash(candidate.sku)) % 3
+        list_price = 399.0 + index * 120
+        coupon = 30.0 + index * 10
+        subsidy = 20.0
+        final = list_price - coupon - subsidy
         evidence = EvidenceItem(
             platform="JD",
-            url=f"https://item.jd.com/mock-{candidate.brand.lower()}-50mm.html",
-            author="JD product page",
-            locator="price-panel-screenshot",
+            url=f"https://example.invalid/mock/{candidate.sku}/price",
+            author="mock marketplace",
+            locator="price-panel",
             captured_at=CAPTURED_AT,
-            excerpt=f"List {list_price}, coupon {coupon}, subsidy {subsidy}, cross-store {cross_store}, final {final}.",
+            excerpt=f"List {list_price}, coupon {coupon}, subsidy {subsidy}, final {final}.",
             confidence=0.86,
         )
         return [
@@ -174,10 +139,67 @@ class MockCollector(Collector):
                 list_price=list_price,
                 coupon_discount=coupon,
                 subsidy_discount=subsidy,
-                cross_store_discount=cross_store,
+                cross_store_discount=0.0,
                 final_price=final,
-                screenshot_path=screenshot,
+                screenshot_path="",
                 captured_at=CAPTURED_AT,
                 evidence=evidence,
             )
         ]
+
+
+def _mock_compare_labels(seed: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", seed.strip())
+    if not cleaned:
+        return ["Demo Product A", "Demo Product B", "Demo Product C"]
+    tokens = [
+        token
+        for token in re.findall(r"[\w\u4e00-\u9fff]+", cleaned)
+        if len(token) >= 2 and token.lower() not in _DISCOVER_STOP_WORDS
+    ]
+    core = cleaned[:120]
+    if len(tokens) >= 2:
+        short = " ".join(tokens[:3])[:120]
+        alt_a = f"{short} Pro"[:120]
+        alt_b = f"{short} Lite"[:120]
+        labels = [core, alt_a, alt_b]
+    else:
+        labels = [core, f"{core} (Alt A)"[:120], f"{core} (Alt B)"[:120]]
+    unique: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        key = label.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(label)
+    while len(unique) < 3:
+        unique.append(f"{core} Option {len(unique) + 1}"[:120])
+    return unique[:3]
+
+
+def _demo_values_for_slots(slots: list[str], sku: str) -> dict[str, str]:
+    seed = abs(hash(sku))
+    presets: dict[str, list[str]] = {
+        "connectivity_type": ["2.4 GHz + Bluetooth", "Bluetooth 5.3", "USB-C wired"],
+        "dpi_range": ["200–12000", "100–25600", "400–16000"],
+        "battery_life_estimate": ["70 h", "95 h", "120 h"],
+        "sensor_performance": ["HERO-class", "PAW3395", "Focus Pro 30K"],
+        "weight": ["63 g", "78 g", "92 g"],
+        "switch_type": ["Optical", "Mechanical tactile", "Hall-effect"],
+        "layout": ["75%", "TKL", "Full-size"],
+        "keycap_material": ["PBT double-shot", "ABS", "PBT dye-sub"],
+        "focal_length": ["50mm", "35mm", "85mm"],
+        "max_aperture": ["f/1.2", "f/1.4", "f/2"],
+        "mount": ["Sony E-mount", "Canon RF", "Nikon Z"],
+    }
+    values: dict[str, str] = {}
+    for index, slot in enumerate(slots):
+        options = presets.get(slot)
+        if options:
+            values[slot] = options[(seed + index) % len(options)]
+        elif slot.startswith("parameter_"):
+            values[slot] = f"demo-{slot}-{index + 1}"
+        else:
+            values[slot] = f"demo-{slot}"
+    return values

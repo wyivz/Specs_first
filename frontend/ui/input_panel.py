@@ -10,6 +10,7 @@ except ImportError as exc:  # pragma: no cover
 from frontend.api_client import get_api_client
 from frontend.event_listener import start_listener
 from frontend.state import reset_task_state
+from frontend.ui.health_panel import get_cached_health, real_mode_ready
 
 
 @dataclass
@@ -18,6 +19,7 @@ class RunSettings:
     use_browser: bool
     vault_path: str
     source_urls_text: str
+    advanced: bool
 
 
 @dataclass
@@ -51,6 +53,7 @@ def start_background_task(
     )
     reset_task_state(category, len(selected_skus or []))
     st.session_state["active_task_id"] = task_id
+    st.session_state["task_completed"] = False
     start_listener(task_id)
 
 
@@ -63,84 +66,113 @@ def resume_background_task(task_id: str) -> None:
     st.session_state.setdefault("total_steps", 1)
     st.session_state.pop("paused_task_id", None)
     st.session_state.pop("task_error", None)
+    st.session_state["task_completed"] = False
     start_listener(task_id)
 
 
+def render_onboarding_banner() -> None:
+    if st.session_state.get("onboarding_dismissed"):
+        return
+    st.markdown(
+        """
+<div class="sf-hero">
+  <h3>三步完成对比</h3>
+  <p>① 输入想对比的商品 → ② 搜索并勾选 SKU → ③ 查看实时矩阵与证据链</p>
+  <p>首次使用建议选 <strong>Mock 模式</strong>，无需 API Key 即可体验完整流程。</p>
+</div>
+        """.strip(),
+        unsafe_allow_html=True,
+    )
+    if st.button("知道了，不再显示", key="dismiss_onboarding"):
+        st.session_state["onboarding_dismissed"] = True
+        st.rerun()
+
+
 def render_sidebar_settings() -> RunSettings:
+    advanced = st.toggle("高级选项", value=st.session_state.get("advanced_mode", False), key="advanced_mode")
+
     st.header("运行配置")
-    mode = st.selectbox("Collector mode", ["mock", "real"], help="mock 使用内置演示 SKU；real 会联网抓取")
-    use_browser = st.checkbox(
-        "启用 Playwright 浏览器采集",
-        value=True,
-        help=(
-            "建议开启：淘宝弱页、YouTube PoToken、参数区截图兜底会用到。"
-            "不是每个 URL 的第一选择——京东价优先 mgets，淘宝有 Cookie 优先 mtop。"
-            "遇验证码会挂起任务；京东频控页不会弹 headed。"
-        ),
-    )
-    vault_path = st.text_input("Obsidian vault path", "vault_output")
-    source_urls_text = st.text_area(
-        "Source URLs（强烈建议 · 跑通保底）",
-        "",
-        placeholder="每行一个：京东商品 + 淘宝商品 + 评测 BV/YouTube",
-        help=(
-            "发现层依赖搜索时易空。跑通请至少贴：1 个 item.jd.com、1 个 detail.tmall/"
-            "item.taobao、1–2 个真实评测视频。验收：矩阵有槽 + 有价或规格 + 有证据即可，"
-            "不要求全平台全满。也可用 .env 的 OPTIONAL_SOURCE_URLS。"
-        ),
-    )
-    with st.expander("Real 跑通清单", expanded=False):
-        st.markdown(
-            """
-1. `.env`：Gemini + OpenAI；`JD_COOKIE`；淘宝 Cookie/`_m_h5_tk`；B 站三 Cookie  
-2. `python scripts/smoke_platforms.py --probe-gemini`  
-3. 上方贴商品/评测直链 → `real` + Playwright → 开始对比  
-4. 通过标准：JIT 槽位非空，且至少有价/规格/证据之一  
-            """.strip()
-        )
-    st.markdown("---")
-    st.markdown("**双脑模式**")
-    st.markdown("- **Gemini**：Phase 1/2/3 文本吞噬 + OCR")
-    st.markdown("- **OpenAI**：Phase 4 Structured Output 锁格式")
-    st.caption("未配置 API Key 时自动降级为关键词规则引擎。")
-
-    st.markdown("---")
-    st.markdown("**本地 ASR 转写（无字幕视频）**")
     try:
-        from collectors.asr import available_backend as _asr_backend
+        from collectors.settings import settings as collector_settings
 
-        _backend = _asr_backend()
+        default_mode = collector_settings.default_mode.strip().lower()
+        if default_mode not in {"mock", "real"}:
+            default_mode = "mock"
     except Exception:
-        _backend = None
-    if _backend:
-        st.caption(f"后端: {_backend}")
-        asr_url = st.text_input(
-            "视频 URL（YouTube / B 站）",
-            key="asr_url",
-            placeholder="https://www.youtube.com/watch?v=...",
+        default_mode = "mock"
+
+    mode_options = ["mock", "real"]
+    mode_labels = {"mock": "Mock · 离线演示", "real": "Real · 联网采集"}
+    mode = st.selectbox(
+        "运行模式",
+        mode_options,
+        index=mode_options.index(default_mode),
+        format_func=lambda x: mode_labels[x],
+        help="Mock 按查询生成演示数据；Real 需要 .env 凭证与 Cookie。",
+    )
+
+    if mode == "real":
+        ready, reason = real_mode_ready(get_cached_health())
+        if not ready:
+            st.error(reason)
+
+    use_browser = True
+    vault_path = "vault_output"
+    source_urls_text = ""
+
+    if advanced:
+        use_browser = st.checkbox(
+            "启用 Playwright 浏览器采集",
+            value=True,
+            help="淘宝弱页、YouTube、截图兜底会用到 Playwright。",
         )
-        asr_lang = st.selectbox("语言", ["auto", "zh", "en"], key="asr_lang")
-        if st.button("本地转写", use_container_width=True, key="asr_run"):
-            if asr_url:
-                with st.spinner(f"正在转写（{_backend}）…可能需要数分钟"):
-                    from pathlib import Path as _Path
+        vault_path = st.text_input("Obsidian vault path", "vault_output")
+        source_urls_text = st.text_area(
+            "Source URLs（Real 模式建议填写）",
+            "",
+            placeholder="每行一个：京东 / 淘宝 / 评测视频链接",
+        )
+        with st.expander("Real 跑通清单", expanded=False):
+            st.markdown(
+                """
+1. `.env`：Gemini + OpenAI；`JD_COOKIE`；淘宝 Cookie；B 站 Cookie
+2. `python scripts/smoke_platforms.py --probe-gemini`
+3. 填写商品/评测直链 → Real + Playwright → 开始对比
+                """.strip()
+            )
+        st.markdown("---")
+        st.markdown("**本地 ASR 转写**")
+        try:
+            from collectors.asr import available_backend as _asr_backend
 
-                    from collectors.asr import transcribe_url as _transcribe
+            _backend = _asr_backend()
+        except Exception:
+            _backend = None
+        if _backend:
+            st.caption(f"后端: {_backend}")
+            asr_url = st.text_input("视频 URL", key="asr_url", placeholder="https://...")
+            asr_lang = st.selectbox("语言", ["auto", "zh", "en"], key="asr_lang")
+            if st.button("本地转写", use_container_width=True, key="asr_run"):
+                if asr_url:
+                    with st.spinner("转写中…"):
+                        from pathlib import Path as _Path
 
-                    _result = _transcribe(asr_url, language=asr_lang, output_dir=_Path("vault_output/asr_cache"))
-                    if _result.ok:
-                        st.success(f"转写完成（{len(_result.text)} 字符，后端: {_result.backend}）")
-                        st.text_area("转写结果", _result.text, height=200)
-                    else:
-                        st.error(f"转写失败: {_result.error}")
-    else:
-        st.caption("未安装 ASR 后端，请安装 `funasr`（SenseVoice）或 `faster-whisper`")
+                        from collectors.asr import transcribe_url as _transcribe
+
+                        _result = _transcribe(asr_url, language=asr_lang, output_dir=_Path("vault_output/asr_cache"))
+                        if _result.ok:
+                            st.success(f"完成（{len(_result.text)} 字符）")
+                            st.text_area("转写结果", _result.text, height=160)
+                        else:
+                            st.error(_result.error)
+        else:
+            st.caption("安装 `funasr` 或 `faster-whisper` 后可本地转写")
 
     paused_task_id = st.session_state.get("paused_task_id")
     if paused_task_id:
         st.markdown("---")
-        st.warning(f"任务 `{paused_task_id}` 等待验证续传")
-        if st.button("续传任务", use_container_width=True):
+        st.warning(f"任务 `{paused_task_id[:8]}…` 等待续传")
+        if st.button("续传任务", type="primary", use_container_width=True):
             resume_background_task(paused_task_id)
             st.rerun()
 
@@ -149,52 +181,101 @@ def render_sidebar_settings() -> RunSettings:
         use_browser=use_browser,
         vault_path=vault_path,
         source_urls_text=source_urls_text,
+        advanced=advanced,
     )
+
+
+def _init_candidate_selection(candidates: list[dict]) -> None:
+    key = "selected_candidate_skus"
+    if key not in st.session_state or st.session_state.get("_candidates_version") != id(candidates):
+        defaults = [c["sku"] for c in candidates[:3]]
+        st.session_state[key] = defaults
+        st.session_state["_candidates_version"] = id(candidates)
+
+
+def _render_candidate_cards(candidates: list[dict]) -> list[str]:
+    _init_candidate_selection(candidates)
+    selected: set[str] = set(st.session_state.get("selected_candidate_skus", []))
+
+    for candidate in candidates:
+        sku = candidate["sku"]
+        picked = sku in selected
+        brand = candidate.get("brand") or "—"
+        url = candidate.get("source_url") or ""
+        confidence = float(candidate.get("confidence") or 0)
+        box_cols = st.columns([1, 6])
+        with box_cols[0]:
+            if st.checkbox("选", value=picked, key=f"cand_pick_{sku}", label_visibility="collapsed"):
+                selected.add(sku)
+            else:
+                selected.discard(sku)
+        with box_cols[1]:
+            st.markdown(
+                f'<div class="sf-candidate"><strong>{brand}</strong> · <code>{sku}</code>'
+                f'<br><span style="color:#94a3b8;font-size:0.82rem">置信度 {confidence:.0%}'
+                f'{" · " + url if url else ""}</span></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.session_state["selected_candidate_skus"] = list(selected)
+    return list(selected)
 
 
 def render_input_panel(settings: RunSettings) -> InputContext:
+    render_onboarding_banner()
     st.subheader("输入 · 对比意图")
-    query = st.text_input("想对比什么？", "无线机械键盘 75%")
+
+    query = st.text_input("想对比什么？", "罗技 G304 无线游戏鼠标")
     category = st.text_input(
-        "品类提示（可留空/填 Product；正式品类由大模型 JIT 建表）",
+        "品类提示（可选，JIT 建表时会自动识别）",
         "Product",
-        help="不再使用预设品类模板。有图时 Gemini 识图梳理 → ChatGPT 结构化输出 5–8 个对比硬指标；无 API 时回退通用 parameter_a…h。",
+        help="有图时 Gemini 识图 → ChatGPT 锁定 5–8 个对比硬指标。",
     )
+
+    if query.strip() != st.session_state.get("discover_query", "") and st.session_state.get("candidates"):
+        st.session_state["candidates"] = []
+
     try:
         from schemas.category_profile import infer_category
 
         _hint = infer_category(query, category)
-        st.caption(f"建表前提示标签：**{_hint}** · 开始对比后会生成动态品类 Schema（槽位 + 对比关键词）")
+        st.caption(f"建表前提示：**{_hint}**")
     except Exception:
         pass
 
     col_discover, col_run = st.columns(2)
     with col_discover:
-        discover_clicked = st.button("Phase 0 · 发现候选 SKU", use_container_width=True)
+        discover_clicked = st.button("🔍 搜索候选 SKU", use_container_width=True)
     with col_run:
-        run_clicked = st.button("开始对比", type="primary", use_container_width=True)
-
-    selected_skus: list[str] = []
-    if st.session_state["candidates"]:
-        st.markdown("**勾选要对比的 SKU**")
-        options = [candidate["sku"] for candidate in st.session_state["candidates"]]
-        default = options[:3]
-        selected_skus = st.multiselect("Selected SKUs", options, default=default, label_visibility="collapsed")
-    else:
-        st.info(
-            "可直接点击「开始对比」：mock 跑演示；real 按查询/勾选 SKU **自动搜索**证据与价格"
-            "（侧边栏 Source URLs 可选，用于定点补充）。也可先「发现候选 SKU」再勾选。"
-        )
+        run_label = "▶ 开始对比（Mock 演示）" if settings.mode == "mock" else "▶ 开始对比（Real）"
+        run_clicked = st.button(run_label, type="primary", use_container_width=True)
 
     if discover_clicked:
         source_urls = [line.strip() for line in settings.source_urls_text.splitlines() if line.strip()]
-        st.session_state["candidates"] = get_api_client().discover(
+        discovered = get_api_client().discover(
             query=query,
             category=category,
             mode=settings.mode,
             source_urls=source_urls,
         )[:10]
+        st.session_state["candidates"] = discovered
+        st.session_state["discover_query"] = query.strip()
+        st.session_state["discover_mode"] = settings.mode
         st.session_state.pop("result", None)
+        st.session_state.pop("_candidates_version", None)
+        if discovered:
+            st.success(f"找到 {len(discovered)} 个候选，请勾选后点击开始对比。")
+        else:
+            st.warning("未发现候选。可换关键词、切 Mock，或在高级选项中填写 Source URLs。")
+
+    selected_skus: list[str] = []
+    if st.session_state["candidates"]:
+        discover_mode = st.session_state.get("discover_mode", settings.mode)
+        discover_query = st.session_state.get("discover_query", query)
+        st.markdown(f"**候选 SKU** · {discover_mode} · 「{discover_query}」")
+        selected_skus = _render_candidate_cards(st.session_state["candidates"])
+    else:
+        st.info("可直接「开始对比」，或先「搜索候选 SKU」再勾选。")
 
     return InputContext(
         query=query,
@@ -209,6 +290,13 @@ def render_input_panel(settings: RunSettings) -> InputContext:
 def handle_run_action(ctx: InputContext) -> None:
     if not ctx.run_clicked:
         return
+
+    if ctx.settings.mode == "real":
+        ready, reason = real_mode_ready(get_cached_health())
+        if not ready:
+            st.error(reason)
+            return
+
     source_urls = [line.strip() for line in ctx.settings.source_urls_text.splitlines() if line.strip()]
     start_background_task(
         query=ctx.query,

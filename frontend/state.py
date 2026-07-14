@@ -15,6 +15,9 @@ def init_session_state() -> None:
         "events_log": [],
         "diagnostics": [],
         "total_steps": 1,
+        "onboarding_dismissed": False,
+        "advanced_mode": False,
+        "task_completed": False,
         "progress_info": {
             "sku": "",
             "sku_index": 0,
