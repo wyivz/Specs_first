@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 from backend.config import settings
@@ -117,10 +117,23 @@ def extract_response_text(response: Any) -> str:
 class GeminiClient:
     """Thin wrapper around google-genai for Gemini 3.x production defaults."""
 
-    def _new_client(self) -> Any:
-        from google import genai
+    _sdk_client: Any | None = field(default=None, init=False, repr=False)
 
-        return genai.Client(api_key=settings.gemini_api_key)
+    def client(self) -> Any:
+        if self._sdk_client is None:
+            from google import genai
+
+            self._sdk_client = genai.Client(api_key=settings.gemini_api_key)
+        return self._sdk_client
+
+    def close(self) -> None:
+        sdk = self._sdk_client
+        self._sdk_client = None
+        if sdk is None:
+            return
+        close = getattr(sdk, "close", None)
+        if callable(close):
+            close()
 
     def generate_text(
         self,
@@ -137,7 +150,7 @@ class GeminiClient:
             config["system_instruction"] = system_instruction
         if cached_content:
             config["cached_content"] = cached_content
-        response = self._new_client().models.generate_content(
+        response = self.client().models.generate_content(
             model=resolved,
             contents=contents,
             config=config,
@@ -153,7 +166,7 @@ class GeminiClient:
     ) -> str:
         resolved = resolve_gemini_model(model)
         config = build_generation_config(task, resolved)
-        response = self._new_client().models.generate_content(
+        response = self.client().models.generate_content(
             model=resolved,
             contents=parts,
             config=config,
@@ -180,7 +193,7 @@ class GeminiClient:
         client = None
         cache_name = ""
         try:
-            client = self._new_client()
+            client = self.client()
             cache = client.caches.create(
                 model=resolved,
                 config={

@@ -77,8 +77,8 @@ class ModelRouterTest(unittest.TestCase):
         router = HybridModelRouter.__new__(HybridModelRouter)
         boosted = dataclasses.replace(settings, gemini_context_cache_min_chars=10, gemini_api_key="fake-key")
         with patch("backend.gemini_client.settings", boosted):
-            with patch("backend.gemini_client.GeminiClient._new_client") as new_client:
-                new_client.return_value.caches.create.side_effect = RuntimeError("cache unavailable")
+            with patch("backend.gemini_client.GeminiClient.client") as client_method:
+                client_method.return_value.caches.create.side_effect = RuntimeError("cache unavailable")
                 with router._gemini_cached_content("x" * 100, "system") as cache_name:
                     self.assertIsNone(cache_name)
 
