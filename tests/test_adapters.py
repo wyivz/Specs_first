@@ -103,6 +103,20 @@ class AdapterTest(unittest.TestCase):
         )
         self.assertTrue(any("fringing" in item.lower() for item in selected))
 
+    def test_jd_rejects_sku_fragment_and_tiny_final_price(self) -> None:
+        adapter = JdAdapter()
+        sku = "100010708487"
+        markup = (
+            f"<div>商品编号 {sku}</div>"
+            '<script>{"price":"8487","finalPrice":"1"}</script>'
+            "<span>京东价 8487</span>"
+        )
+        parsed = adapter.extract_price(markup, sku_id=sku)
+        self.assertIsNone(parsed)
+
+        finding = adapter.build_price_finding(f"https://item.jd.com/{sku}.html", markup)
+        self.assertIsNone(finding)
+
     def test_jd_extracts_script_price(self) -> None:
         adapter = JdAdapter()
         markup = '<script>{"price":"4899","finalPrice":"4599"}</script><div>到手价 4599 元</div>'

@@ -10,6 +10,7 @@ __pycache__/
 dist/
 build/
 vault_output/
+.tmp/
 .cursor/
 # Local agent handoff notes — keep private, do not publish
 HANDOFF.md

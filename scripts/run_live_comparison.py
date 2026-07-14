@@ -50,9 +50,9 @@ MODEL_MODE = os.getenv("LIVE_MODEL_MODE", "").strip() or None
 def _preflight() -> None:
     missing: list[str] = []
     try:
-        import google.generativeai  # noqa: F401
+        import google.genai  # noqa: F401
     except ImportError:
-        missing.append("google-generativeai")
+        missing.append("google-genai")
     try:
         import openai  # noqa: F401
     except ImportError:
