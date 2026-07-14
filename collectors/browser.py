@@ -23,15 +23,26 @@ TAOBAO_HOSTS = ("taobao.com", "tmall.com")
 
 
 def _launch_browser(playwright, *, headless: bool, prefer_system_browser: bool = False):
-    """Launch Playwright browser; headed captcha flow prefers installed Chrome/Edge."""
+    """Launch Playwright browser; fall back to installed Chrome/Edge when bundled missing."""
     launch_kwargs: dict = {"headless": headless}
-    if prefer_system_browser:
+    # Headed captcha prefers system browser; headless also tries system channels when
+    # the sandbox Playwright cache path changes and chromium_headless_shell is gone.
+    channels: tuple[str, ...] = ("chrome", "msedge") if prefer_system_browser or headless else ()
+    for channel in channels:
+        try:
+            return playwright.chromium.launch(channel=channel, **launch_kwargs)
+        except Exception:
+            continue
+    try:
+        return playwright.chromium.launch(**launch_kwargs)
+    except Exception:
+        # Last resort: system browser even if caller did not request it.
         for channel in ("chrome", "msedge"):
             try:
                 return playwright.chromium.launch(channel=channel, **launch_kwargs)
             except Exception:
                 continue
-    return playwright.chromium.launch(**launch_kwargs)
+        raise
 
 
 def _headed_captcha_viewport(url: str, slice_height: int) -> tuple[str, dict]:
