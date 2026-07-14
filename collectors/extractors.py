@@ -128,6 +128,9 @@ def now_iso() -> str:
 
 
 def infer_brand(title_or_query: str) -> str:
+    compact = re.sub(r"[^a-z0-9]", "", (title_or_query or "").lower())
+    if compact.startswith("sel") and re.match(r"^sel\d+", compact):
+        return "Sony"
     brands = [
         "Apple",
         "Samsung",
@@ -404,18 +407,106 @@ def extract_desc_api_urls(markup: str, base_url: str = "") -> list[str]:
 
 
 def infer_specs_from_sku(candidate: ProductCandidate) -> list[OfficialSpec]:
-    """Keyword fallback only — no category-specific SKU parsing."""
-    return []
+    """Deterministic fallback when page extraction is thin (Sony SEL codes)."""
+    compact = re.sub(r"[^a-z0-9]", "", (candidate.sku or "").lower())
+    match = _SONY_SEL_RE.match(compact)
+    if not match:
+        return []
+    focal, aperture_raw, grade = match.group(1), match.group(2), (match.group(3) or "").lower()
+    if len(aperture_raw) == 2 and aperture_raw[0] in "12":
+        aperture = f"{aperture_raw[0]}.{aperture_raw[1]}"
+    else:
+        aperture = aperture_raw
+    source_url = candidate.source_url or ""
+    specs = [
+        OfficialSpec(name="focal_length", value=f"{focal}mm", unit="", source_url=source_url),
+        OfficialSpec(name="max_aperture", value=f"f/{aperture}", unit="", source_url=source_url),
+        OfficialSpec(name="mount", value="Sony E-mount", unit="", source_url=source_url),
+    ]
+    if grade:
+        specs.append(OfficialSpec(name="product_line", value=grade.upper(), unit="", source_url=source_url))
+    return specs
+
+
+_FORUM_CHROME_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"积分\s*\d+"),
+    re.compile(r"当前离线"),
+    re.compile(r"回复\s*举报"),
+    re.compile(r"只看该作者"),
+    re.compile(r"发表于\s*\d{4}-\d"),
+    re.compile(r"#\s*\d+\s*\|"),
+    re.compile(r"楼主\s*\|"),
+    re.compile(r"积分\s+\d+"),
+)
+_FORUM_CHROME_MARKERS: tuple[str, ...] = (
+    "积分",
+    "回复",
+    "举报",
+    "当前离线",
+    "只看该作者",
+    "发表于",
+)
+
+
+def clean_evidence_excerpt(text: str) -> str:
+    cleaned = text or ""
+    for pattern in _FORUM_CHROME_PATTERNS:
+        cleaned = pattern.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def forum_chrome_ratio(text: str) -> float:
+    if not text:
+        return 0.0
+    hits = sum(1 for marker in _FORUM_CHROME_MARKERS if marker in text)
+    return hits / len(_FORUM_CHROME_MARKERS)
+
+
+def evidence_conflicts_with_sku(sku: str, *texts: str) -> bool:
+    if not sku or not sku.strip():
+        return False
+    blob = " ".join(part for part in texts if part).lower()
+    if not blob.strip():
+        return False
+    compact_sku = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", sku.lower())
+    compact_blob = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", blob)
+    if len(compact_sku) >= 5 and compact_sku in compact_blob:
+        return False
+    if not _SONY_SEL_RE.match(compact_sku):
+        return False
+    has_sony = any(token in blob for token in ("sony", "索尼", "fe ", "fe-"))
+    if has_sony:
+        return False
+    competitor_markers = (
+        "canon",
+        "nikon",
+        "sigma",
+        "tamron",
+        "leica",
+        "fujifilm",
+        "富士",
+        " rf ",
+        "canon rf",
+        "ef 50",
+        "ef50",
+        "z 50",
+        "z50",
+    )
+    return any(marker in blob for marker in competitor_markers)
 
 
 def build_evidence(platform: str, url: str, author: str, locator: str, excerpt: str, confidence: float) -> EvidenceItem:
+    cleaned = clean_evidence_excerpt(excerpt)
+    if forum_chrome_ratio(cleaned) >= 0.45:
+        cleaned = ""
     return EvidenceItem(
         platform=platform,
         url=url,
         author=author,
         locator=locator,
         captured_at=now_iso(),
-        excerpt=clip(excerpt, 420),
+        excerpt=clip(cleaned or excerpt, 420),
         confidence=confidence,
     )
 
@@ -508,6 +599,8 @@ def evidence_mentions_sku(sku: str, *texts: str) -> bool:
     """True when text clearly refers to the target SKU / model code."""
     if not sku or not sku.strip():
         return True
+    if evidence_conflicts_with_sku(sku, *texts):
+        return False
     blob = " ".join(part for part in texts if part).lower()
     if not blob.strip():
         return False
@@ -526,6 +619,9 @@ def evidence_mentions_sku(sku: str, *texts: str) -> bool:
             alias_hits = sum(1 for alias in aliases if alias in blob or alias.replace(" ", "") in compact_blob)
             strong = [a for a in aliases if "mm" in a and ("f/" in a or "f1" in a or "f2" in a)]
             if any(item in blob or item.replace(" ", "") in compact_blob for item in strong):
+                if _SONY_SEL_RE.match(compact_sku):
+                    if not any(token in blob for token in ("sony", "索尼", "fe ", "fe-")):
+                        return False
                 return True
             if alias_hits >= 3:
                 return True
@@ -585,8 +681,10 @@ def evidence_from_page(
             continue
         start = max(0, match.start() - 180)
         end = min(len(text), match.end() + 220)
-        excerpt = text[start:end]
+        excerpt = clean_evidence_excerpt(text[start:end])
         if len(excerpt.strip()) < 24:
+            continue
+        if forum_chrome_ratio(excerpt) >= 0.5:
             continue
         evidence.append(
             build_evidence(

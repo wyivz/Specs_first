@@ -7,6 +7,7 @@ from collectors.extractors import (
     evidence_from_page,
     evidence_from_search_result,
     evidence_mentions_sku,
+    page_matches_sku,
 )
 from collectors.http import HttpClient, SearchResult
 from collectors.resilient_fetch import ResilientFetcher
@@ -19,7 +20,7 @@ from schemas.category_profile import (
 
 
 class ForumSourceCollector:
-    _PROVISIONAL_FETCH_LIMIT = 2
+    _PROVISIONAL_FETCH_LIMIT = 1
 
     def __init__(
         self,
@@ -127,7 +128,30 @@ class ForumSourceCollector:
                     storage_state_path=storage_state_path,
                     sku=candidate.sku,
                 )
+                if page.page.is_blocked:
+                    self.diagnostics.record(
+                        platform,
+                        f"skip blocked forum page: {result.url} ({page.page.blockers})",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    continue
                 if page.ok or page.markup:
+                    page_title = getattr(page.page, "title", "") or ""
+                    page_text = getattr(page.page, "text", "") or ""
+                    if not page_matches_sku(
+                        candidate.sku,
+                        title=page_title,
+                        text=page_text,
+                        url=page.url,
+                    ):
+                        self.diagnostics.record(
+                            platform,
+                            f"skip page that does not match target sku: {result.url}",
+                            level="info",
+                            sku=candidate.sku,
+                        )
+                        continue
                     evidence.extend(
                         evidence_from_page(
                             platform,

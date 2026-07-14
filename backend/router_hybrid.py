@@ -102,17 +102,28 @@ class HybridModelRouter(KeywordModelRouter):
         source_url: str,
         category: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
+        gemini_specs: list[OfficialSpec] = []
+        gemini_highlights: list[str] = []
         if settings.has_gemini and text.strip():
             try:
-                specs, highlights = self._run_with_timeout(
+                gemini_specs, gemini_highlights = self._run_with_timeout(
                     lambda: self._gemini_extract_official_specs(sku, text, source_url, category)
                 )
-                if specs:
-                    return self._normalize_specs(specs, category), highlights
+                gemini_specs = self._normalize_specs(gemini_specs, category)
             except Exception:
-                pass
+                gemini_specs = []
+                gemini_highlights = []
         self._keyword.set_category_profile(self.category_profile)
-        return self._keyword.extract_official_specs_from_text(sku, text, source_url, category)
+        keyword_specs, keyword_highlights = self._keyword.extract_official_specs_from_text(
+            sku, text, source_url, category
+        )
+        merged: dict[str, OfficialSpec] = {spec.name: spec for spec in keyword_specs}
+        for spec in gemini_specs:
+            merged[spec.name] = spec
+        highlights = list(dict.fromkeys([*gemini_highlights, *keyword_highlights]))[:5]
+        if merged:
+            return list(merged.values()), highlights
+        return keyword_specs, keyword_highlights
 
     def extract_real_world_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
         if not corpus:
@@ -385,9 +396,9 @@ class HybridModelRouter(KeywordModelRouter):
             '{"specs":[{"name":"snake_case_parameter_name","value":"","unit":""}],'
             '"highlights":["unique feature"]}. '
             f"Prefer these canonical snake_case field names when the source text covers them: {', '.join(slots)}. "
+            "Put values for those slots in specs[], not highlights[]. "
             "For any other factual attribute present in the text that doesn't fit those names, "
             "invent a concise snake_case name instead of dropping it. "
-            "Attributes unique to this SKU that don't belong as a comparison column go into 'highlights' instead. "
             "Include only factual values present in the text."
         )
 
@@ -423,13 +434,22 @@ class HybridModelRouter(KeywordModelRouter):
         return specs, highlights[:5]
 
     def _gemini_extract_findings(self, sku: str, corpus: list[EvidenceItem]) -> list[RealWorldFinding]:
+        from collectors.extractors import forum_chrome_ratio
+
+        filtered_corpus = [
+            item
+            for item in corpus
+            if forum_chrome_ratio(item.excerpt) < 0.45 and len((item.excerpt or "").strip()) >= 24
+        ]
+        working_corpus = filtered_corpus or corpus
         corpus_text = "\n\n".join(
             f"[{index}] platform={item.platform} author={item.author} url={item.url}\n{item.excerpt}"
-            for index, item in enumerate(corpus)
+            for index, item in enumerate(working_corpus)
         )
         system_instruction = (
             "You are a harsh product QA reviewer. Discard marketing fluff and subjective praise; "
-            "extract only evidence-backed real-world flaws from the provided corpus."
+            "extract only evidence-backed real-world flaws from the provided corpus. "
+            "Ignore forum UI metadata such as 积分, 回复, 举报, 当前离线, 只看该作者."
         )
         instruction = (
             f"Review the cached corpus for {sku}. "
@@ -459,16 +479,20 @@ class HybridModelRouter(KeywordModelRouter):
         findings: list[RealWorldFinding] = []
         for item in payload.get("findings", []):
             index = int(item.get("evidence_index", -1))
-            if index < 0 or index >= len(corpus):
+            if index < 0 or index >= len(working_corpus):
+                continue
+            source = working_corpus[index]
+            detail = str(item.get("detail", "")).strip() or source.excerpt
+            if forum_chrome_ratio(detail) >= 0.45:
                 continue
             findings.append(
                 RealWorldFinding(
                     title=str(item.get("title", "Real-world issue")).strip(),
-                    detail=str(item.get("detail", "")).strip() or corpus[index].excerpt,
+                    detail=detail,
                     condition=str(item.get("condition", "unspecified")).strip(),
                     frequency=str(item.get("frequency", "field report")).strip(),
                     severity=ConflictLevel(str(item.get("severity", "minor"))),
-                    evidence=[corpus[index]],
+                    evidence=[source],
                 )
             )
         return findings

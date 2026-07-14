@@ -104,7 +104,7 @@ def sanitize_html(url: str, markup: str) -> SanitizedPage:
     title = extract_title(markup)
     meta_description = _extract_meta_description(markup)
     json_ld = extract_json_ld_objects(markup)
-    text = extract_readable_text(markup)
+    text = extract_readable_text(markup, url=url)
     blockers = detect_page_blockers(url, markup, text, title)
     return SanitizedPage(
         url=url,
@@ -116,7 +116,28 @@ def sanitize_html(url: str, markup: str) -> SanitizedPage:
     )
 
 
-def extract_readable_text(markup: str) -> str:
+def extract_forum_post_text(markup: str) -> str:
+    """Extract Discuz-style post bodies (Chiphell etc.), skipping per-post chrome."""
+    chunks: list[str] = []
+    patterns = (
+        r'postmessage_\d+["\'][^>]*>([^<]{40,})<',
+        r'\bt_f\b[^>]*>([^<]{40,})<',
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, markup, re.I | re.S):
+            body = normalize_whitespace(strip_tags(match.group(1)))
+            if len(body) >= 40:
+                chunks.append(body)
+    if not chunks:
+        return ""
+    return normalize_whitespace(" ".join(dict.fromkeys(chunks)))
+
+
+def extract_readable_text(markup: str, url: str = "") -> str:
+    if "chiphell" in (url or "").lower():
+        focused = extract_forum_post_text(markup)
+        if len(focused) >= 200:
+            return _strip_css_noise(focused)
     from collectors.http import TextExtractor
 
     class ReadableExtractor(TextExtractor):

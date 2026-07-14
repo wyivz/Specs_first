@@ -233,6 +233,58 @@ class EvidenceRelevanceAndSpecQualityTest(unittest.TestCase):
         }
         self.assertEqual(specs2.get("max_aperture"), "f/1.2")
 
+    def test_rejects_competitor_lens_without_sony_context(self) -> None:
+        self.assertFalse(
+            evidence_mentions_sku(
+                "SEL50F12GM",
+                "Canon RF 50mm f/1.2L USM review photography life",
+            )
+        )
+
+    def test_infer_specs_from_sony_sel_code(self) -> None:
+        from collectors.extractors import infer_specs_from_sku
+        from schemas import ProductCandidate
+
+        specs = infer_specs_from_sku(
+            ProductCandidate(
+                sku="SEL50F12GM",
+                brand="Sony",
+                category="Lens",
+                source_url="https://www.sony.com/",
+                confidence=0.5,
+            )
+        )
+        names = {spec.name for spec in specs}
+        self.assertIn("focal_length", names)
+        self.assertIn("max_aperture", names)
+        self.assertIn("mount", names)
+
+    def test_clean_evidence_excerpt_strips_forum_chrome(self) -> None:
+        from collectors.extractors import clean_evidence_excerpt
+
+        raw = "积分 464159 当前离线 回复 举报 全开1.2边缘对焦不准"
+        cleaned = clean_evidence_excerpt(raw)
+        self.assertNotIn("积分", cleaned)
+        self.assertNotIn("回复", cleaned)
+        self.assertIn("边缘对焦", cleaned)
+
+    def test_chiphell_post_extractor_prefers_post_body(self) -> None:
+        from collectors.page_sanitize import extract_forum_post_text, sanitize_html
+
+        markup = (
+            "<html><body>"
+            '<div class="pls">积分 999 当前离线</div>'
+            '<td id="postmessage_123" class="t_f">'
+            "SEL50F12GM wide open edge AF is unreliable in low light and backlight."
+            "</td>"
+            "</body></html>"
+        )
+        focused = extract_forum_post_text(markup)
+        self.assertIn("edge AF", focused)
+        self.assertNotIn("积分 999", focused)
+        page = sanitize_html("https://www.chiphell.com/thread-1-1.html", markup)
+        self.assertIn("edge AF", page.text)
+
 
 if __name__ == "__main__":
     unittest.main()

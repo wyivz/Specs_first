@@ -8,6 +8,25 @@ from typing import Any
 # Generic evaluation slots used when no JIT profile is available (no LLM / failure).
 GENERIC_PARAMETER_SLOTS = tuple(f"parameter_{chr(ord('a') + index)}" for index in range(8))
 
+# Cross-profile synonyms so extracted labels align with JIT slots.
+BUILTIN_SPEC_SLOT_MAP: dict[str, str] = {
+    "maximum_aperture": "max_aperture",
+    "maximum_aperture_f": "max_aperture",
+    "max_aperture_f": "max_aperture",
+    "aperture": "max_aperture",
+    "lens_mount": "mount",
+    "mount_type": "mount",
+    "minimum_focus_distance": "min_focus_distance",
+    "min_focus": "min_focus_distance",
+    "closest_focus": "min_focus_distance",
+    "focal_length_mm": "focal_length",
+    "filter_size": "filter_diameter",
+    "lens_weight": "weight",
+    "product_weight": "weight",
+    "image_stabilisation": "image_stabilization",
+    "stabilization": "image_stabilization",
+}
+
 
 def slugify_spec_name(label: str) -> str:
     cleaned = re.sub(r"\s+", " ", label.strip().lower())
@@ -159,16 +178,34 @@ def normalize_spec_name(
 ) -> str:
     """Normalize an extracted spec label onto a canonical column name."""
     del category
+    lowered = label.strip().lower()
     if profile and profile.aliases:
-        lowered = label.strip().lower()
-        # Prefer longer aliases first so "battery capacity" beats "battery".
         for alias, canonical in sorted(profile.aliases.items(), key=lambda item: -len(item[0])):
             if alias in lowered:
                 return canonical
-        slug = slugify_spec_name(label)
-        if slug in profile.slots:
-            return slug
-    return slugify_spec_name(label)
+    slug = slugify_spec_name(label)
+    if profile and slug in profile.slots:
+        return slug
+    mapped = BUILTIN_SPEC_SLOT_MAP.get(slug, slug)
+    if profile and mapped in profile.slots:
+        return mapped
+    return mapped
+
+
+def map_spec_name_to_slot(
+    label: str,
+    category: str = "",
+    profile: DynamicCategoryProfile | None = None,
+) -> str:
+    """Map a raw extracted label onto the best profile slot when possible."""
+    normalized = normalize_spec_name(label, category, profile=profile)
+    if profile and normalized in profile.slots:
+        return normalized
+    if normalized in BUILTIN_SPEC_SLOT_MAP.values() and profile:
+        for slot in profile.slots:
+            if slot == normalized or BUILTIN_SPEC_SLOT_MAP.get(slot) == normalized:
+                return slot
+    return normalized
 
 
 def _append_modifiers(base: str, modifiers: list[str] | None) -> str:
@@ -241,8 +278,6 @@ def rank_search_results_for_reviews(results: list, sku: str = "") -> list:
         if sku:
             if evidence_mentions_sku(sku, title, snippet, url):
                 sku_score = 20
-            elif model and model in re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", text):
-                sku_score = 12
         review_hits = sum(1 for token in _REVIEW_RANK_TOKENS if token.lower() in text)
         return (-sku_score, -review_hits, index)
 
@@ -258,20 +293,24 @@ def forum_search_queries(
     from collectors.extractors import sku_search_phrase
 
     phrase = sku_search_phrase(sku)
+    compact = re.sub(r"[^a-z0-9]", "", (sku or "").lower())
+    brand_hint = ""
+    exclude_hint = ""
+    if re.match(r"^sel\d+", compact):
+        brand_hint = "Sony FE"
+        exclude_hint = "-Canon -RF -Nikon -Sigma"
+    chiphell_query = f"{phrase} {brand_hint} site:chiphell.com 缺点 品控 翻车 问题 体验 {exclude_hint}".strip()
     queries: list[tuple[str, str]] = [
-        (
-            "Chiphell",
-            _append_modifiers(f"{phrase} site:chiphell.com 缺点 品控 翻车 问题 体验", modifiers),
-        ),
+        ("Chiphell", _append_modifiers(chiphell_query, modifiers)),
     ]
     if include_reddit:
+        reddit_query = (
+            f"{phrase} {brand_hint} site:reddit.com/r/SonyAlpha defect issue quality problem review {exclude_hint}"
+        ).strip()
         queries.append(
             (
                 "Reddit",
-                _append_modifiers(
-                    f"{phrase} site:reddit.com defect issue quality problem review",
-                    modifiers,
-                ),
+                _append_modifiers(reddit_query, modifiers),
             )
         )
     return queries

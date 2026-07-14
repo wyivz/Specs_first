@@ -4,7 +4,7 @@ from collectors.adapters.bilibili import BilibiliAdapter
 from collectors.adapters.registry import AdapterRegistry, create_default_registry
 from collectors.adapters.youtube import YouTubeAdapter
 from collectors.diagnostics import CollectorDiagnostics
-from collectors.extractors import dedupe_evidence, evidence_from_page, evidence_from_search_result, evidence_mentions_sku
+from collectors.extractors import dedupe_evidence, evidence_from_page, evidence_from_search_result, evidence_mentions_sku, page_matches_sku
 from collectors.http import HttpClient, SearchResult
 from collectors.platform_auth import PlatformAuthRequired
 from collectors.resilient_fetch import ResilientFetcher
@@ -120,7 +120,36 @@ class VideoSourceCollector:
                     storage_state_path=storage_state_path,
                     sku=candidate.sku,
                 )
+                if page.page.is_blocked:
+                    self.diagnostics.record(
+                        platform,
+                        f"skip blocked video page: {result.url} ({page.page.blockers})",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    try:
+                        adapter = self.registry.for_url(result.url)
+                        if adapter is not None and hasattr(adapter, "collect_api_evidence"):
+                            evidence.extend(adapter.collect_api_evidence(result.url, sku=candidate.sku))  # type: ignore[call-arg]
+                    except (PlatformAuthRequired, TypeError):
+                        pass
+                    continue
                 if page.ok or page.markup:
+                    page_title = getattr(page.page, "title", "") or ""
+                    page_text = getattr(page.page, "text", "") or ""
+                    if not page_matches_sku(
+                        candidate.sku,
+                        title=page_title,
+                        text=page_text,
+                        url=page.url,
+                    ):
+                        self.diagnostics.record(
+                            platform,
+                            f"skip video page that does not match target sku: {result.url}",
+                            level="info",
+                            sku=candidate.sku,
+                        )
+                        continue
                     try:
                         adapter = self.registry.for_url(page.url)
                         if adapter is not None and hasattr(adapter, "extract_evidence"):

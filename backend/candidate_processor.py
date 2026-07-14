@@ -8,7 +8,7 @@ from collectors.base import Collector
 from collectors.browser import BrowserAuthRequired
 from collectors.platform_auth import PlatformAuthRequired
 from schemas import OfficialSpec, ProductAsset, ProductCandidate, TaskState, to_dict
-from schemas.category_profile import DynamicCategoryProfile, canonical_slots, normalize_spec_name
+from schemas.category_profile import DynamicCategoryProfile, canonical_slots, map_spec_name_to_slot, normalize_spec_name
 from schemas.serialize import finding_from_dict, official_spec_from_dict
 
 
@@ -139,11 +139,12 @@ class CandidateProcessor:
     ) -> tuple[list[OfficialSpec], list[str]]:
         profile = self.category_profile
         slots = set(canonical_slots(category, profile=profile))
+        is_generic = not profile or profile.source == "generic"
         aligned: list[OfficialSpec] = []
         seen: set[str] = set()
         extra_highlights = list(highlights)
         for spec in official_specs:
-            name = normalize_spec_name(spec.name, category, profile=profile)
+            name = map_spec_name_to_slot(spec.name, category, profile=profile)
             if name in seen:
                 continue
             seen.add(name)
@@ -156,10 +157,30 @@ class CandidateProcessor:
                         source_url=spec.source_url,
                     )
                 )
-            else:
+            elif not is_generic and name not in slots:
                 tip = f"{name}: {spec.value}".strip(": ")
                 if tip and tip not in extra_highlights and len(extra_highlights) < 12:
                     extra_highlights.append(tip)
+            else:
+                aligned.append(
+                    OfficialSpec(
+                        name=name,
+                        value=spec.value,
+                        unit=spec.unit,
+                        source_url=spec.source_url,
+                    )
+                )
+        if not aligned and official_specs:
+            for spec in official_specs:
+                name = map_spec_name_to_slot(spec.name, category, profile=profile)
+                aligned.append(
+                    OfficialSpec(
+                        name=name,
+                        value=spec.value,
+                        unit=spec.unit,
+                        source_url=spec.source_url,
+                    )
+                )
         return aligned, extra_highlights[:12]
 
     def _emit_phase(self, candidate: ProductCandidate, *, phase: int) -> None:
