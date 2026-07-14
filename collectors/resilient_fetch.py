@@ -55,6 +55,7 @@ class ResilientFetcher:
         storage_state_path: str = "",
         sku: str = "",
         min_chars: int = 80,
+        force_browser: bool = False,
     ) -> PageSnapshot:
         if self.trace:
             self.trace.log("fetch", f"start url={url} strategy={strategy_for_url(url).mode}", sku=sku)
@@ -68,8 +69,28 @@ class ResilientFetcher:
             )
 
         strategy = strategy_for_url(url)
+        if force_browser and use_browser and self.browser is not None:
+            try:
+                browser_snapshot = self._fetch_browser(
+                    url,
+                    task_id=task_id,
+                    storage_state_path=storage_state_path,
+                    sku=sku,
+                )
+                self._log_snapshot(browser_snapshot, sku=sku)
+                return browser_snapshot
+            except BrowserAuthRequired:
+                raise
+            except Exception as exc:
+                self.diagnostics.record(
+                    "fetch",
+                    f"forced browser fetch failed for {url}: {exc}",
+                    level="warning",
+                    sku=sku,
+                )
+
         http_snapshot = self._fetch_http(url)
-        needs_escalation = self._needs_browser_escalation(http_snapshot, strategy)
+        needs_escalation = self._needs_browser_escalation(http_snapshot, strategy, requested_url=url)
 
         # Hard HTTP-only when caller disables browser (CLI live / checkbox off).
         # Previously browser_first sites and weak pages still escalated to Playwright
@@ -87,21 +108,21 @@ class ResilientFetcher:
             self._log_snapshot(http_snapshot, sku=sku)
             return http_snapshot
 
-        force_browser = strategy.mode == "browser_first"
+        force_browser_escalation = strategy.mode == "browser_first" or needs_escalation
         if strategy.mode == "api_first":
-            force_browser = False
+            force_browser_escalation = needs_escalation
         if http_snapshot.ok and not needs_escalation:
             self._log_snapshot(http_snapshot, sku=sku)
             return http_snapshot
         if needs_escalation and self.browser is not None:
-            force_browser = True
+            force_browser_escalation = True
 
         if http_snapshot.page.is_blocked and any(
             blocker.kind == "auth_or_captcha" for blocker in http_snapshot.page.blockers
         ):
-            force_browser = True
+            force_browser_escalation = True
 
-        if not force_browser:
+        if not force_browser_escalation:
             if http_snapshot.ok and not needs_escalation:
                 self._log_snapshot(http_snapshot, sku=sku)
                 return http_snapshot
@@ -122,6 +143,16 @@ class ResilientFetcher:
                 sku=sku,
             )
             if browser_snapshot.ok:
+                self._log_snapshot(browser_snapshot, sku=sku)
+                return browser_snapshot
+            # Prefer thin browser product HTML over a fat HTTP homepage redirect.
+            if self._product_url_redirected_away(url, http_snapshot.url) and browser_snapshot.markup:
+                self.diagnostics.record(
+                    "fetch",
+                    f"preferring browser snapshot after product redirect for {url}",
+                    level="info",
+                    sku=sku,
+                )
                 self._log_snapshot(browser_snapshot, sku=sku)
                 return browser_snapshot
             if http_snapshot.markup:
@@ -227,16 +258,37 @@ class ResilientFetcher:
             screenshot_paths=tuple(str(path) for path in capture.screenshot_paths),
         )
 
-    def _needs_browser_escalation(self, snapshot: PageSnapshot, strategy: SiteStrategy) -> bool:
+    def _needs_browser_escalation(
+        self,
+        snapshot: PageSnapshot,
+        strategy: SiteStrategy,
+        *,
+        requested_url: str = "",
+    ) -> bool:
         if snapshot.status in {403, 429, 503}:
             return True
         if len(snapshot.text.strip()) < max(strategy.min_chars, 80):
             return True
         if any(blocker.kind in {"auth_or_captcha", "http_blocked"} for blocker in snapshot.blockers):
             return True
+        # item.jd.com often HTTP-redirects to www.jd.com homepage with a huge, "usable"
+        # HTML body — still escalate so Playwright can load the real product page.
+        if requested_url and self._product_url_redirected_away(requested_url, snapshot.url):
+            return True
         if strategy.prefer_api and not (snapshot.page.json_ld or _contains_key_value_markup(snapshot.markup)):
             return True
         return not is_usable_page(snapshot.page, min_chars=strategy.min_chars)
+
+    @staticmethod
+    def _product_url_redirected_away(requested_url: str, final_url: str) -> bool:
+        from collectors.browser import PlaywrightCapture
+        from collectors.url_guards import is_noisy_ecommerce_url
+
+        if not PlaywrightCapture.is_ecommerce_product_url(requested_url):
+            return False
+        if PlaywrightCapture.is_ecommerce_product_url(final_url):
+            return False
+        return is_noisy_ecommerce_url(final_url) or PlaywrightCapture.is_ecommerce_host(final_url)
 
 
 def _contains_key_value_markup(markup: str) -> bool:

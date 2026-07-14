@@ -53,6 +53,40 @@ class ResilientFetcherTest(unittest.TestCase):
         self.assertTrue(snapshot.ok)
         self.assertIn("Focal Length 50mm", snapshot.text)
 
+    def test_escalates_when_jd_item_redirects_to_homepage(self) -> None:
+        homepage = "<html><body>" + ("京东首页导航优惠券 " * 80) + "</body></html>"
+
+        class RedirectHttp:
+            def fetch(self, url: str, *, platform: str = "", extra_headers=None) -> FetchResult:
+                return FetchResult(
+                    url="https://www.jd.com/?from=pc_item_sd",
+                    status=200,
+                    text=homepage,
+                    content_type="text/html",
+                )
+
+        browser = FakeBrowser(
+            BrowserCapture(
+                url="https://item.jd.com/100010708487.html",
+                screenshot_paths=[],
+                page_text="索尼 FE 50mm F1.2 GM SEL50F12GM 官方标配 参数 重量 778g",
+                page_html=(
+                    "<html><body><h1>索尼 FE 50mm F1.2 GM SEL50F12GM</h1>"
+                    "<div>重量 778g 焦距 50mm</div></body></html>"
+                ),
+            )
+        )
+        fetcher = ResilientFetcher(RedirectHttp(), browser=browser)  # type: ignore[arg-type]
+        snapshot = fetcher.fetch(
+            "https://item.jd.com/100010708487.html",
+            use_browser=True,
+            task_id="task-jd-redirect",
+        )
+        self.assertEqual(browser.calls, ["https://item.jd.com/100010708487.html"])
+        self.assertEqual(snapshot.method, "browser")
+        self.assertIn("item.jd.com", snapshot.url)
+        self.assertIn("SEL50F12GM", snapshot.text)
+
     def test_falls_back_to_browser_for_jd_when_http_is_blocked(self) -> None:
         blocked = "<html><body><div class='captcha'>滑块验证</div></body></html>"
         browser_html = """
