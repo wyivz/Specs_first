@@ -131,32 +131,259 @@ def infer_brand(title_or_query: str) -> str:
     compact = re.sub(r"[^a-z0-9]", "", (title_or_query or "").lower())
     if compact.startswith("sel") and re.match(r"^sel\d+", compact):
         return "Sony"
-    brands = [
-        "Apple",
-        "Samsung",
-        "Xiaomi",
-        "Huawei",
-        "Sony",
-        "Canon",
-        "Nikon",
-        "DJI",
-        "Logitech",
-        "Keychron",
-        "Zeiss",
-        "Sigma",
-        "Tamron",
-        "Leica",
-        "Fujifilm",
-        "Panasonic",
+    # Chinese aliases first so "罗技 G304" → Logitech, not "罗技".
+    brand_aliases: list[tuple[str, str]] = [
+        ("罗技", "Logitech"),
+        ("logitech", "Logitech"),
+        ("雷蛇", "Razer"),
+        ("razer", "Razer"),
+        ("雷柏", "Rapoo"),
+        ("rapoo", "Rapoo"),
+        ("赛睿", "SteelSeries"),
+        ("steelseries", "SteelSeries"),
+        ("漫步者", "Edifier"),
+        ("edifier", "Edifier"),
+        ("樱桃", "Cherry"),
+        ("cherry", "Cherry"),
+        ("keychron", "Keychron"),
+        ("苹果", "Apple"),
+        ("apple", "Apple"),
+        ("三星", "Samsung"),
+        ("samsung", "Samsung"),
+        ("小米", "Xiaomi"),
+        ("xiaomi", "Xiaomi"),
+        ("华为", "Huawei"),
+        ("huawei", "Huawei"),
+        ("索尼", "Sony"),
+        ("sony", "Sony"),
+        ("佳能", "Canon"),
+        ("canon", "Canon"),
+        ("尼康", "Nikon"),
+        ("nikon", "Nikon"),
+        ("大疆", "DJI"),
+        ("dji", "DJI"),
+        ("蔡司", "Zeiss"),
+        ("zeiss", "Zeiss"),
+        ("适马", "Sigma"),
+        ("sigma", "Sigma"),
+        ("腾龙", "Tamron"),
+        ("tamron", "Tamron"),
+        ("徕卡", "Leica"),
+        ("leica", "Leica"),
+        ("富士", "Fujifilm"),
+        ("fujifilm", "Fujifilm"),
+        ("松下", "Panasonic"),
+        ("panasonic", "Panasonic"),
     ]
-    lower = title_or_query.lower()
-    for brand in brands:
-        if brand.lower() in lower:
+    lower = (title_or_query or "").lower()
+    for needle, brand in brand_aliases:
+        if needle in lower:
             return brand
     return title_or_query.split()[0] if title_or_query.split() else "Unknown"
 
 
+_LISTICLE_TITLE_RE = re.compile(
+    r"(?:\d+\s*款|[一二三四五六七八九十两]\s*款|怎么选|哪款好|闭眼入|天花板|选购|"
+    r"必看|推荐[!！]?|全民众测|别乱买|不花冤枉钱|旗舰级选择|对比评测)",
+    re.I,
+)
+_CATEGORY_URL_HINTS = (
+    "/shop/c/",
+    "/category/",
+    "/categories/",
+    "/list/",
+    "/search",
+    "list.jd.com",
+    "search.jd.com",
+    "s.taobao.com",
+    "list.tmall.com",
+)
+_PRODUCT_URL_HINTS = (
+    "/shop/p/",
+    "item.jd.com",
+    "item.m.jd.com",
+    "/product/",
+    "detail.tmall.com",
+    "detail.taobao.com",
+    "item.taobao.com",
+)
+
+# Brand + concrete model patterns commonly seen in CN/EN shopping & review titles.
+_SKU_EXTRACT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(
+            r"(?:罗技|logitech)\s*(g\s*pro(?:\s*x)?(?:\s*superlight)?(?:\s*2)?|g\s*\d{2,4}[a-z]?|"
+            r"pro\s*wireless|mx\s*(?:master|anywhere)\s*\d*)",
+            re.I,
+        ),
+        "Logitech",
+    ),
+    (
+        re.compile(
+            r"(?:雷蛇|razer)\s*(viper(?:\s*v?\d+)?(?:\s*pro)?|deathadder(?:\s*v?\d+)?(?:\s*pro)?|"
+            r"basilisk(?:\s*v?\d+)?(?:\s*pro)?|cobra(?:\s*pro)?)",
+            re.I,
+        ),
+        "Razer",
+    ),
+    (
+        re.compile(r"(?:雷柏|rapoo)\s*(vt\s*\d+\s*air|vt\s*\d+\s*pro|vt\s*\d+|v\s*\d+\s*pro|v\s*\d+)", re.I),
+        "Rapoo",
+    ),
+    (
+        re.compile(
+            r"(?:赛睿|steelseries)\s*(aerox\s*\d+(?:\s*wireless)?|rival\s*\d+|prime(?:\s*wireless)?)",
+            re.I,
+        ),
+        "SteelSeries",
+    ),
+    (
+        re.compile(r"(?:索尼|sony)\s*(fe\s*\d+\s*mm(?:\s*f/?\d+(?:\.\d+)?)?(?:\s*gm|\s*g)?|sel\w+)", re.I),
+        "Sony",
+    ),
+]
+
+
+def sku_identity_key(sku: str) -> str:
+    """Normalize SKU text for dedupe across CN/EN brand aliases."""
+    text = (sku or "").casefold()
+    replacements = (
+        ("罗技", "logitech"),
+        ("雷蛇", "razer"),
+        ("雷柏", "rapoo"),
+        ("赛睿", "steelseries"),
+        ("索尼", "sony"),
+        ("无线游戏鼠标", ""),
+        ("游戏鼠标", ""),
+        ("无线鼠标", ""),
+        ("鼠标", ""),
+        ("wireless", ""),
+        ("gaming", ""),
+        ("mouse", ""),
+    )
+    for src, dst in replacements:
+        text = text.replace(src, dst)
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", text)
+
+
+def is_listicle_title(title: str) -> bool:
+    text = (title or "").strip()
+    if not text:
+        return False
+    if _LISTICLE_TITLE_RE.search(text):
+        return True
+    if text.startswith("【") and ("款" in text or "测" in text or "推荐" in text):
+        return True
+    return False
+
+
+def is_category_or_list_url(url: str) -> bool:
+    lower = (url or "").lower()
+    if not lower:
+        return False
+    return any(hint in lower for hint in _CATEGORY_URL_HINTS)
+
+
+def is_product_detail_url(url: str) -> bool:
+    lower = (url or "").lower()
+    if not lower or is_category_or_list_url(lower):
+        return False
+    return any(hint in lower for hint in _PRODUCT_URL_HINTS)
+
+
+def is_concrete_product_sku(sku: str) -> bool:
+    """True when ``sku`` looks like a buyable model, not a roundup headline."""
+    text = (sku or "").strip()
+    if not text or text == "Unknown Product":
+        return False
+    if is_listicle_title(text):
+        return False
+    if len(text) > 64 and not primary_model_code(text):
+        return False
+    if primary_model_code(text):
+        return True
+    # Brand + short remainder (e.g. "Logitech G Pro Wireless", "罗技 G304")
+    brand = infer_brand(text)
+    if brand and brand != "Unknown" and brand.casefold() not in text.casefold():
+        # infer_brand matched via alias; still ok
+        pass
+    if brand and brand != "Unknown" and len(text) <= 48:
+        remainder = re.sub(re.escape(brand), "", text, flags=re.I).strip(" ·-_|")
+        # Strip Chinese brand aliases left in text
+        for alias in ("罗技", "雷蛇", "雷柏", "赛睿", "索尼", "Logitech", "Razer", "Rapoo"):
+            remainder = re.sub(alias, "", remainder, flags=re.I).strip(" ·-_|")
+        if 1 <= len(remainder) <= 36 and not is_listicle_title(remainder):
+            return True
+    return False
+
+
+def _normalize_extracted_model(raw: str, brand: str) -> str:
+    model = re.sub(r"\s+", " ", (raw or "").strip())
+    model = re.sub(r"\b(无线游戏鼠标|游戏鼠标|无线鼠标|鼠标)\b", "", model, flags=re.I).strip(" ·-_|")
+    if not model:
+        return ""
+    # Prefer "Brand Model" English brand for consistency in the picker.
+    if brand and brand.casefold() not in model.casefold():
+        return f"{brand} {model}"[:120]
+    return model[:120]
+
+
+def extract_product_skus_from_hit(title: str, snippet: str = "") -> list[tuple[str, str]]:
+    """Extract ``(sku, brand)`` pairs from a search hit title/snippet.
+
+    Listicle titles can still yield multiple concrete models (e.g. brands listed
+    with model codes). Returns unique pairs in appearance order.
+    """
+    blob = f"{title or ''} {snippet or ''}"
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def _add(sku: str, brand: str) -> None:
+        key = sku_identity_key(sku)
+        if len(key) < 2 or key in seen:
+            return
+        if not is_concrete_product_sku(sku):
+            return
+        seen.add(key)
+        found.append((sku, brand))
+
+    for pattern, brand in _SKU_EXTRACT_PATTERNS:
+        for match in pattern.finditer(blob):
+            model = match.group(1) if match.lastindex else match.group(0)
+            sku = _normalize_extracted_model(model, brand)
+            if sku:
+                _add(sku, brand)
+
+    # Product-detail style titles: only if patterns found nothing useful.
+    if not found and not is_listicle_title(title or ""):
+        cleaned = clean_sku(title or "")
+        brand = infer_brand(cleaned)
+        # Prefer Brand + remainder without category fluff.
+        remainder = cleaned
+        for token in ("罗技", "雷蛇", "雷柏", "赛睿", "索尼", brand):
+            remainder = re.sub(re.escape(token), " ", remainder, flags=re.I)
+        remainder = re.sub(r"\b(无线游戏鼠标|游戏鼠标|无线鼠标|鼠标)\b", " ", remainder, flags=re.I)
+        remainder = re.sub(r"\s+", " ", remainder).strip(" ·-_|（）()")
+        if remainder and brand and brand != "Unknown":
+            cleaned = f"{brand} {remainder}"[:120]
+        if is_concrete_product_sku(cleaned):
+            _add(cleaned, brand)
+
+    return found
+
+
 def candidate_from_search_result(result: SearchResult, category: str) -> ProductCandidate:
+    extracted = extract_product_skus_from_hit(result.title, result.snippet)
+    if extracted:
+        sku, brand = extracted[0]
+        confidence = 0.78 if is_product_detail_url(result.url) else 0.7
+        return ProductCandidate(
+            sku=sku,
+            brand=brand,
+            category=category,
+            source_url=result.url,
+            confidence=confidence,
+        )
     sku = clean_sku(result.title)
     return ProductCandidate(
         sku=sku,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any
 
 try:
@@ -9,28 +8,77 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Install optional dependencies before running the UI: streamlit") from exc
 
 from collectors.embedded_browser import get_bridge
-from frontend.api_client import get_api_client
-from frontend.event_listener import drain_events, ensure_listener, sync_events_from_snapshot
+from frontend.event_listener import drain_events, ensure_listener, stop_listener
+from frontend.live_data import events_since, get_task_result, get_task_status
 from frontend.state import apply_event, compute_progress_value
 from frontend.ui.browser_panel import render_embedded_browser_panel
 from frontend.ui.matrix import render_evidence_cards, render_matrix_header, render_matrix_table
 from frontend.ui.labels import build_column_labels
 
+_TERMINAL_STATES = frozenset({"DONE", "FAILED", "PAUSED_NEED_AUTH"})
+# Fragment polls: slower than 1s to cut Streamlit DOM churn; still feels live.
+_LIVE_POLL_SECONDS = 2.5
+
 
 def _sync_task_events(task_id: str) -> list[dict[str, Any]]:
-    new_events = drain_events(task_id)
-    if new_events:
-        return new_events
-    api = get_api_client()
-    snapshot = api.events_snapshot(task_id)
-    return sync_events_from_snapshot(task_id, snapshot)
+    """Drain the listener queue, then advance UI from an in-process event delta."""
+    drain_events(task_id)
+    seen = int(st.session_state.get("seen_event_count", 0) or 0)
+    new_events, total = events_since(task_id, seen)
+    st.session_state["seen_event_count"] = total
+    return new_events
+
+
+def _resolve_status(api_status: dict[str, Any], new_events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Prefer API state; if events already signalled terminal, don't wait a tick."""
+    state = api_status.get("state") or "RUNNING"
+    if state in _TERMINAL_STATES:
+        return api_status
+
+    for event in reversed(new_events):
+        event_type = event.get("event_type")
+        if event_type == "task_done":
+            return {**api_status, "state": "DONE"}
+        if event_type == "task_failed":
+            return {
+                **api_status,
+                "state": "FAILED",
+                "error": (event.get("payload") or {}).get("error") or event.get("message") or api_status.get("error"),
+            }
+        if event_type == "auth_required":
+            return {**api_status, "state": "PAUSED_NEED_AUTH"}
+    return api_status
+
+
+def _live_fingerprint(
+    task_id: str,
+    status: dict[str, Any],
+    progress_info: dict[str, Any],
+    matrix_rows: list[dict[str, Any]],
+    new_event_count: int,
+) -> tuple[Any, ...]:
+    bridge = get_bridge(task_id)
+    shot_seq = bridge.screenshot_seq if bridge else 0
+    return (
+        status.get("state"),
+        status.get("error") or "",
+        int(st.session_state.get("seen_event_count", 0) or 0),
+        new_event_count,
+        len(matrix_rows),
+        progress_info.get("phase"),
+        progress_info.get("sku_index"),
+        progress_info.get("phase_label"),
+        progress_info.get("progress"),
+        progress_info.get("sku"),
+        shot_seq,
+    )
 
 
 def _render_progress(status: dict[str, Any], progress_info: dict[str, Any], new_events: list[dict[str, Any]]) -> None:
     total_steps = st.session_state.get("total_steps", 1)
     progress_value = compute_progress_value(status["state"], progress_info, total_steps)
     progress_text = new_events[-1]["message"] if new_events else progress_info.get("phase_label") or "运行中…"
-    st.progress(progress_value, text=progress_text)
+    st.progress(progress_value, text=str(progress_text)[:200])
 
     total_skus = max(int(progress_info.get("total_skus") or total_steps), 1)
     phase = int(progress_info.get("phase") or 0)
@@ -83,11 +131,10 @@ def _render_event_log(new_events: list[dict[str, Any]]) -> None:
 
 
 def _handle_terminal_state(task_id: str, status: dict[str, Any]) -> None:
-    api = get_api_client()
     state = status["state"]
 
     if state == "DONE":
-        st.session_state["result"] = api.get_result(task_id)
+        st.session_state["result"] = get_task_result(task_id)
         st.session_state["task_completed"] = True
     elif state == "PAUSED_NEED_AUTH":
         st.session_state["paused_task_id"] = task_id
@@ -95,7 +142,8 @@ def _handle_terminal_state(task_id: str, status: dict[str, Any]) -> None:
         st.session_state["task_error"] = status.get("error") or st.session_state.get("task_error", "")
 
     st.session_state.pop("active_task_id", None)
-    st.rerun()
+    st.session_state.pop("_live_fingerprint", None)
+    st.rerun(scope="app")
 
 
 def _should_show_browser(task_id: str, status: dict[str, Any]) -> bool:
@@ -104,22 +152,14 @@ def _should_show_browser(task_id: str, status: dict[str, Any]) -> bool:
     return get_bridge(task_id) is not None
 
 
-@st.fragment(run_every=timedelta(seconds=1))
-def live_workspace_fragment() -> None:
-    """Live status (left) + progressive matrix (right) while task runs."""
-    task_id = st.session_state.get("active_task_id")
-    if not task_id:
-        return
-
-    ensure_listener(task_id)
-
-    api = get_api_client()
-    status = api.get_task(task_id)
-    new_events = _sync_task_events(task_id)
-    for event in new_events:
-        apply_event(event)
-
-    progress_info = st.session_state.get("progress_info", {})
+def _render_live_panels(
+    task_id: str,
+    status: dict[str, Any],
+    progress_info: dict[str, Any],
+    new_events: list[dict[str, Any]],
+    *,
+    show_details: bool,
+) -> None:
     matrix_rows = st.session_state.get("matrix_rows", [])
     profile = st.session_state.get("category_profile")
     total_expected = max(int(progress_info.get("total_skus") or st.session_state.get("total_steps", 1)), 1)
@@ -129,18 +169,55 @@ def live_workspace_fragment() -> None:
 
     with col_status:
         _render_progress(status, progress_info, new_events)
-        _render_event_log(new_events)
-        _render_diagnostics()
+        if show_details:
+            _render_event_log(new_events)
+            _render_diagnostics()
+        else:
+            st.caption("状态未变 · 跳过日志重绘")
         if _should_show_browser(task_id, status):
             render_embedded_browser_panel(task_id)
 
     with col_matrix:
         st.markdown("**对比矩阵**")
         render_matrix_header(len(matrix_rows), total_expected, live=True)
-        render_matrix_table(matrix_rows, profile=profile)
-        render_evidence_cards(matrix_rows, expanded_only=True)
+        render_matrix_table(matrix_rows, profile=profile, dense=True)
+        if show_details:
+            render_evidence_cards(matrix_rows, expanded_only=True)
 
-    if status["state"] in {"DONE", "FAILED", "PAUSED_NEED_AUTH"}:
+
+def _live_workspace_body() -> None:
+    task_id = st.session_state.get("active_task_id")
+    if not task_id:
+        return
+
+    ensure_listener(task_id)
+
+    api_status = get_task_status(task_id)
+    new_events = _sync_task_events(task_id)
+    for event in new_events:
+        apply_event(event)
+
+    status = _resolve_status(api_status, new_events)
+
+    if status["state"] in _TERMINAL_STATES:
+        stop_listener(task_id)
+
+    progress_info = st.session_state.get("progress_info", {})
+    matrix_rows = st.session_state.get("matrix_rows", [])
+    fingerprint = _live_fingerprint(task_id, status, progress_info, matrix_rows, len(new_events))
+    previous = st.session_state.get("_live_fingerprint")
+    changed = fingerprint != previous or status["state"] in _TERMINAL_STATES
+    st.session_state["_live_fingerprint"] = fingerprint
+
+    _render_live_panels(
+        task_id,
+        status,
+        progress_info,
+        new_events,
+        show_details=changed,
+    )
+
+    if status["state"] in _TERMINAL_STATES:
         if status["state"] == "PAUSED_NEED_AUTH":
             st.warning(
                 "任务已挂起：请在弹出浏览器或侧边栏完成验证后点击「续传任务」。"
@@ -148,6 +225,15 @@ def live_workspace_fragment() -> None:
         elif status["state"] == "FAILED":
             st.error(f"任务失败：{status.get('error') or st.session_state.get('task_error', '')}")
         _handle_terminal_state(task_id, status)
+
+
+@st.fragment(run_every=_LIVE_POLL_SECONDS)
+def live_workspace_fragment() -> None:
+    """Live status (left) + progressive matrix (right) while task runs."""
+    try:
+        _live_workspace_body()
+    except Exception as exc:  # pragma: no cover - keep auto-refresh alive
+        st.error(f"实时面板刷新失败（将自动重试）：{exc}")
 
 
 def render_paused_panel() -> None:

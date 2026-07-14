@@ -26,9 +26,18 @@ def render_embedded_browser_panel(task_id: str) -> None:
         st.caption("请在任务栏找到弹出的浏览器窗口完成验证；下方为实时截图预览。")
     if bridge.url:
         st.caption(f"目标页面：{bridge.url}")
-    frame = bridge.latest_screenshot()
+    # Only pull new bytes when the worker advanced screenshot_seq.
+    seq = bridge.screenshot_seq
+    seq_key = f"eb_seq_{task_id}"
+    frame_key = f"eb_frame_{task_id}"
+    if seq != st.session_state.get(seq_key):
+        frame = bridge.latest_screenshot()
+        if frame:
+            st.session_state[frame_key] = frame
+            st.session_state[seq_key] = seq
+    frame = st.session_state.get(frame_key)
     if frame:
-        st.image(frame, use_container_width=True, caption=f"实时截图 (frame #{bridge.screenshot_seq})")
+        st.image(frame, use_container_width=True, caption=f"实时截图 (frame #{st.session_state.get(seq_key, 0)})")
     else:
         st.info("正在打开浏览器，等待首帧截图…")
 
@@ -58,4 +67,4 @@ def render_embedded_browser_panel(task_id: str) -> None:
 
     if bridge.error:
         st.error(f"嵌入式浏览器错误：{bridge.error}")
-    st.caption("提示：截图约每秒刷新一次；点击/输入会在下一次刷新时生效，无需切换到其他窗口。")
+    st.caption("提示：截图随实时面板刷新；点击/输入会在下一次刷新时生效。")

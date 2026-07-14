@@ -185,18 +185,25 @@ def render_sidebar_settings() -> RunSettings:
     )
 
 
+def _candidate_widget_key(sku: str) -> str:
+    digest = abs(hash(sku)) % (10**10)
+    return f"cand_pick_{digest}"
+
+
 def _init_candidate_selection(candidates: list[dict]) -> None:
     key = "selected_candidate_skus"
-    if key not in st.session_state or st.session_state.get("_candidates_version") != id(candidates):
-        defaults = [c["sku"] for c in candidates[:3]]
+    version = tuple(c.get("sku", "") for c in candidates)
+    if key not in st.session_state or st.session_state.get("_candidates_version") != version:
+        defaults = [c["sku"] for c in candidates[:3] if c.get("sku")]
         st.session_state[key] = defaults
-        st.session_state["_candidates_version"] = id(candidates)
+        st.session_state["_candidates_version"] = version
 
 
 def _render_candidate_cards(candidates: list[dict]) -> list[str]:
     _init_candidate_selection(candidates)
     selected: set[str] = set(st.session_state.get("selected_candidate_skus", []))
 
+    st.caption("请勾选要对比的具体型号（不是评测文章标题）")
     for candidate in candidates:
         sku = candidate["sku"]
         picked = sku in selected
@@ -205,20 +212,66 @@ def _render_candidate_cards(candidates: list[dict]) -> list[str]:
         confidence = float(candidate.get("confidence") or 0)
         box_cols = st.columns([1, 6])
         with box_cols[0]:
-            if st.checkbox("选", value=picked, key=f"cand_pick_{sku}", label_visibility="collapsed"):
+            if st.checkbox("选", value=picked, key=_candidate_widget_key(sku), label_visibility="collapsed"):
                 selected.add(sku)
             else:
                 selected.discard(sku)
         with box_cols[1]:
+            short_sku = sku if len(sku) <= 48 else sku[:45] + "…"
+            source_bit = ""
+            if url and "example.invalid" not in url:
+                source_bit = f' · <a href="{url}" target="_blank" rel="noreferrer">来源</a>'
             st.markdown(
-                f'<div class="sf-candidate"><strong>{brand}</strong> · <code>{sku}</code>'
+                f'<div class="sf-candidate"><strong>{brand}</strong> · <code>{short_sku}</code>'
                 f'<br><span style="color:#94a3b8;font-size:0.82rem">置信度 {confidence:.0%}'
-                f'{" · " + url if url else ""}</span></div>',
+                f"{source_bit}</span></div>",
                 unsafe_allow_html=True,
             )
 
     st.session_state["selected_candidate_skus"] = list(selected)
     return list(selected)
+
+
+def _merge_manual_skus(manual_text: str, category: str) -> None:
+    """Append user-typed model names into session candidates / selection."""
+    from collectors.extractors import infer_brand
+
+    raw_parts: list[str] = []
+    for chunk in (manual_text or "").replace(",", "\n").replace("，", "\n").splitlines():
+        part = chunk.strip()
+        if part:
+            raw_parts.append(part[:120])
+    if not raw_parts:
+        return
+
+    existing = list(st.session_state.get("candidates") or [])
+    seen = {str(item.get("sku", "")).casefold() for item in existing}
+    selected = list(st.session_state.get("selected_candidate_skus") or [])
+    added = 0
+    for sku in raw_parts:
+        if sku.casefold() in seen:
+            continue
+        seen.add(sku.casefold())
+        existing.append(
+            {
+                "sku": sku,
+                "brand": infer_brand(sku),
+                "category": category or "Product",
+                "source_url": "https://example.invalid/manual",
+                "confidence": 0.9,
+            }
+        )
+        if sku not in selected:
+            selected.append(sku)
+        added += 1
+    if added:
+        st.session_state["candidates"] = existing
+        st.session_state["selected_candidate_skus"] = selected
+        st.session_state.pop("_candidates_version", None)
+        st.session_state["discover_message"] = (
+            f"已加入 {added} 个手动型号；请勾选后点击开始对比。"
+        )
+        st.session_state.pop("discover_error", None)
 
 
 def render_input_panel(settings: RunSettings) -> InputContext:
@@ -234,6 +287,8 @@ def render_input_panel(settings: RunSettings) -> InputContext:
 
     if query.strip() != st.session_state.get("discover_query", "") and st.session_state.get("candidates"):
         st.session_state["candidates"] = []
+        st.session_state.pop("discover_message", None)
+        st.session_state.pop("discover_error", None)
 
     try:
         from schemas.category_profile import infer_category
@@ -246,36 +301,89 @@ def render_input_panel(settings: RunSettings) -> InputContext:
     col_discover, col_run = st.columns(2)
     with col_discover:
         discover_clicked = st.button("🔍 搜索候选 SKU", use_container_width=True)
+        if settings.mode == "real":
+            st.caption("Real 模式需联网搜索，点击后请等待进度提示")
     with col_run:
         run_label = "▶ 开始对比（Mock 演示）" if settings.mode == "mock" else "▶ 开始对比（Real）"
         run_clicked = st.button(run_label, type="primary", use_container_width=True)
 
     if discover_clicked:
         source_urls = [line.strip() for line in settings.source_urls_text.splitlines() if line.strip()]
-        discovered = get_api_client().discover(
-            query=query,
-            category=category,
-            mode=settings.mode,
-            source_urls=source_urls,
-        )[:10]
-        st.session_state["candidates"] = discovered
-        st.session_state["discover_query"] = query.strip()
-        st.session_state["discover_mode"] = settings.mode
-        st.session_state.pop("result", None)
-        st.session_state.pop("_candidates_version", None)
-        if discovered:
-            st.success(f"找到 {len(discovered)} 个候选，请勾选后点击开始对比。")
+        spinner_label = (
+            "正在生成 Mock 候选…"
+            if settings.mode == "mock"
+            else "正在联网搜索候选 SKU（Real 模式通常需要十几秒，请稍候）…"
+        )
+        discovered: list[dict] = []
+        with st.spinner(spinner_label):
+            try:
+                from backend.task_runner import task_manager
+
+                discovered = task_manager.discover(
+                    query=query,
+                    category=category,
+                    mode=settings.mode,
+                    source_urls=source_urls,
+                )[:10]
+            except Exception as exc:
+                st.session_state["discover_error"] = str(exc)
+                st.session_state["candidates"] = []
+                st.session_state["discover_message"] = ""
+            else:
+                st.session_state.pop("discover_error", None)
+                st.session_state["candidates"] = discovered
+                st.session_state["discover_query"] = query.strip()
+                st.session_state["discover_mode"] = settings.mode
+                st.session_state.pop("result", None)
+                st.session_state.pop("_candidates_version", None)
+                if discovered:
+                    st.session_state["discover_message"] = (
+                        f"找到 {len(discovered)} 个候选型号，请勾选要对比的具体型号后开始对比。"
+                    )
+                else:
+                    st.session_state["discover_message"] = (
+                        "未发现候选。可换关键词、切 Mock，或在高级选项中填写 Source URLs。"
+                    )
+
+    if st.session_state.get("discover_error"):
+        st.error(f"搜索候选失败：{st.session_state['discover_error']}")
+    elif st.session_state.get("discover_message"):
+        if st.session_state.get("candidates"):
+            st.success(st.session_state["discover_message"])
         else:
-            st.warning("未发现候选。可换关键词、切 Mock，或在高级选项中填写 Source URLs。")
+            st.warning(st.session_state["discover_message"])
 
     selected_skus: list[str] = []
-    if st.session_state["candidates"]:
+    if st.session_state.get("candidates"):
         discover_mode = st.session_state.get("discover_mode", settings.mode)
         discover_query = st.session_state.get("discover_query", query)
-        st.markdown(f"**候选 SKU** · {discover_mode} · 「{discover_query}」")
+        st.markdown(f"**候选型号** · {discover_mode} · 「{discover_query}」")
         selected_skus = _render_candidate_cards(st.session_state["candidates"])
+        with st.expander("手动添加型号", expanded=False):
+            manual = st.text_area(
+                "每行一个型号（也可用逗号分隔）",
+                key="manual_sku_text",
+                placeholder="罗技 G304\n雷蛇 Viper V3 Pro\n雷柏 VT9 Pro",
+                height=90,
+            )
+            if st.button("加入候选列表", key="manual_sku_add", use_container_width=True):
+                _merge_manual_skus(manual, category)
+                st.rerun()
     else:
-        st.info("可直接「开始对比」，或先「搜索候选 SKU」再勾选。")
+        st.info("可直接「开始对比」，或先「搜索候选 SKU」再勾选具体型号。")
+        with st.expander("手动添加型号", expanded=False):
+            manual = st.text_area(
+                "每行一个型号（也可用逗号分隔）",
+                key="manual_sku_text_empty",
+                placeholder="罗技 G304\n雷蛇 Viper V3 Pro",
+                height=90,
+            )
+            if st.button("加入候选列表", key="manual_sku_add_empty", use_container_width=True):
+                _merge_manual_skus(manual, category)
+                if st.session_state.get("candidates"):
+                    st.session_state["discover_query"] = query.strip()
+                    st.session_state["discover_mode"] = settings.mode
+                st.rerun()
 
     return InputContext(
         query=query,

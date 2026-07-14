@@ -12,6 +12,8 @@ from frontend.ui.labels import build_column_labels, column_label
 from schemas import CellStatus
 
 __all__ = [
+    "matrix_rows_to_dataframe_records",
+    "ordered_matrix_keys",
     "render_evidence_cards",
     "render_matrix_header",
     "render_matrix_table",
@@ -24,6 +26,58 @@ STATUS_BADGE = {
     CellStatus.WARNING.value: "🟡",
     CellStatus.CONFLICT.value: "🔴",
 }
+
+
+def ordered_matrix_keys(rows: list[dict[str, Any]]) -> list[str]:
+    priority = ["sku", "brand"]
+    trailer = ["price_real_world_min", "evidence_confidence_avg", "critical_flaws", "arbitration_summary"]
+    ordered_keys: list[str] = []
+    for row in rows:
+        for key in row.keys():
+            if key not in ordered_keys:
+                ordered_keys.append(key)
+    keys = [key for key in priority if key in ordered_keys]
+    keys.extend(key for key in ordered_keys if key not in priority and key not in trailer)
+    keys.extend(key for key in trailer if key in ordered_keys)
+    return keys
+
+
+def _cell_display(cell: dict[str, Any], *, with_badge: bool = True) -> str:
+    value = cell.get("value", "")
+    status = cell.get("status", CellStatus.NORMAL.value)
+    if value is None or value == "":
+        text = "—" if status == CellStatus.MISSING.value else ""
+    else:
+        text = str(value)
+    if with_badge:
+        badge = STATUS_BADGE.get(status, "")
+        if badge:
+            text = f"{text} {badge}".strip()
+    return text
+
+
+def matrix_rows_to_dataframe_records(
+    rows: list[dict[str, Any]],
+    *,
+    profile: dict[str, Any] | None = None,
+    labels: dict[str, str] | None = None,
+) -> list[dict[str, str]]:
+    """Flatten matrix rows into plain string columns for ``st.dataframe``."""
+    if not rows:
+        return []
+    label_map = labels or build_column_labels(profile)
+    keys = ordered_matrix_keys(rows)
+    records: list[dict[str, str]] = []
+    for row in rows:
+        record: dict[str, str] = {}
+        for key in keys:
+            cell = row.get(key) or {}
+            if not isinstance(cell, dict):
+                record[column_label(key, label_map)] = str(cell)
+                continue
+            record[column_label(key, label_map)] = _cell_display(cell)
+        records.append(record)
+    return records
 
 
 def _format_cell_html(cell: dict[str, Any], labels: dict[str, str]) -> str:
@@ -65,23 +119,26 @@ def render_matrix_table(
     *,
     profile: dict[str, Any] | None = None,
     labels: dict[str, str] | None = None,
+    dense: bool = False,
 ) -> None:
+    """Render comparison matrix.
+
+    ``dense=True`` (live panel): ``st.dataframe`` — much cheaper than rebuilding
+    a large HTML table on every fragment tick.
+    ``dense=False`` (final output): richer HTML with inline evidence links.
+    """
     if not rows:
         st.info("对比矩阵将在任务进行中逐行出现，请稍候…")
         return
 
     label_map = labels or build_column_labels(profile)
 
-    priority = ["sku", "brand"]
-    trailer = ["price_real_world_min", "evidence_confidence_avg", "critical_flaws", "arbitration_summary"]
-    ordered_keys: list[str] = []
-    for row in rows:
-        for key in row.keys():
-            if key not in ordered_keys:
-                ordered_keys.append(key)
-    keys = [key for key in priority if key in ordered_keys]
-    keys.extend(key for key in ordered_keys if key not in priority and key not in trailer)
-    keys.extend(key for key in trailer if key in ordered_keys)
+    if dense:
+        records = matrix_rows_to_dataframe_records(rows, profile=profile, labels=label_map)
+        st.dataframe(records, use_container_width=True, hide_index=True)
+        return
+
+    keys = ordered_matrix_keys(rows)
     headers = [column_label(key, label_map) for key in keys]
 
     table_html = [
@@ -113,7 +170,7 @@ def render_evidence_cards(rows: list[dict[str, Any]], *, expanded_only: bool = T
         has_issue = any(
             cell.get("status") in {CellStatus.WARNING.value, CellStatus.CONFLICT.value}
             for key, cell in row.items()
-            if key != "sku"
+            if key != "sku" and isinstance(cell, dict)
         )
         if has_issue:
             conflict_rows.append(row)
@@ -126,7 +183,7 @@ def render_evidence_cards(rows: list[dict[str, Any]], *, expanded_only: bool = T
             sku = row.get("sku", {}).get("value", "Unknown SKU")
             st.markdown(f"**{sku}**")
             for key, cell in row.items():
-                if key == "sku":
+                if key == "sku" or not isinstance(cell, dict):
                     continue
                 if cell.get("status") not in {CellStatus.WARNING.value, CellStatus.CONFLICT.value}:
                     continue

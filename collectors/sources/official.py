@@ -6,11 +6,17 @@ from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import (
     candidate_from_search_result,
     evidence_mentions_sku,
+    extract_product_skus_from_hit,
     extract_specs_from_text,
     infer_brand,
     infer_specs_from_sku,
+    is_category_or_list_url,
+    is_concrete_product_sku,
+    is_listicle_title,
+    is_product_detail_url,
     page_matches_sku,
     primary_model_code,
+    sku_identity_key,
 )
 from collectors.http import HttpClient, SearchResult, clip, extract_title
 from collectors.protocols import SpecExtractionRouter
@@ -46,17 +52,19 @@ class OfficialSourceCollector:
         self.resilient = resilient or ResilientFetcher(http, diagnostics=self.diagnostics)
         self.router = router
         self.category_profile: DynamicCategoryProfile | None = None
+        self.last_discovery_hits: list[SearchResult] = []
 
     def discover_candidates(self, query: str, category: str, max_results: int = 10) -> list[ProductCandidate]:
         seed = (query or "").strip()
         search_plans = [
-            f"{seed} {category} specs 参数 评测".strip(),
+            f"{seed} 型号 推荐 对比".strip(),
+            f"{seed} {category} specs 参数".strip(),
             f"{seed} review specifications".strip(),
-            f"{seed} 对比 选购".strip(),
-            f"{seed} {category} official specifications".strip(),
+            f"{seed} {category} official".strip(),
         ]
         results: list[SearchResult] = []
         seen_urls: set[str] = set()
+        candidates: list[ProductCandidate] = []
         for plan in search_plans:
             if not plan:
                 continue
@@ -65,32 +73,32 @@ class OfficialSourceCollector:
                     continue
                 seen_urls.add(result.url)
                 results.append(result)
+            self.last_discovery_hits = list(results)
+            # Stop early once we have enough concrete product models.
+            candidates = self._candidates_from_search_results(
+                results,
+                seed=seed,
+                category=category,
+                max_results=max_results,
+                allow_weak_fallback=False,
+            )
+            if len(candidates) >= max_results:
+                return candidates[:max_results]
+
+        self.last_discovery_hits = list(results)
         if not results:
             self.diagnostics.record(
                 "official",
                 f"search empty for discovery query: {seed or category}",
                 level="warning",
             )
-        ranked = _rank_discovery_results(results, query=seed)
-        candidates: list[ProductCandidate] = []
-        for result in ranked:
-            if _discovery_conflicts_with_query(seed, result.title, result.snippet):
-                continue
-            if not _discovery_matches_query(seed, result.title, result.snippet, result.url):
-                continue
-            candidate = candidate_from_search_result(result, category)
-            if primary_model_code(seed):
-                candidate.sku = seed[:120]
-            candidates.append(candidate)
-            if len(candidates) >= max_results:
-                break
-        if not candidates and ranked:
-            for result in ranked[:max_results]:
-                if _discovery_conflicts_with_query(seed, result.title, result.snippet):
-                    continue
-                candidate = candidate_from_search_result(result, category)
-                candidate.confidence = min(candidate.confidence, 0.42)
-                candidates.append(candidate)
+        candidates = self._candidates_from_search_results(
+            results,
+            seed=seed,
+            category=category,
+            max_results=max_results,
+            allow_weak_fallback=True,
+        )
         if not candidates:
             candidates = [
                 ProductCandidate(
@@ -102,6 +110,86 @@ class OfficialSourceCollector:
                 )
             ]
         return candidates[:max_results]
+
+    def _candidates_from_search_results(
+        self,
+        results: list[SearchResult],
+        *,
+        seed: str,
+        category: str,
+        max_results: int,
+        allow_weak_fallback: bool,
+    ) -> list[ProductCandidate]:
+        ranked = _rank_discovery_results(results, query=seed)
+        candidates: list[ProductCandidate] = []
+        seen_keys: set[str] = set()
+
+        def _add(candidate: ProductCandidate) -> bool:
+            if not is_concrete_product_sku(candidate.sku):
+                return False
+            key = sku_identity_key(candidate.sku)
+            if not key or key in seen_keys:
+                return False
+            seen_keys.add(key)
+            candidates.append(candidate)
+            return True
+
+        seed_is_specific = bool(primary_model_code(seed)) or (
+            is_concrete_product_sku(seed) and len(seed) <= 48
+        )
+
+        # Prefer explicit models extracted from any hit (including listicles).
+        for result in ranked:
+            if _discovery_conflicts_with_query(seed, result.title, result.snippet):
+                continue
+            for sku, brand in extract_product_skus_from_hit(result.title, result.snippet):
+                confidence = 0.8 if is_product_detail_url(result.url) else 0.72
+                _add(
+                    ProductCandidate(
+                        sku=sku,
+                        brand=brand,
+                        category=category,
+                        source_url=result.url,
+                        confidence=confidence,
+                    )
+                )
+                if len(candidates) >= max_results:
+                    return candidates
+
+        # Product-detail pages with a concrete cleaned title.
+        for result in ranked:
+            if is_category_or_list_url(result.url) or is_listicle_title(result.title):
+                continue
+            if _discovery_conflicts_with_query(seed, result.title, result.snippet):
+                continue
+            if not _discovery_matches_query(seed, result.title, result.snippet, result.url):
+                continue
+            candidate = candidate_from_search_result(result, category)
+            if seed_is_specific and primary_model_code(seed):
+                # Keep the user's model when the query already names one.
+                if evidence_mentions_sku(seed, result.title, result.snippet, result.url):
+                    candidate = ProductCandidate(
+                        sku=seed[:120],
+                        brand=infer_brand(seed),
+                        category=category,
+                        source_url=result.url,
+                        confidence=max(candidate.confidence, 0.82),
+                    )
+            _add(candidate)
+            if len(candidates) >= max_results:
+                return candidates
+
+        if not candidates and allow_weak_fallback and seed_is_specific:
+            _add(
+                ProductCandidate(
+                    sku=seed[:120],
+                    brand=infer_brand(seed),
+                    category=category,
+                    source_url="https://example.invalid/query-seed",
+                    confidence=0.4,
+                )
+            )
+        return candidates
 
     def collect_specs(
         self,

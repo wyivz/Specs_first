@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -58,11 +59,12 @@ class ForumSourceCollectorRedditTest(unittest.TestCase):
         search_queries = [call.args[0] for call in http.search.call_args_list]
         self.assertTrue(any("reddit.com" in query for query in search_queries))
 
-    @patch("collectors.sources.forum.load_reddit_credentials")
-    def test_load_reddit_credentials_from_settings(self, load_reddit) -> None:
-        with patch("collectors.settings.settings") as mock_settings:
-            mock_settings.reddit_cookie = "reddit_session=from_env"
-            creds = load_reddit_credentials()
+    def test_load_reddit_credentials_from_settings(self) -> None:
+        # load_reddit_credentials reloads .env then reads os.environ — not the
+        # frozen Settings snapshot — so Cookie edits apply without restart.
+        with patch("collectors.settings.reload_credential_env"):
+            with patch.dict(os.environ, {"REDDIT_COOKIE": "reddit_session=from_env"}):
+                creds = load_reddit_credentials()
         self.assertTrue(creds.configured)
         self.assertIn("reddit_session=from_env", creds.cookie)
 

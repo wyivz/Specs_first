@@ -54,6 +54,7 @@ def reset_task_state(category: str, selected_count: int) -> None:
     st.session_state.pop("result", None)
     st.session_state.pop("paused_task_id", None)
     st.session_state.pop("task_error", None)
+    st.session_state.pop("_live_fingerprint", None)
 
 
 def apply_event(event: dict[str, Any]) -> None:
@@ -122,6 +123,15 @@ def apply_event(event: dict[str, Any]) -> None:
         st.session_state["task_error"] = payload.get("error") or event.get("message", "")
 
 
+def _as_progress_float(value: Any, fallback: float) -> float:
+    try:
+        if value is None or value == "":
+            return fallback
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def compute_progress_value(status_state: str, progress_info: dict[str, Any], total_steps: int) -> float:
     total_skus = max(int(progress_info.get("total_skus") or total_steps), 1)
     phase = int(progress_info.get("phase") or 0)
@@ -129,9 +139,9 @@ def compute_progress_value(status_state: str, progress_info: dict[str, Any], tot
 
     if status_state == "RUNNING":
         computed = progress_info.get("progress")
-        if computed is None:
+        if computed is None or computed == "":
             computed = (sku_index * 4 + max(phase - 1, 0)) / max(total_skus * 4, 1)
-        return min(float(computed), 0.97)
+        return min(_as_progress_float(computed, 0.0), 0.97)
     if status_state == "DONE":
         return 1.0
-    return min(float(progress_info.get("progress") or 0), 0.95)
+    return min(_as_progress_float(progress_info.get("progress"), 0.0), 0.95)

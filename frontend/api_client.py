@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -12,8 +12,7 @@ from backend.api import app
 class SpecsFirstApiClient:
     """In-process HTTP client for the FastAPI app (shared task_manager singleton)."""
 
-    def __post_init__(self) -> None:
-        self._client = TestClient(app)
+    _client: TestClient = field(default_factory=lambda: TestClient(app))
 
     def health(self) -> dict[str, Any]:
         response = self._client.get("/health")
@@ -89,5 +88,12 @@ class SpecsFirstApiClient:
         response.raise_for_status()
 
 
+_CLIENT: SpecsFirstApiClient | None = None
+
+
 def get_api_client() -> SpecsFirstApiClient:
-    return SpecsFirstApiClient()
+    """Reuse one TestClient across fragment polls (avoids per-tick setup cost)."""
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = SpecsFirstApiClient()
+    return _CLIENT

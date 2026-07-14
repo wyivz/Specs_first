@@ -147,10 +147,32 @@ class TaskManager:
         source_urls: list[str] | None = None,
     ) -> list[dict]:
         pipeline = self.create_pipeline(mode=mode, source_urls=source_urls)
-        candidates = pipeline.collector.discover_candidates(query, category)[:10]
+        candidates = list(pipeline.collector.discover_candidates(query, category)[:10])
+
+        if mode == "real":
+            from backend.discover_normalize import (
+                concrete_candidate_count,
+                discover_skus_from_evidence,
+                merge_discovery_candidates,
+            )
+
+            if concrete_candidate_count(candidates) < 3:
+                hits = []
+                official = getattr(pipeline.collector, "official", None)
+                if official is not None:
+                    hits = list(getattr(official, "last_discovery_hits", []) or [])
+                enriched = discover_skus_from_evidence(
+                    query,
+                    hits,
+                    category=category,
+                    max_results=10,
+                )
+                if enriched:
+                    candidates = merge_discovery_candidates(candidates, enriched, max_results=10)
+
         from schemas import to_dict
 
-        return [to_dict(candidate) for candidate in candidates]
+        return [to_dict(candidate) for candidate in candidates[:10]]
 
 
 task_manager = TaskManager()
