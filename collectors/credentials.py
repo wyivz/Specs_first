@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -65,13 +66,14 @@ class BilibiliCredentials:
 
 
 def load_bilibili_credentials() -> BilibiliCredentials:
-    from collectors.settings import settings
+    from collectors.settings import reload_credential_env
 
+    reload_credential_env()
     return BilibiliCredentials(
-        sessdata=settings.bilibili_sessdata,
-        bili_jct=settings.bilibili_bili_jct,
-        dedeuserid=settings.bilibili_dedeuserid,
-        buvid3=settings.bilibili_buvid3,
+        sessdata=os.getenv("BILIBILI_SESSDATA", ""),
+        bili_jct=os.getenv("BILIBILI_BILI_JCT", ""),
+        dedeuserid=os.getenv("BILIBILI_DEDEUSERID", ""),
+        buvid3=os.getenv("BILIBILI_BUVID3", ""),
     )
 
 
@@ -101,9 +103,10 @@ class JdCredentials:
 
 
 def load_jd_credentials() -> JdCredentials:
-    from collectors.settings import settings
+    from collectors.settings import reload_credential_env
 
-    return JdCredentials(cookie=settings.jd_cookie)
+    reload_credential_env()
+    return JdCredentials(cookie=os.getenv("JD_COOKIE", ""))
 
 
 @dataclass(frozen=True)
@@ -133,9 +136,10 @@ class RedditCredentials:
 
 
 def load_reddit_credentials() -> RedditCredentials:
-    from collectors.settings import settings
+    from collectors.settings import reload_credential_env
 
-    return RedditCredentials(cookie=settings.reddit_cookie)
+    reload_credential_env()
+    return RedditCredentials(cookie=os.getenv("REDDIT_COOKIE", ""))
 
 
 @dataclass(frozen=True)
@@ -193,12 +197,13 @@ class TaobaoCredentials:
 
 def load_taobao_credentials() -> TaobaoCredentials:
     from collectors.session_cache import load_taobao_m_h5_tk
-    from collectors.settings import settings
+    from collectors.settings import reload_credential_env
 
+    reload_credential_env()
     cached = load_taobao_m_h5_tk()
     return TaobaoCredentials(
-        cookie=settings.taobao_cookie,
-        m_h5_tk=settings.taobao_m_h5_tk or cached,
+        cookie=os.getenv("TAOBAO_COOKIE", ""),
+        m_h5_tk=os.getenv("TAOBAO_M_H5_TK", "") or cached,
     )
 
 
@@ -226,9 +231,10 @@ class YouTubeCredentials:
 
 
 def load_youtube_credentials() -> YouTubeCredentials:
-    from collectors.settings import settings
+    from collectors.settings import reload_credential_env
 
-    return YouTubeCredentials(cookie=settings.youtube_cookie)
+    reload_credential_env()
+    return YouTubeCredentials(cookie=os.getenv("YOUTUBE_COOKIE", ""))
 
 
 def request_headers_for_url(url: str, *, referer: str = "") -> dict[str, str]:

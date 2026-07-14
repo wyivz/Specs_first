@@ -11,6 +11,12 @@ except ImportError as exc:  # pragma: no cover
 from frontend.ui.labels import build_column_labels, column_label
 from schemas import CellStatus
 
+__all__ = [
+    "render_evidence_cards",
+    "render_matrix_header",
+    "render_matrix_table",
+]
+
 
 STATUS_BADGE = {
     CellStatus.NORMAL.value: "",
@@ -141,9 +147,9 @@ def render_evidence_cards(rows: list[dict[str, Any]], *, expanded_only: bool = T
 
 
 def render_matrix_header(total_ready: int, total_expected: int, *, live: bool = False) -> None:
-    live_pill = '<span class="sf-pill sf-pill-live">实时更新中</span>' if live else ""
-    st.markdown(
-        f'<div class="sf-badge-row">{live_pill}'
-        f'<span class="sf-pill">已就绪 {total_ready} / {total_expected} 行</span></div>',
-        unsafe_allow_html=True,
-    )
+    """Show row readiness; uses Streamlit widgets to avoid HTML/encoding import issues."""
+    label = f"已就绪 {total_ready} / {total_expected} 行"
+    if live:
+        st.caption(f"🔄 实时更新中 · {label}")
+    else:
+        st.caption(label)

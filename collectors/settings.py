@@ -5,8 +5,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-def _load_dotenv() -> None:
-    env_path = Path(".env")
+# Cookie / API keys that users often refresh without restarting Streamlit.
+_CREDENTIAL_ENV_KEYS = frozenset(
+    {
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "JD_COOKIE",
+        "TAOBAO_COOKIE",
+        "TAOBAO_M_H5_TK",
+        "BILIBILI_SESSDATA",
+        "BILIBILI_BILI_JCT",
+        "BILIBILI_DEDEUSERID",
+        "BILIBILI_BUVID3",
+        "YOUTUBE_COOKIE",
+        "REDDIT_COOKIE",
+    }
+)
+
+# Always resolve against repo root (collectors/..) so Streamlit cwd cannot miss .env.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_DOTENV_PATH = _PROJECT_ROOT / ".env"
+
+
+def _load_dotenv(*, overwrite_credentials: bool = False) -> None:
+    env_path = _DOTENV_PATH
+    if not env_path.exists():
+        # Fallback for unusual layouts / tests.
+        env_path = Path.cwd() / ".env"
     if not env_path.exists():
         return
     for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -14,9 +39,23 @@ def _load_dotenv() -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        value = value.strip()
-        if value:
-            os.environ.setdefault(key.strip(), value)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not value:
+            continue
+        existing = os.environ.get(key)
+        if overwrite_credentials and key in _CREDENTIAL_ENV_KEYS:
+            os.environ[key] = value
+        elif existing is None or (key in _CREDENTIAL_ENV_KEYS and not existing.strip()):
+            # setdefault alone keeps an empty shell JD_COOKIE forever; treat blank as unset.
+            os.environ[key] = value
+        else:
+            os.environ.setdefault(key, value)
+
+
+def reload_credential_env() -> None:
+    """Re-read cookie/API keys from .env so health/UI pick up updates without restart."""
+    _load_dotenv(overwrite_credentials=True)
 
 
 def _float_env(name: str, default: float) -> float:

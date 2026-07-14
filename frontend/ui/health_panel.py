@@ -12,11 +12,12 @@ from frontend.api_client import get_api_client
 
 CHECK_HINTS: dict[str, str] = {
     "gemini_model": "在 .env 配置 GEMINI_API_KEY",
-    "openai_api": "在 .env 配置 OPENAI_API_KEY",
-    "jd_cookie": "在 .env 配置 JD_COOKIE",
-    "taobao_cookie": "在 .env 配置 TAOBAO_COOKIE 或 _m_h5_tk",
-    "bilibili_cookie": "在 .env 配置 B 站 SESSDATA / bili_jct 等",
-    "youtube_cookie": "YouTube 可选；部分视频需 Cookie",
+    "openai_key": "在 .env 配置 OPENAI_API_KEY",
+    "jd_credentials": "在 .env 配置 JD_COOKIE（需含 pt_key / pt_pin；改完后点刷新）",
+    "taobao_credentials": "在 .env 配置 TAOBAO_COOKIE（需含 _m_h5_tk；改完后点刷新）",
+    "bilibili_credentials": "在 .env 配置 B 站 SESSDATA / bili_jct 等",
+    "youtube_credentials": "YouTube 可选；部分视频需 Cookie",
+    "reddit_credentials": "Reddit 可选；启用自动搜帖需 Cookie",
     "playwright": "运行 playwright install chromium",
 }
 
@@ -82,10 +83,15 @@ def render_health_panel(*, compact: bool = False) -> dict[str, Any]:
             status, ""
         )
         name = item.get("name", "?")
-        hint = html.escape(CHECK_HINTS.get(name, item.get("message", "")))
+        message = str(item.get("message", "") or "")
+        hint = CHECK_HINTS.get(name, "")
+        caption = message or hint
         with cols[idx % len(cols)]:
-            st.markdown(f'<span class="sf-pill {css}" title="{hint}">{name}</span>', unsafe_allow_html=True)
-            if status in {"error", "warn", "degraded"} and hint:
-                st.caption(hint[:80])
+            st.markdown(
+                f'<span class="sf-pill {css}" title="{html.escape(caption)}">{html.escape(name)}</span>',
+                unsafe_allow_html=True,
+            )
+            if status in {"error", "warn", "degraded"} and caption:
+                st.caption(caption[:120])
 
     return health
