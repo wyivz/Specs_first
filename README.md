@@ -47,14 +47,18 @@ Phase 1 官方规格 ──► Phase 2 民间脱水 ──► Phase 3 到手价/
 
 | 层级 | 技术 | 职责 |
 |------|------|------|
-| 前端 | Streamlit | 选 SKU、流式矩阵、JIT Schema 展示、证据卡、嵌入式验证码浏览器 |
+| 前端 | Streamlit（输入 / 运行状态 / 输出三栏） | 选 SKU、Health、流式矩阵、JIT Schema、证据卡、嵌入式验证码浏览器 |
 | 后端 | FastAPI + 后台线程 | 任务调度、事件推送、断点续传 |
 | 采集 | HTTP + Playwright + AdapterRegistry | 官网 / 视频 / 论坛 / 京东 / 淘宝天猫 |
 | 模型 | Gemini + OpenAI | 识图/脱水/OCR + JIT 建表与仲裁 |
 | 输出 | Obsidian + Dataview + CSV | 本地永久资产 |
 
 ```
-Streamlit UI
+Streamlit UI（frontend/app.py）
+    ├── frontend/ui/input_panel.py      # 输入与侧边栏配置
+    ├── frontend/ui/status_panel.py     # 运行状态（st.fragment 局部刷新）
+    ├── frontend/ui/output_panel.py     # 矩阵与导出
+    ├── frontend/event_listener.py      # EventBus 后台订阅
     └── frontend/api_client.py
             └── backend/task_runner.py
                     └── pipeline.py（含 JIT schema bootstrap）
@@ -125,7 +129,17 @@ python -m backend.pipeline
 streamlit run frontend/app.py
 ```
 
-侧边栏选 `mock` 或 `real`；Real 建议勾选 Playwright。
+界面分为三个区域：
+
+| 区域 | 内容 |
+|------|------|
+| **输入** | 对比查询、品类提示、SKU 发现/勾选、侧边栏运行配置（mock/real、Playwright、Source URLs） |
+| **运行状态** | 平台 Health、进度条、阶段 pill、实时事件流、采集诊断、验证码嵌入式浏览器 |
+| **输出** | 渐进式对比矩阵、证据卡、Obsidian 路径、CSV 下载 |
+
+- 侧边栏选 `mock` 或 `real`；Real 建议勾选 Playwright
+- 任务进行中通过局部刷新（`st.fragment`）更新状态，输入框不会整页重刷丢焦点
+- 遇验证码挂起时，侧边栏点击「续传任务」
 
 ### API（可选）
 
@@ -150,7 +164,7 @@ uvicorn backend.api:app --reload
 python -m unittest discover -s tests
 ```
 
-当前 **138** 项单元测试通过（不含 live smoke）。
+当前 **175** 项单元测试通过（不含 live smoke）。
 
 ```powershell
 python scripts/smoke_platforms.py --health-only
