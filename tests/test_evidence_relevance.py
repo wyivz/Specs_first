@@ -139,6 +139,25 @@ class EvidenceRelevanceAndSpecQualityTest(unittest.TestCase):
     def test_jd_homepage_is_noisy(self) -> None:
         self.assertTrue(is_noisy_ecommerce_url("https://www.jd.com/?from=pc_item_sd"))
 
+    def test_jd_frequency_control_page_is_noisy_and_rate_limited(self) -> None:
+        from collectors.browser import PlaywrightCapture
+        from collectors.page_sanitize import detect_page_blockers
+        from collectors.url_guards import is_rate_limited_ecommerce_url
+
+        freq = "https://pc-frequent-pro.pf.jd.com/?from=pc_item&reason=403"
+        self.assertTrue(is_rate_limited_ecommerce_url(freq))
+        self.assertTrue(is_noisy_ecommerce_url(freq))
+        # Requested product URL + landed on freq control → never open headed captcha.
+        self.assertTrue(
+            PlaywrightCapture.should_skip_headed_captcha(
+                "https://item.jd.com/100010708487.html",
+                freq,
+            )
+        )
+        blockers = detect_page_blockers(freq, "<html></html>", "")
+        self.assertTrue(any(b.kind == "rate_limited" for b in blockers))
+        self.assertFalse(any(b.kind == "auth_or_captcha" for b in blockers))
+
     def test_evidence_from_page_accepts_defect_without_review_word(self) -> None:
         markup = (
             "<html><body><h1>SEL50F12GM 开箱</h1>"

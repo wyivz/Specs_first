@@ -108,11 +108,26 @@ class PlaywrightCapture:
 
     @classmethod
     def should_skip_headed_captcha(cls, url: str, page_url: str = "") -> bool:
-        """True only for marketplace junk (campus/music/brand), never for video/official."""
-        combined_host = cls.is_ecommerce_host(url) or cls.is_ecommerce_host(page_url or url)
+        """True for marketplace junk / rate-limit pages — never open headed captcha there.
+
+        Important: even when the *requested* URL is a product item page, JD may
+        redirect to ``pc-frequent-pro.pf.jd.com`` (PC frequency control). That
+        must not trigger a headed "solve captcha" window.
+        """
+        from collectors.url_guards import is_noisy_ecommerce_url, is_rate_limited_ecommerce_url
+
+        final = page_url or url
+        if is_rate_limited_ecommerce_url(final) or is_rate_limited_ecommerce_url(url):
+            return True
+        if is_noisy_ecommerce_url(final) and not cls.is_ecommerce_product_url(final):
+            return True
+        combined_host = cls.is_ecommerce_host(url) or cls.is_ecommerce_host(final)
         if not combined_host:
             return False
-        return not cls.is_ecommerce_product_url(url) and not cls.is_ecommerce_product_url(page_url or url)
+        # Requested product URL but landed elsewhere (homepage / freq control).
+        if cls.is_ecommerce_product_url(url) and not cls.is_ecommerce_product_url(final):
+            return True
+        return not cls.is_ecommerce_product_url(url) and not cls.is_ecommerce_product_url(final)
 
     def capture_page_slices(
         self,
@@ -150,7 +165,18 @@ class PlaywrightCapture:
                 self._dismiss_noise(page)
                 page_html = page.content()
                 body_text = self._extract_main_text(page)
-                blockers = detect_page_blockers(url, page_html, body_text, page.title())
+                page_url = page.url or url
+                blockers = detect_page_blockers(page_url, page_html, body_text, page.title())
+                from collectors.url_guards import is_rate_limited_ecommerce_url
+
+                # JD frequency-control redirect: never open headed captcha — soft-fail.
+                if is_rate_limited_ecommerce_url(page_url) or any(
+                    blocker.kind == "rate_limited" for blocker in blockers
+                ):
+                    context.storage_state(path=str(resolved_state))
+                    raise RuntimeError(
+                        f"JD frequency-control page; skipping headed captcha: {page_url}"
+                    )
                 if any(blocker.kind == "auth_or_captcha" for blocker in blockers):
                     context.storage_state(path=str(resolved_state))
                     # Only pause / open headed captcha for real ecommerce product pages.
@@ -159,7 +185,6 @@ class PlaywrightCapture:
                     # Non-ecommerce hosts (Bilibili/YouTube/Sony) must NOT hit this branch —
                     # previously ``not is_ecommerce_product_url`` treated them as junk and
                     # aborted browser capture before API/HTML enrichment could run.
-                    page_url = page.url or url
                     if self.should_skip_headed_captcha(url, page_url):
                         raise RuntimeError(
                             f"Non-product ecommerce page looks blocked; skipping headed captcha: {page_url}"
@@ -270,9 +295,20 @@ class PlaywrightCapture:
                         html = page.content()
                         text = self._extract_main_text(page)
                         blockers = detect_page_blockers(page.url, html, text, page.title())
+                        from collectors.url_guards import is_rate_limited_ecommerce_url
+
+                        if is_rate_limited_ecommerce_url(page.url) or any(
+                            b.kind == "rate_limited" for b in blockers
+                        ):
+                            bridge.mark_error(f"JD frequency-control page: {page.url}")
+                            raise RuntimeError(
+                                f"JD frequency-control page; skipping headed captcha: {page.url}"
+                            )
                         if not any(b.kind == "auth_or_captcha" for b in blockers):
                             solved = True
                             break
+                    except RuntimeError:
+                        raise
                     except Exception:
                         continue
 

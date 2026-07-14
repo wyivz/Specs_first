@@ -186,6 +186,19 @@ def extract_json_ld_objects(markup: str) -> list[dict]:
 def detect_page_blockers(url: str, markup: str, text: str, title: str = "") -> list[PageBlocker]:
     blockers: list[PageBlocker] = []
     combined = f"{title} {text} {markup[:8000]}".lower()
+    url_lower = (url or "").lower()
+    # JD PC frequency-control interstitial — not a solvable slider captcha.
+    try:
+        from collectors.url_guards import is_rate_limited_ecommerce_url
+
+        if is_rate_limited_ecommerce_url(url):
+            blockers.append(PageBlocker("rate_limited", "jd pc frequency control page"))
+            return blockers
+    except Exception:
+        pass
+    if "pc-frequent" in url_lower or ("pf.jd.com" in url_lower and "reason=403" in url_lower):
+        blockers.append(PageBlocker("rate_limited", "jd pc frequency control page"))
+        return blockers
     for marker in AUTH_MARKERS:
         if marker.lower() in combined:
             blockers.append(PageBlocker("auth_or_captcha", marker))
@@ -194,13 +207,13 @@ def detect_page_blockers(url: str, markup: str, text: str, title: str = "") -> l
         blockers.append(PageBlocker("auth_or_captcha", "captcha widget detected"))
     if _is_low_signal_text(text):
         blockers.append(PageBlocker("low_signal", "extracted text too short or noisy"))
-    if re.search(r"\b403\b|\b429\b|access denied|forbidden", combined):
+    if re.search(r"\b403\b|\b429\b|access denied|forbidden|频控|访问频繁|请求过于频繁", combined):
         blockers.append(PageBlocker("http_blocked", "access denied or rate limited"))
     return blockers
 
 
 def is_usable_page(page: SanitizedPage, min_chars: int = 80) -> bool:
-    if any(blocker.kind == "auth_or_captcha" for blocker in page.blockers):
+    if any(blocker.kind in {"auth_or_captcha", "rate_limited", "http_blocked"} for blocker in page.blockers):
         return False
     rich = page.rich_text
     return len(rich) >= min_chars and not _looks_like_css_dump(rich)

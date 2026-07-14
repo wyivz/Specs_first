@@ -12,6 +12,10 @@ NOISY_ECOMMERCE_HOST_HINTS = (
     "club.jd.com",
     "passport.jd.com",
     "search.jd.com",
+    # JD PC frequency-control / anti-bot interstitial (reason=403).
+    "pc-frequent-pro.pf.jd.com",
+    "pc-frequent.pf.jd.com",
+    "frequent.jd.com",
     "login.taobao.com",
     "login.tmall.com",
     "passport.taobao.com",
@@ -26,6 +30,25 @@ NOISY_ECOMMERCE_PATH_HINTS = (
     "/lang/",
 )
 
+# Hosts that mean "slow down / blocked", not "solve slider captcha".
+RATE_LIMIT_HOST_HINTS = (
+    "pc-frequent-pro.pf.jd.com",
+    "pc-frequent.pf.jd.com",
+    "frequent.jd.com",
+)
+
+
+def is_rate_limited_ecommerce_url(url: str) -> bool:
+    """True for JD frequency-control interstitials (pc-frequent-pro, reason=403)."""
+    if not url:
+        return False
+    lower = url.lower()
+    if any(hint in lower for hint in RATE_LIMIT_HOST_HINTS):
+        return True
+    if "pf.jd.com" in lower and ("frequent" in lower or "reason=403" in lower):
+        return True
+    return False
+
 
 def is_noisy_ecommerce_url(url: str) -> bool:
     if not url or not url.startswith("http"):
@@ -33,6 +56,8 @@ def is_noisy_ecommerce_url(url: str) -> bool:
     if "{keyword}" in url or "{" in urlparse(url).path:
         return True
     lower = url.lower()
+    if is_rate_limited_ecommerce_url(url):
+        return True
     if any(hint in lower for hint in NOISY_ECOMMERCE_HOST_HINTS):
         return True
     if any(hint in lower for hint in NOISY_ECOMMERCE_PATH_HINTS):
