@@ -562,15 +562,16 @@ class EcommerceSourceCollector:
             return True
         if isinstance(exc, BrowserAuthRequired):
             pause_url = getattr(exc, "url", "") or url
-            if platform == "Taobao/Tmall" or not self._is_product_result(platform, pause_url, url):
-                self.diagnostics.record(
-                    platform,
-                    f"soft-skip browser auth for {pause_url}: {exc}",
-                    level="warning",
-                    sku=sku,
-                )
-                return True
-            return False
+            # Soft-skip marketplace captchas so one slider does not abort the whole
+            # compare. Prices can still come from JD mgets; Streamlit diagnostics
+            # still surface the skip for cookie refresh.
+            self.diagnostics.record(
+                platform,
+                f"soft-skip browser auth for {pause_url}: {exc}",
+                level="warning",
+                sku=sku,
+            )
+            return True
         return False
 
     def _detail_api_urls_for_platform(self, platform: str, url: str, markup: str) -> list[str]:

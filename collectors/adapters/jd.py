@@ -18,7 +18,7 @@ class JdAdapter:
         re.compile(r"券后价\D{0,12}([0-9]{2,6}(?:\.[0-9]{1,2})?)"),
     ]
     PRODUCT_URL_RE = re.compile(
-        r"https?://(?:item\.m\.jd\.com|item\.jd\.com|npcitem\.jd\.hk)/(\d+)(?:\.html)?",
+        r"https?://(?:item\.m\.jd\.com|item\.jd\.com|npcitem\.jd\.hk)/(?:product/)?(\d+)(?:\.html)?",
         re.I,
     )
     NOISE_HOST_HINTS = (

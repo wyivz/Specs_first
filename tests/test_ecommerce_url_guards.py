@@ -87,6 +87,16 @@ class EcommerceProductUrlGuardTest(unittest.TestCase):
             )
         )
 
+    def test_jd_mobile_product_path_is_product(self) -> None:
+        from collectors.adapters.jd import JdAdapter
+
+        adapter = JdAdapter()
+        self.assertTrue(adapter.is_product_url("https://item.m.jd.com/product/100010708487.html"))
+        self.assertEqual(
+            adapter.normalize_url("https://item.m.jd.com/product/100010708487.html"),
+            "https://item.jd.com/100010708487.html",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
