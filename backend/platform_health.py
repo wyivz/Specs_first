@@ -148,12 +148,19 @@ def check_taobao_credentials() -> CheckResult:
 
 def check_jd_credentials() -> CheckResult:
     creds = load_jd_credentials()
-    if creds.configured:
+    if creds.configured and creds.has_login_session:
         return CheckResult(
             name="jd_credentials",
             status="ok",
-            message="JD session cookies configured",
-            details={"recommended": ["pt_key", "pt_pin"]},
+            message="JD session cookies configured (pt_key/pt_pin present)",
+            details={"has_login_session": True},
+        )
+    if creds.configured:
+        return CheckResult(
+            name="jd_credentials",
+            status="warn",
+            message="JD_COOKIE set but missing pt_key/pt_pin; item pages may redirect to login",
+            details={"has_login_session": False, "required": ["pt_key", "pt_pin"]},
         )
     return CheckResult(
         name="jd_credentials",

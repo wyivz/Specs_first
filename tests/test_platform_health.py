@@ -63,6 +63,16 @@ class PlatformHealthTest(unittest.TestCase):
         self.assertIn("gemini_model", names)
         self.assertIn("bilibili_credentials", names)
 
+    def test_check_jd_credentials_warns_without_login_session(self) -> None:
+        from backend.platform_health import check_jd_credentials
+        from collectors.credentials import JdCredentials
+
+        with patch("backend.platform_health.load_jd_credentials") as load_jd:
+            load_jd.return_value = JdCredentials(cookie="foo=bar; other=1")
+            result = check_jd_credentials()
+        self.assertEqual(result.status, "warn")
+        self.assertIn("pt_key", result.message)
+
     def test_check_gemini_model_warns_on_retired_config(self) -> None:
         # check_gemini_model reads platform_health.settings; build_gemini_health
         # reads gemini_health.settings — both must be patched to the same mock.

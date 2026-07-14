@@ -14,7 +14,9 @@ def _load_dotenv() -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip())
+        value = value.strip()
+        if value:
+            os.environ.setdefault(key.strip(), value)
 
 
 def _float_env(name: str, default: float) -> float:
@@ -25,6 +27,11 @@ def _float_env(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _str_env(name: str, default: str) -> str:
+    raw = os.getenv(name, "").strip()
+    return raw or default
 
 
 def _int_env(name: str, default: int) -> int:
@@ -109,10 +116,10 @@ class Settings:
     reddit_cookie: str = os.getenv("REDDIT_COOKIE", "")
 
     # Smoke / probe defaults (override in .env; leave Bilibili empty to skip API smoke)
-    smoke_jd_url: str = os.getenv("SMOKE_JD_URL", "https://item.jd.com/100012043978.html")
-    smoke_taobao_item_id: str = os.getenv("SMOKE_TAOBAO_ITEM_ID", "520813140663")
-    smoke_bilibili_bvid: str = os.getenv("SMOKE_BILIBILI_BVID", "")
-    smoke_youtube_url: str = os.getenv(
+    smoke_jd_url: str = _str_env("SMOKE_JD_URL", "https://item.jd.com/100012043978.html")
+    smoke_taobao_item_id: str = _str_env("SMOKE_TAOBAO_ITEM_ID", "520813140663")
+    smoke_bilibili_bvid: str = os.getenv("SMOKE_BILIBILI_BVID", "").strip()
+    smoke_youtube_url: str = _str_env(
         "SMOKE_YOUTUBE_URL",
         "https://www.youtube.com/watch?v=jNQXAC9IVRw",
     )

@@ -85,6 +85,11 @@ class JdCredentials:
     def configured(self) -> bool:
         return bool(self.cookie.strip())
 
+    @property
+    def has_login_session(self) -> bool:
+        names = {item["name"] for item in parse_cookie_header(self.cookie, ".jd.com")}
+        return "pt_key" in names and "pt_pin" in names
+
     def request_headers(self) -> dict[str, str]:
         cookie = self.cookie.strip()
         if not cookie:
