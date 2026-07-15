@@ -1,22 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import re
 
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import (
-    candidate_from_search_result,
     evidence_mentions_sku,
-    extract_product_skus_from_hit,
     extract_specs_from_text,
-    infer_brand,
     infer_specs_from_sku,
-    is_category_or_list_url,
-    is_concrete_product_sku,
-    is_listicle_title,
-    is_product_detail_url,
     page_matches_sku,
     primary_model_code,
-    sku_identity_key,
 )
 from collectors.http import HttpClient, SearchResult, clip, extract_title
 from collectors.protocols import SpecExtractionRouter
@@ -54,36 +47,49 @@ class OfficialSourceCollector:
         self.category_profile: DynamicCategoryProfile | None = None
         self.last_discovery_hits: list[SearchResult] = []
 
-    def discover_candidates(self, query: str, category: str, max_results: int = 10) -> list[ProductCandidate]:
+    def collect_discovery_hits(
+        self,
+        query: str,
+        category: str,
+        max_results: int = 10,
+        *,
+        quick: bool = False,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> list[SearchResult]:
+        """Search the open web for discovery evidence (no SKU parsing here)."""
         seed = (query or "").strip()
-        search_plans = [
-            f"{seed} 型号 推荐 对比".strip(),
-            f"{seed} {category} specs 参数".strip(),
-            f"{seed} review specifications".strip(),
-            f"{seed} {category} official".strip(),
-        ]
+        if quick:
+            search_plans = [
+                f"{seed} 型号".strip(),
+                f"{seed} models comparison".strip(),
+            ]
+        else:
+            search_plans = [
+                f"{seed} 型号 推荐".strip(),
+                f"{seed} {category} models".strip(),
+                f"{seed} review specifications".strip(),
+                f"{seed} official".strip(),
+            ]
+        per_plan = max(max_results, 6) if quick else max(max_results * 2, 8)
+
         results: list[SearchResult] = []
         seen_urls: set[str] = set()
-        candidates: list[ProductCandidate] = []
-        for plan in search_plans:
+        for plan_index, plan in enumerate(search_plans, start=1):
             if not plan:
                 continue
-            for result in self.http.search(plan, max_results=max_results * 2):
-                if result.url in seen_urls:
+            if on_progress:
+                on_progress(f"搜索 {plan_index}/{len(search_plans)}：{plan[:48]}")
+            try:
+                plan_hits = self.http.search(plan, max_results=per_plan, quick=quick)
+            except TypeError:
+                plan_hits = self.http.search(plan, max_results=per_plan)
+            for result in plan_hits:
+                if not result.url or result.url in seen_urls:
                     continue
                 seen_urls.add(result.url)
                 results.append(result)
-            self.last_discovery_hits = list(results)
-            # Stop early once we have enough concrete product models.
-            candidates = self._candidates_from_search_results(
-                results,
-                seed=seed,
-                category=category,
-                max_results=max_results,
-                allow_weak_fallback=False,
-            )
-            if len(candidates) >= max_results:
-                return candidates[:max_results]
+            if quick and len(results) >= max(8, max_results):
+                break
 
         self.last_discovery_hits = list(results)
         if not results:
@@ -92,104 +98,26 @@ class OfficialSourceCollector:
                 f"search empty for discovery query: {seed or category}",
                 level="warning",
             )
-        candidates = self._candidates_from_search_results(
-            results,
-            seed=seed,
-            category=category,
-            max_results=max_results,
-            allow_weak_fallback=True,
-        )
-        if not candidates:
-            candidates = [
-                ProductCandidate(
-                    sku=seed or "Unknown Product",
-                    brand=infer_brand(seed) if seed else "Unknown",
-                    category=category,
-                    source_url="https://example.invalid/no-source",
-                    confidence=0.35,
-                )
-            ]
-        return candidates[:max_results]
+        return results
 
-    def _candidates_from_search_results(
+    def discover_candidates(
         self,
-        results: list[SearchResult],
-        *,
-        seed: str,
+        query: str,
         category: str,
-        max_results: int,
-        allow_weak_fallback: bool,
+        max_results: int = 10,
+        *,
+        quick: bool = False,
+        on_progress: Callable[[str], None] | None = None,
     ) -> list[ProductCandidate]:
-        ranked = _rank_discovery_results(results, query=seed)
-        candidates: list[ProductCandidate] = []
-        seen_keys: set[str] = set()
-
-        def _add(candidate: ProductCandidate) -> bool:
-            if not is_concrete_product_sku(candidate.sku):
-                return False
-            key = sku_identity_key(candidate.sku)
-            if not key or key in seen_keys:
-                return False
-            seen_keys.add(key)
-            candidates.append(candidate)
-            return True
-
-        seed_is_specific = bool(primary_model_code(seed)) or (
-            is_concrete_product_sku(seed) and len(seed) <= 48
+        """Legacy entry: collect hits only. SKU shortlist is produced by AI upstream."""
+        self.collect_discovery_hits(
+            query,
+            category,
+            max_results,
+            quick=quick,
+            on_progress=on_progress,
         )
-
-        # Prefer explicit models extracted from any hit (including listicles).
-        for result in ranked:
-            if _discovery_conflicts_with_query(seed, result.title, result.snippet):
-                continue
-            for sku, brand in extract_product_skus_from_hit(result.title, result.snippet):
-                confidence = 0.8 if is_product_detail_url(result.url) else 0.72
-                _add(
-                    ProductCandidate(
-                        sku=sku,
-                        brand=brand,
-                        category=category,
-                        source_url=result.url,
-                        confidence=confidence,
-                    )
-                )
-                if len(candidates) >= max_results:
-                    return candidates
-
-        # Product-detail pages with a concrete cleaned title.
-        for result in ranked:
-            if is_category_or_list_url(result.url) or is_listicle_title(result.title):
-                continue
-            if _discovery_conflicts_with_query(seed, result.title, result.snippet):
-                continue
-            if not _discovery_matches_query(seed, result.title, result.snippet, result.url):
-                continue
-            candidate = candidate_from_search_result(result, category)
-            if seed_is_specific and primary_model_code(seed):
-                # Keep the user's model when the query already names one.
-                if evidence_mentions_sku(seed, result.title, result.snippet, result.url):
-                    candidate = ProductCandidate(
-                        sku=seed[:120],
-                        brand=infer_brand(seed),
-                        category=category,
-                        source_url=result.url,
-                        confidence=max(candidate.confidence, 0.82),
-                    )
-            _add(candidate)
-            if len(candidates) >= max_results:
-                return candidates
-
-        if not candidates and allow_weak_fallback and seed_is_specific:
-            _add(
-                ProductCandidate(
-                    sku=seed[:120],
-                    brand=infer_brand(seed),
-                    category=category,
-                    source_url="https://example.invalid/query-seed",
-                    confidence=0.4,
-                )
-            )
-        return candidates
+        return []
 
     def collect_specs(
         self,
@@ -232,7 +160,6 @@ class OfficialSourceCollector:
                 storage_state_path=storage_state_path,
                 sku=candidate.sku,
             )
-            # One retry for transient timeouts on manufacturer pages.
             if (not snapshot.ok) and "timed out" in (snapshot.error or "").lower():
                 self.diagnostics.record(
                     "official",
@@ -312,83 +239,11 @@ class OfficialSourceCollector:
         if not soft and not any(hint in combined for hint in self.OFFICIAL_HINTS):
             return False
         if query and not evidence_mentions_sku(query, result.title, result.snippet, result.url):
-            if not _discovery_matches_query(query, result.title, result.snippet, result.url):
+            tokens = [
+                token
+                for token in re.findall(r"[\w\u4e00-\u9fff]+", query.lower())
+                if len(token) >= 2
+            ]
+            if tokens and sum(1 for token in tokens if token in combined) < max(1, min(2, len(tokens) // 2)):
                 return False
         return True
-
-
-_DISCOVERY_STOP_WORDS = {
-    "the",
-    "and",
-    "for",
-    "with",
-    "product",
-    "official",
-    "specifications",
-    "specs",
-    "review",
-    "品类",
-    "通用",
-    "对比",
-    "评测",
-    "参数",
-}
-_DOMAIN_MOUSE_HINTS = ("鼠标", "mouse", "dpi", "logitech", "罗技", "rapoo", "雷柏", "razer", "雷蛇")
-_DOMAIN_LENS_HINTS = ("50mm", "35mm", "85mm", "镜头", " lens", "f/1.", "f/2", "gm ", "fe 50", "sel")
-_DOMAIN_KEYBOARD_HINTS = ("键盘", "keyboard", "机械", "键帽", "轴体", "75%", "tkl")
-
-
-def _discovery_tokens(query: str) -> list[str]:
-    return [
-        token
-        for token in re.findall(r"[\w\u4e00-\u9fff]+", (query or "").lower())
-        if len(token) >= 2 and token not in _DISCOVERY_STOP_WORDS
-    ]
-
-
-def _discovery_matches_query(query: str, title: str, snippet: str = "", url: str = "") -> bool:
-    if not (query or "").strip():
-        return True
-    if evidence_mentions_sku(query, title, snippet, url):
-        return True
-    blob = f"{title} {snippet} {url}".lower()
-    tokens = _discovery_tokens(query)
-    if not tokens:
-        return True
-    hits = sum(1 for token in tokens if token in blob)
-    return hits >= max(1, min(2, len(tokens) // 2))
-
-
-def _discovery_conflicts_with_query(query: str, title: str, snippet: str = "") -> bool:
-    q = (query or "").lower()
-    blob = f"{title} {snippet}".lower()
-    if not q.strip():
-        return False
-
-    def _query_has(*hints: str) -> bool:
-        return any(hint in q for hint in hints)
-
-    def _blob_has(*hints: str) -> bool:
-        return any(hint in blob for hint in hints)
-
-    if _query_has(*_DOMAIN_MOUSE_HINTS) and _blob_has(*_DOMAIN_LENS_HINTS) and not _blob_has(*_DOMAIN_MOUSE_HINTS):
-        return True
-    if _query_has(*_DOMAIN_KEYBOARD_HINTS) and _blob_has(*_DOMAIN_LENS_HINTS) and not _blob_has(*_DOMAIN_KEYBOARD_HINTS):
-        return True
-    if _query_has(*_DOMAIN_LENS_HINTS) and _blob_has(*_DOMAIN_MOUSE_HINTS) and not _blob_has(*_DOMAIN_LENS_HINTS):
-        return True
-    return False
-
-
-def _rank_discovery_results(results: list[SearchResult], *, query: str) -> list[SearchResult]:
-    tokens = _discovery_tokens(query)
-
-    def score(index_and_result: tuple[int, SearchResult]) -> tuple[int, int]:
-        index, result = index_and_result
-        blob = f"{result.title} {result.snippet}".lower()
-        token_hits = sum(1 for token in tokens if token in blob)
-        sku_hit = 20 if evidence_mentions_sku(query, result.title, result.snippet, result.url) else 0
-        conflict = 1 if _discovery_conflicts_with_query(query, result.title, result.snippet) else 0
-        return (-conflict, -(sku_hit + token_hits * 3), index)
-
-    return [item for _, item in sorted(enumerate(results), key=score)]

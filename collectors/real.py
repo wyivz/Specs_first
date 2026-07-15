@@ -99,8 +99,46 @@ class RealCollector(Collector):
     def _restore_trace(self, previous) -> None:
         self.resilient.trace = previous
 
-    def discover_candidates(self, query: str, category: str) -> list[ProductCandidate]:
-        return self.official.discover_candidates(query, category)
+    def discover_candidates(
+        self,
+        query: str,
+        category: str,
+        max_results: int = 10,
+        *,
+        quick: bool = False,
+        on_progress=None,
+        llm_json=None,
+    ) -> list[ProductCandidate]:
+        """Search → fetch page bodies → AI shortlist of buyable models."""
+        hits = self.official.collect_discovery_hits(
+            query,
+            category,
+            max_results,
+            quick=quick,
+            on_progress=on_progress,
+        )
+        from backend.discover_normalize import discover_skus_from_evidence
+
+        def _fetch_page(url: str) -> str:
+            try:
+                result = self.http.fetch(url)
+            except Exception:
+                return ""
+            if not getattr(result, "ok", False):
+                return ""
+            return result.text or ""
+
+        return discover_skus_from_evidence(
+            query,
+            hits,
+            category=category,
+            max_results=max_results,
+            on_progress=on_progress,
+            llm_json=llm_json if llm_json is not None else getattr(self, "_discover_llm_json", None),
+            page_fetcher=_fetch_page,
+            fetch_bodies=True,
+            max_pages=4 if quick else 6,
+        )
 
     def collect_official_specs(
         self,

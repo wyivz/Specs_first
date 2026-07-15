@@ -10,6 +10,7 @@ except ImportError as exc:  # pragma: no cover
 
 from frontend.api_client import get_api_client
 
+
 CHECK_HINTS: dict[str, str] = {
     "gemini_model": "在 .env 配置 GEMINI_API_KEY",
     "openai_key": "在 .env 配置 OPENAI_API_KEY",

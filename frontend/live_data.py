@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.task_runner import task_manager
 from schemas import to_dict
 
 __all__ = [
@@ -12,9 +11,15 @@ __all__ = [
 ]
 
 
+def _task_manager():
+    from backend.task_runner import task_manager
+
+    return task_manager
+
+
 def get_task_status(task_id: str) -> dict[str, Any]:
     """In-process task status — no TestClient / JSON round-trip."""
-    record = task_manager.get(task_id)
+    record = _task_manager().get(task_id)
     if not record:
         raise KeyError(f"Task not found: {task_id}")
     return {"task_id": task_id, "state": record.state, "error": record.error or ""}
@@ -28,7 +33,7 @@ def events_since(task_id: str, seen: int = 0) -> tuple[list[dict[str, Any]], int
     """
     if seen < 0:
         seen = 0
-    matched = [event for event in task_manager.event_bus.events if event.task_id == task_id]
+    matched = [event for event in _task_manager().event_bus.events if event.task_id == task_id]
     total = len(matched)
     if seen > total:
         seen = 0
@@ -37,7 +42,7 @@ def events_since(task_id: str, seen: int = 0) -> tuple[list[dict[str, Any]], int
 
 def get_task_result(task_id: str) -> dict[str, Any]:
     """In-process result payload matching ``GET /tasks/{id}/result``."""
-    record = task_manager.get(task_id)
+    record = _task_manager().get(task_id)
     if not record:
         raise KeyError(f"Task not found: {task_id}")
     if not record.result:

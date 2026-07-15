@@ -6,7 +6,7 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Install optional dependencies before running the UI: streamlit") from exc
 
 from frontend.state import init_session_state
-from frontend.ui.health_panel import get_cached_health, render_health_panel
+from frontend.ui.health_panel import render_health_panel
 from frontend.ui.input_panel import handle_run_action, render_input_panel, render_sidebar_settings
 from frontend.ui.live_workspace import live_workspace_fragment, render_idle_status, render_paused_panel
 from frontend.ui.output_panel import render_output_panel
@@ -20,7 +20,7 @@ st.title("Specs-First · 不服跑个分")
 st.caption("官方冰冷参数 · 民间翻车黑料 · 真实到手价 · 证据链可追溯")
 
 init_session_state()
-get_cached_health()
+# Defer health until the panel renders — avoids blocking first paint.
 
 with st.sidebar:
     settings = render_sidebar_settings()

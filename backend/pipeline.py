@@ -10,7 +10,6 @@ from uuid import uuid4
 from backend.checkpoint import CheckpointStore, TaskCheckpoint, create_checkpoint_store
 from backend.events import InMemoryEventBus
 from backend.model_router import create_model_router
-from collectors import MockCollector, RealCollector
 from collectors.base import Collector
 from collectors.browser import BrowserAuthRequired
 from collectors.platform_auth import PlatformAuthRequired
@@ -49,9 +48,15 @@ class TaskResult:
     category_profile: DynamicCategoryProfile | None = None
 
 
+def _default_mock_collector() -> Collector:
+    from collectors import MockCollector
+
+    return MockCollector()
+
+
 @dataclass
 class SpecsFirstPipeline:
-    collector: Collector = field(default_factory=MockCollector)
+    collector: Collector = field(default_factory=_default_mock_collector)
     router: object = field(default_factory=lambda: create_model_router("keyword"))
     event_bus: InMemoryEventBus = field(default_factory=InMemoryEventBus)
     vault_path: Path = Path("vault_output")
@@ -153,7 +158,7 @@ class SpecsFirstPipeline:
             task_id=task_id,
             query=query,
             category=resolved_category,
-            mode="mock" if isinstance(self.collector, MockCollector) else "real",
+            mode="mock" if type(self.collector).__name__ == "MockCollector" else "real",
             source_urls=source_urls or [],
             selected_skus=selected_skus or [candidate.sku for candidate in selected],
             candidates=candidates,
@@ -780,6 +785,8 @@ def create_pipeline(
     event_bus: InMemoryEventBus | None = None,
     checkpoint_store: CheckpointStore | None = None,
 ) -> SpecsFirstPipeline:
+    from collectors import MockCollector, RealCollector
+
     collector = RealCollector(source_urls=source_urls or []) if mode == "real" else MockCollector()
     resolved_router_mode = model_mode or ("keyword" if mode == "mock" else None)
     return SpecsFirstPipeline(

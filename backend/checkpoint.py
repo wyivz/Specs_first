@@ -54,10 +54,23 @@ class MemoryCheckpointStore:
 
 
 class RedisCheckpointStore:
-    def __init__(self, redis_url: str) -> None:
+    def __init__(
+        self,
+        redis_url: str,
+        *,
+        socket_connect_timeout: float = 0.25,
+        socket_timeout: float = 0.5,
+    ) -> None:
         import redis
 
-        self.client = redis.from_url(redis_url, decode_responses=True)
+        # Keep connect probe short so GUI / task_manager cold-start does not hang
+        # for several seconds when REDIS_URL points at a down local Redis.
+        self.client = redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=socket_connect_timeout,
+            socket_timeout=socket_timeout,
+        )
         self.prefix = "specs-first:checkpoint:"
 
     def save(self, checkpoint: TaskCheckpoint) -> None:

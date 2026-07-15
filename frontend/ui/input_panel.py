@@ -7,7 +7,6 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Install optional dependencies before running the UI: streamlit") from exc
 
-from frontend.api_client import get_api_client
 from frontend.event_listener import start_listener
 from frontend.state import reset_task_state
 from frontend.ui.health_panel import get_cached_health, real_mode_ready
@@ -41,8 +40,9 @@ def start_background_task(
     vault_path: str,
     use_browser: bool = False,
 ) -> None:
-    api = get_api_client()
-    task_id = api.start_task(
+    from backend.task_runner import task_manager
+
+    task_id = task_manager.start_task(
         query=query,
         category=category,
         selected_skus=selected_skus,
@@ -58,7 +58,9 @@ def start_background_task(
 
 
 def resume_background_task(task_id: str) -> None:
-    get_api_client().resume_auth(task_id, use_browser=True)
+    from backend.task_runner import task_manager
+
+    task_manager.resume_task(task_id, use_browser=True)
     st.session_state["active_task_id"] = task_id
     st.session_state["seen_event_count"] = 0
     st.session_state.setdefault("matrix_rows", [])
@@ -312,18 +314,24 @@ def render_input_panel(settings: RunSettings) -> InputContext:
         spinner_label = (
             "正在生成 Mock 候选…"
             if settings.mode == "mock"
-            else "正在联网搜索候选 SKU（Real 模式通常需要十几秒，请稍候）…"
+            else "正在搜索并抓取页面，AI 提炼可购型号…"
         )
         discovered: list[dict] = []
+        progress = st.empty()
         with st.spinner(spinner_label):
             try:
                 from backend.task_runner import task_manager
+
+                def _on_progress(message: str) -> None:
+                    progress.caption(message)
 
                 discovered = task_manager.discover(
                     query=query,
                     category=category,
                     mode=settings.mode,
                     source_urls=source_urls,
+                    quick=settings.mode == "real",
+                    on_progress=_on_progress if settings.mode == "real" else None,
                 )[:10]
             except Exception as exc:
                 st.session_state["discover_error"] = str(exc)
@@ -338,12 +346,15 @@ def render_input_panel(settings: RunSettings) -> InputContext:
                 st.session_state.pop("_candidates_version", None)
                 if discovered:
                     st.session_state["discover_message"] = (
-                        f"找到 {len(discovered)} 个候选型号，请勾选要对比的具体型号后开始对比。"
+                        f"AI 已从页面内容提炼出 {len(discovered)} 个可购型号，"
+                        "请勾选后开始对比（不是文章标题）。"
                     )
                 else:
                     st.session_state["discover_message"] = (
-                        "未发现候选。可换关键词、切 Mock，或在高级选项中填写 Source URLs。"
+                        "未提炼出可购型号。请确认已配置 Gemini/OpenAI Key；"
+                        "也可换更具体关键词，或在下方手动添加型号。"
                     )
+        progress.empty()
 
     if st.session_state.get("discover_error"):
         st.error(f"搜索候选失败：{st.session_state['discover_error']}")

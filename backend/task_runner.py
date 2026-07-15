@@ -9,7 +9,6 @@ from backend.checkpoint import CheckpointStore, create_checkpoint_store
 from backend.events import InMemoryEventBus
 from backend.model_router import create_model_router
 from backend.pipeline import SpecsFirstPipeline, TaskResult
-from collectors import MockCollector, RealCollector
 from collectors.base import Collector
 from schemas import TaskState
 
@@ -37,6 +36,9 @@ class TaskManager:
         vault_path: str | Path = "vault_output",
         model_mode: str | None = None,
     ) -> SpecsFirstPipeline:
+        # Lazy imports: collectors.real pulls Playwright/adapters and slows GUI cold start.
+        from collectors import MockCollector, RealCollector
+
         resolved_router_mode = model_mode or ("keyword" if mode == "mock" else None)
         router = create_model_router(resolved_router_mode)
         if mode == "real":
@@ -145,30 +147,19 @@ class TaskManager:
         category: str = "Product",
         mode: str = "mock",
         source_urls: list[str] | None = None,
+        *,
+        quick: bool = False,
+        on_progress=None,
     ) -> list[dict]:
         pipeline = self.create_pipeline(mode=mode, source_urls=source_urls)
-        candidates = list(pipeline.collector.discover_candidates(query, category)[:10])
-
-        if mode == "real":
-            from backend.discover_normalize import (
-                concrete_candidate_count,
-                discover_skus_from_evidence,
-                merge_discovery_candidates,
+        discover_kwargs: dict = {"quick": quick, "on_progress": on_progress}
+        try:
+            candidates = list(
+                pipeline.collector.discover_candidates(query, category, **discover_kwargs)[:10]
             )
-
-            if concrete_candidate_count(candidates) < 3:
-                hits = []
-                official = getattr(pipeline.collector, "official", None)
-                if official is not None:
-                    hits = list(getattr(official, "last_discovery_hits", []) or [])
-                enriched = discover_skus_from_evidence(
-                    query,
-                    hits,
-                    category=category,
-                    max_results=10,
-                )
-                if enriched:
-                    candidates = merge_discovery_candidates(candidates, enriched, max_results=10)
+        except TypeError:
+            # MockCollector / older collectors may not accept quick flags.
+            candidates = list(pipeline.collector.discover_candidates(query, category)[:10])
 
         from schemas import to_dict
 

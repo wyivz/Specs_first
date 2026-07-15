@@ -103,7 +103,9 @@ class Settings:
     gemini_call_timeout_seconds: float = _float_env("GEMINI_CALL_TIMEOUT_SECONDS", 45.0)
     # Gemini 3.x thinking level: minimal | low | medium | high (see Gemini 3.5 Flash docs)
     gemini_thinking_level: str = os.getenv("GEMINI_THINKING_LEVEL", "").strip()
-    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    # Empty by default: probing a down local Redis blocked GUI cold-start for seconds.
+    # Set REDIS_URL explicitly when a shared checkpoint store is required.
+    redis_url: str = os.getenv("REDIS_URL", "").strip()
     vault_path: Path = Path(os.getenv("OBSIDIAN_VAULT_PATH", "vault_output"))
     default_mode: str = os.getenv("SPECS_FIRST_MODE", "mock")
 

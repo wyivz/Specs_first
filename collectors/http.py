@@ -113,21 +113,31 @@ class HttpClient:
 
         return platform_for_url(url)
 
-    def search(self, query: str, max_results: int = 8) -> list[SearchResult]:
+    def search(self, query: str, max_results: int = 8, *, quick: bool = False) -> list[SearchResult]:
         try:
             from collectors.rate_limit import get_rate_limiter
 
             get_rate_limiter().wait("http")
         except Exception:
             pass
-        results = self._search_duckduckgo_html(query, max_results)
-        if results:
+        previous_timeout = self.timeout_seconds
+        if quick:
+            # Discovery UI: fail fast across backends instead of stacking 12s timeouts.
+            self.timeout_seconds = min(self.timeout_seconds, 6.0)
+        try:
+            results = self._search_duckduckgo_html(query, max_results)
+            if results:
+                return results[:max_results]
+            results = self._search_duckduckgo_lite(query, max_results)
+            if results:
+                return results[:max_results]
+            if quick:
+                # Skip ddgs third hop in quick mode — it often adds latency without new hits.
+                return []
+            results = self._search_duckduckgo_ddgs(query, max_results)
             return results[:max_results]
-        results = self._search_duckduckgo_lite(query, max_results)
-        if results:
-            return results[:max_results]
-        results = self._search_duckduckgo_ddgs(query, max_results)
-        return results[:max_results]
+        finally:
+            self.timeout_seconds = previous_timeout
 
     def _search_duckduckgo_html(self, query: str, max_results: int) -> list[SearchResult]:
         url = "https://html.duckduckgo.com/html/"

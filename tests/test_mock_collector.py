@@ -1,21 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 
-from collectors.extractors import (
-    extract_product_skus_from_hit,
-    is_category_or_list_url,
-    is_concrete_product_sku,
-    is_listicle_title,
-)
+from backend.discover_normalize import discover_skus_from_evidence, merge_discovery_candidates, usable_discovered_sku
 from collectors.http import SearchResult
 from collectors.mock import MockCollector
-from collectors.sources.official import (
-    OfficialSourceCollector,
-    _discovery_conflicts_with_query,
-    _discovery_matches_query,
-)
-from backend.discover_normalize import merge_discovery_candidates
+from collectors.real import RealCollector
+from collectors.sources.official import OfficialSourceCollector
 from schemas import ProductCandidate
 
 
@@ -47,95 +39,141 @@ class MockCollectorDiscoverTest(unittest.TestCase):
         self.assertIn("dpi_range", names)
 
 
-class OfficialDiscoveryHelperTest(unittest.TestCase):
-    def test_discovery_conflicts_mouse_vs_lens(self) -> None:
-        self.assertTrue(
-            _discovery_conflicts_with_query(
-                "罗技 G304 无线鼠标",
-                "Sony FE 50mm F1.2 GM",
-                "full-frame lens review",
-            )
+class AiDiscoveryNormalizeTest(unittest.TestCase):
+    def test_llm_maps_listicle_hits_to_models_any_category(self) -> None:
+        hits = [
+            SearchResult(
+                title="2026年最建议买的10个蓝牙键盘品牌推荐",
+                url="https://zhuanlan.zhihu.com/p/1",
+                snippet="文中对比了罗技 K380、罗技 MX Keys、Apple Magic Keyboard",
+            ),
+            SearchResult(
+                title="你绝对想不到蓝牙键盘可以这样折叠",
+                url="https://www.ifanr.com/556817",
+                snippet="折叠键盘体验文章，没有具体型号",
+            ),
+        ]
+
+        def fake_llm(_system: str, prompt: str) -> dict[str, Any]:
+            self.assertIn("body=", prompt)
+            return {
+                "products": [
+                    {"sku": "Logitech K380", "brand": "Logitech", "evidence_index": 1},
+                    {"sku": "Logitech MX Keys", "brand": "Logitech", "evidence_index": 1},
+                    {"sku": "Apple Magic Keyboard", "brand": "Apple", "evidence_index": 1},
+                    {
+                        "sku": "你绝对想不到蓝牙键盘可以这样折叠",
+                        "brand": "Unknown",
+                        "evidence_index": 2,
+                    },
+                ]
+            }
+
+        def fake_fetch(url: str) -> str:
+            if "zhihu" in url:
+                return "<html>推荐购买 Logitech K380、MX Keys 与 Apple Magic Keyboard</html>"
+            return "<html>无具体型号</html>"
+
+        candidates = discover_skus_from_evidence(
+            "蓝牙键盘",
+            hits,
+            category="Product",
+            llm_json=fake_llm,
+            page_fetcher=fake_fetch,
         )
+        skus = [item.sku for item in candidates]
+        self.assertIn("Logitech K380", skus)
+        self.assertIn("Logitech MX Keys", skus)
+        self.assertIn("Apple Magic Keyboard", skus)
+        self.assertNotIn("你绝对想不到蓝牙键盘可以这样折叠", skus)
+        self.assertEqual(candidates[0].source_url, hits[0].url)
 
-    def test_discovery_matches_mouse_query(self) -> None:
-        self.assertTrue(
-            _discovery_matches_query(
-                "罗技 G304 无线鼠标",
-                "Logitech G304 LIGHTSPEED Wireless Gaming Mouse",
-                "罗技 G304 无线游戏鼠标评测",
-            )
+    def test_rejects_copied_search_titles_even_if_llm_returns_them(self) -> None:
+        hits = [
+            SearchResult("十款值得买的真皮篮球产品榜", "https://example.com/a", "榜单"),
+        ]
+
+        def fake_llm(_system: str, _prompt: str) -> dict[str, Any]:
+            return {
+                "products": [
+                    {"sku": "十款值得买的真皮篮球产品榜", "brand": "Unknown", "evidence_index": 1},
+                    {"sku": "Spalding TF-1000", "brand": "Spalding", "evidence_index": 1},
+                ]
+            }
+
+        candidates = discover_skus_from_evidence(
+            "篮球",
+            hits,
+            llm_json=fake_llm,
+            fetch_bodies=False,
         )
+        skus = [item.sku for item in candidates]
+        self.assertEqual(skus, ["Spalding TF-1000"])
 
-
-class ProductSkuExtractionTest(unittest.TestCase):
-    def test_listicle_title_detected(self) -> None:
-        self.assertTrue(is_listicle_title("【全民众测】五款无线游戏鼠标，谁才是卷王？"))
-        self.assertTrue(is_listicle_title("无线游戏鼠标怎么选？2026这8款低延迟推荐"))
-        self.assertFalse(is_listicle_title("罗技 G Pro 无线游戏鼠标"))
-
-    def test_category_url_detected(self) -> None:
-        self.assertTrue(is_category_or_list_url("https://www.logitechg.com/zh-cn/shop/c/gaming-mice"))
-        self.assertFalse(is_category_or_list_url("https://www.logitechg.com/zh-cn/shop/p/pro-wireless-mouse"))
-
-    def test_extract_models_from_roundup_title(self) -> None:
-        pairs = extract_product_skus_from_hit(
-            "无线游戏鼠标怎么选？2026这8款低延迟电竞鼠标推荐，别乱买了|罗技|雷柏|雷蛇|无线鼠标",
-            "对比了罗技 G304、雷蛇 Viper V3 Pro 与雷柏 VT9 Pro",
-        )
-        skus = " ".join(sku for sku, _ in pairs).lower()
-        self.assertTrue(any("g304" in sku.lower() for sku, _ in pairs) or "g304" in skus)
-        self.assertTrue(any("viper" in sku.lower() for sku, _ in pairs))
-        self.assertTrue(any("vt" in sku.lower() and "9" in sku for sku, _ in pairs))
-        self.assertFalse(any(is_listicle_title(sku) for sku, _ in pairs))
-
-    def test_concrete_sku_rejects_article_headline(self) -> None:
-        self.assertFalse(is_concrete_product_sku("【全民众测】五款无线游戏鼠标，谁才是卷王？"))
-        self.assertTrue(is_concrete_product_sku("Logitech G304"))
-        self.assertTrue(is_concrete_product_sku("罗技 G Pro Wireless"))
-
-
-class OfficialDiscoveryCandidateTest(unittest.TestCase):
-    def test_listicle_hits_become_concrete_models_not_headlines(self) -> None:
+    def test_real_collector_uses_ai_normalizer_not_title_as_sku(self) -> None:
         class _Http:
-            def search(self, query, max_results=8):
+            def search(self, query, max_results=8, *, quick=False):
                 return [
                     SearchResult(
                         title="【全民众测】五款无线游戏鼠标，谁才是卷王？",
                         url="https://post.smzdm.com/p/a7nm8w5g/",
-                        snippet="对比罗技 G304、雷蛇 Viper V3 Pro、雷柏 VT9 Pro 等热门型号",
-                    ),
-                    SearchResult(
-                        title="罗技 G Pro 无线游戏鼠标（专为电竞设计）",
-                        url="https://www.logitechg.com/zh-cn/shop/p/pro-wireless-mouse",
-                        snippet="Logitech G Pro Wireless gaming mouse",
-                    ),
-                    SearchResult(
-                        title="游戏鼠标",
-                        url="https://www.logitechg.com/zh-cn/shop/c/gaming-mice",
-                        snippet="分类页",
-                    ),
+                        snippet="对比罗技 G304、雷蛇 Viper V3 Pro、雷柏 VT9 Pro",
+                    )
+                ]
+
+        def fake_llm(_system: str, _prompt: str) -> dict[str, Any]:
+            return {
+                "products": [
+                    {"sku": "Logitech G304", "brand": "Logitech", "evidence_index": 1},
+                    {"sku": "Razer Viper V3 Pro", "brand": "Razer", "evidence_index": 1},
+                    {"sku": "Rapoo VT9 Pro", "brand": "Rapoo", "evidence_index": 1},
+                ]
+            }
+
+        collector = RealCollector(http=_Http(), browser=object())  # type: ignore[arg-type]
+        # Avoid Playwright launch in unit test.
+        collector.browser = type("B", (), {})()
+        candidates = collector.discover_candidates(
+            "无线游戏鼠标",
+            "Product",
+            quick=True,
+            llm_json=fake_llm,
+        )
+        skus = [item.sku for item in candidates]
+        self.assertEqual(
+            skus,
+            ["Logitech G304", "Razer Viper V3 Pro", "Rapoo VT9 Pro"],
+        )
+        self.assertFalse(any("全民众测" in sku or "五款" in sku for sku in skus))
+
+    def test_official_collects_hits_without_inventing_skus(self) -> None:
+        class _Http:
+            def search(self, query, max_results=8, *, quick=False):
+                return [
+                    SearchResult("headline only", "https://example.com/a", "snippet"),
                 ]
 
         collector = OfficialSourceCollector(_Http())  # type: ignore[arg-type]
-        candidates = collector.discover_candidates("无线游戏鼠标", "Product")
-        skus = [item.sku for item in candidates]
-        self.assertTrue(skus)
-        self.assertTrue(all(is_concrete_product_sku(sku) for sku in skus))
-        self.assertFalse(any("全民众测" in sku or "五款" in sku for sku in skus))
-        joined = " ".join(skus).lower()
-        self.assertTrue("g304" in joined or "g pro" in joined or "viper" in joined)
+        hits = collector.collect_discovery_hits("任意品类词", "Product", quick=True)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(collector.discover_candidates("任意品类词", "Product", quick=True), [])
 
-    def test_merge_prefers_concrete_models(self) -> None:
+    def test_merge_dedupes_by_identity(self) -> None:
         primary = [
-            ProductCandidate("bad headline 五款推荐", "Unknown", "Product", "https://x", 0.5),
             ProductCandidate("Logitech G304", "Logitech", "Product", "https://a", 0.8),
         ]
         secondary = [
-            ProductCandidate("Razer Viper V3 Pro", "Razer", "Product", "https://b", 0.75),
+            ProductCandidate("logitech g304", "Logitech", "Product", "https://b", 0.7),
+            ProductCandidate("Razer Viper V3 Pro", "Razer", "Product", "https://c", 0.75),
         ]
         merged = merge_discovery_candidates(primary, secondary, max_results=10)
         skus = [item.sku for item in merged]
         self.assertEqual(skus, ["Logitech G304", "Razer Viper V3 Pro"])
+
+    def test_usable_sku_is_structural_only(self) -> None:
+        self.assertTrue(usable_discovered_sku("Some Brand Model X1"))
+        self.assertFalse(usable_discovered_sku(""))
+        self.assertFalse(usable_discovered_sku("x" * 100))
 
 
 if __name__ == "__main__":
