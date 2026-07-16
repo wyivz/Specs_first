@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 
-from backend.config import settings
+from collectors.settings import settings
 from backend.gemini_client import get_gemini_client, resolve_gemini_model
 from backend.retry import retry_call
 from backend.router_keyword import KeywordModelRouter

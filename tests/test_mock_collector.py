@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from backend.discover_normalize import discover_skus_from_evidence, merge_discovery_candidates, usable_discovered_sku
+from collectors.discovery import discover_skus_from_evidence, merge_discovery_candidates, usable_discovered_sku
 from collectors.http import SearchResult
 from collectors.mock import MockCollector
 from collectors.real import RealCollector

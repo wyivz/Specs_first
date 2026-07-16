@@ -4,7 +4,7 @@ import dataclasses
 import unittest
 from unittest.mock import patch
 
-from backend.config import settings
+from collectors.settings import settings
 from backend.model_router import HybridModelRouter, KeywordModelRouter, create_model_router
 from schemas import ConflictLevel, EvidenceItem, OfficialSpec, RealWorldFinding
 

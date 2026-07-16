@@ -4,30 +4,6 @@ import json
 import re
 from typing import Any
 
-FINDINGS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "findings": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "detail": {"type": "string"},
-                    "condition": {"type": "string"},
-                    "frequency": {"type": "string"},
-                    "severity": {"type": "string", "enum": ["minor", "major"]},
-                    "evidence_index": {"type": "integer"},
-                },
-                "required": ["title", "detail", "condition", "frequency", "severity", "evidence_index"],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["findings"],
-    "additionalProperties": False,
-}
-
 ARBITRATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {

@@ -88,7 +88,7 @@ Streamlit UI（frontend/app.py）
 - [x] AdapterRegistry 运行时接线；采集层依赖倒置
 - [x] Obsidian + Dataview + CSV
 - [x] 健康检查：`GET /health`、`scripts/smoke_platforms.py`
-- [x] **单元测试 186 项** + GitHub Actions CI
+- [x] **单元测试 197 项** + GitHub Actions CI
 
 ### 需本机实调
 
@@ -112,7 +112,7 @@ Streamlit UI（frontend/app.py）
 
 ```powershell
 cd Specs-first
-pip install fastapi uvicorn streamlit httpx openai google-generativeai redis playwright
+pip install fastapi uvicorn streamlit httpx openai google-genai redis playwright
 pip install -e .
 ```
 
@@ -166,7 +166,7 @@ uvicorn backend.api:app --reload
 python -m unittest discover -s tests
 ```
 
-当前 **186** 项单元测试通过（不含 live smoke）。
+当前 **197** 项单元测试通过（不含 live smoke）。
 
 ```powershell
 python scripts/smoke_platforms.py --health-only
@@ -226,7 +226,7 @@ Specs-first/
 ├── schemas/           # 模型 + DynamicCategoryProfile + matrix
 ├── obsidian/          # Vault 写入 + CSV
 ├── scripts/           # smoke_platforms.py
-├── tests/             # 186 项测试
+├── tests/             # 197 项测试
 ├── plan.md            # 架构计划
 └── .github/workflows/ # CI
 ```

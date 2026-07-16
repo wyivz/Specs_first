@@ -16,6 +16,12 @@ GLOBAL_CSS = """
   --sf-error: #dc2626;
   --sf-surface: #0f172a;
   --sf-border: #334155;
+  --sf-text-primary: #f1f5f9;
+  --sf-text-secondary: #e2e8f0;
+  --sf-text-muted: #cbd5e1;
+  --sf-text-subtle: #94a3b8;
+  --sf-link: #60a5fa;
+  --sf-link-hover: #93c5fd;
 }
 .sf-hero {
   background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
@@ -43,17 +49,24 @@ GLOBAL_CSS = """
 .sf-table { width:100%; border-collapse:collapse; font-size:0.88rem; }
 .sf-table th, .sf-table td { border:1px solid var(--sf-border); padding:8px 10px; vertical-align:top; }
 .sf-table th { background:#1e293b; color:#f1f5f9; position:sticky; top:0; z-index:2; white-space:nowrap; }
-.sf-table td.sf-sticky { position:sticky; left:0; background:#0f172a; z-index:1; font-weight:600; }
+.sf-table td.sf-sticky { position:sticky; left:0; background:var(--sf-surface); z-index:1; font-weight:600; color:var(--sf-text-primary); }
 .sf-table th.sf-sticky { left:0; z-index:3; }
 .sf-badge { margin-left:4px; font-size:0.8rem; }
-.sf-conflict { background:#450a0a; }
-.sf-warning { background:#422006; }
-.sf-missing { color:#94a3b8; font-style:italic; }
-.sf-evidence-link { font-size:0.75rem; display:block; margin-top:4px; }
+.sf-conflict { background:#450a0a; color:#fecaca; }
+.sf-warning { background:#422006; color:#fde68a; }
+.sf-missing { color:var(--sf-text-subtle); font-style:italic; }
+.sf-conflict .sf-missing { color:#fca5a5; }
+.sf-warning .sf-missing { color:#fcd34d; }
+.sf-evidence-link { font-size:0.75rem; display:block; margin-top:4px; color:var(--sf-link-hover); text-decoration:none; }
+.sf-evidence-link:hover { color:var(--sf-link); text-decoration:underline; }
 .sf-candidate {
   border:1px solid var(--sf-border); border-radius:8px; padding:0.65rem 0.85rem; margin-bottom:0.5rem;
-  background:#111827;
+  background:#111827; color:var(--sf-text-secondary);
 }
+.sf-candidate code { background:#1e293b; color:var(--sf-text-primary); padding:2px 6px; border-radius:4px; font-size:0.88em; }
+.sf-candidate a { color:var(--sf-link); text-decoration:none; }
+.sf-candidate a:hover { color:var(--sf-link-hover); text-decoration:underline; }
+.sf-candidate .sf-muted { color:var(--sf-text-muted); font-size:0.82rem; }
 .sf-step-active { font-weight:700; color:#60a5fa; }
 </style>
 """

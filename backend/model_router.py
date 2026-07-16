@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from backend.config import settings
+from collectors.settings import settings
 from backend.router_hybrid import HybridModelRouter
 from backend.router_keyword import KeywordModelRouter
 from backend.router_schemas import (
     ARBITRATION_SCHEMA,
-    FINDINGS_SCHEMA,
     _parse_json_payload,
     parse_json_payload,
 )
 
 __all__ = [
     "ARBITRATION_SCHEMA",
-    "FINDINGS_SCHEMA",
     "HybridModelRouter",
     "KeywordModelRouter",
     "ModelRouter",

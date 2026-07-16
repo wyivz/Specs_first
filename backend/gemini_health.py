@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from backend.config import settings
+from collectors.settings import settings
 from backend.gemini_client import (
     RECOMMENDED_GEMINI_MODEL,
     get_gemini_client,

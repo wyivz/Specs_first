@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from backend.config import settings
+from collectors.settings import settings
 from schemas import TaskState
 
 

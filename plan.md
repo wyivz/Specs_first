@@ -1,3 +1,5 @@
+> **历史文档**：本计划书描述 v4.0 早期架构（Gemini 1.5、强制 Redis、SSE/AgGrid）。**当前实现以 [README.md](README.md) 为准**——进程内 EventBus + Streamlit fragment + 可选 Redis checkpoint。
+
 这是一份融合了 **Gemini 1.5（大吞吐、高带宽、省算力）** 与 **OpenAI（强约束、不翻车、精仲裁）** 的双脑混合架构项目计划书。
 
 系统全面砍掉了易卡死的同步等待逻辑，转为**人机协同异步事件流**，并完美打通 **Obsidian 原生资产下沉**。

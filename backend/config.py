@@ -1,4 +1,4 @@
-"""Application settings — re-exported from collectors for backward compatibility."""
+"""Deprecated — import from ``collectors.settings`` instead."""
 
 from collectors.settings import Settings, settings
 

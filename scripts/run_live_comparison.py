@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from backend.discovery_llm import wire_discover_llm
 from backend.model_router import create_model_router
 from backend.pipeline import SpecsFirstPipeline
 from collectors.real import RealCollector
@@ -71,6 +72,7 @@ def main() -> int:
     source_urls = _optional_source_urls()
     router = create_model_router(MODEL_MODE)
     collector = RealCollector(source_urls=source_urls, router=router)
+    wire_discover_llm(collector)
     pipeline = SpecsFirstPipeline(collector=collector, router=router, vault_path=Path("vault_output"))
 
     print("Starting real comparison...", flush=True)

@@ -88,11 +88,11 @@ class AdapterTest(unittest.TestCase):
     def test_bilibili_subtitle_asr_fallback_disabled(self) -> None:
         import dataclasses
 
-        from backend.config import settings
+        from collectors.settings import settings
 
         client = BilibiliApiClient(credentials=BilibiliCredentials("s", "j", "d"))
         disabled_settings = dataclasses.replace(settings, bilibili_asr_fallback=False)
-        with patch("backend.config.settings", disabled_settings):
+        with patch("collectors.settings.settings", disabled_settings):
             text = client._fetch_subtitle_via_asr("BV1ABCD12345")
         self.assertEqual(text, "")
 

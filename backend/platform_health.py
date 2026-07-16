@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from backend.config import settings
+from collectors.settings import settings
 from backend.gemini_health import RECOMMENDED_GEMINI_MODEL, build_gemini_health, resolve_gemini_model
 from collectors.credentials import (
     load_bilibili_credentials,

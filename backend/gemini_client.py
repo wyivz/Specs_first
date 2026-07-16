@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
-from backend.config import settings
+from collectors.settings import settings
 
 # GA default per https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash
 RECOMMENDED_GEMINI_MODEL = "gemini-3.5-flash"

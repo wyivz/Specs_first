@@ -117,7 +117,7 @@ class RealCollector(Collector):
             quick=quick,
             on_progress=on_progress,
         )
-        from backend.discover_normalize import discover_skus_from_evidence
+        from collectors.discovery import discover_skus_from_evidence
 
         def _fetch_page(url: str) -> str:
             try:

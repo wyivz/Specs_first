@@ -107,7 +107,7 @@ Streamlit UI
 
 ```powershell
 cd Specs-first
-pip install fastapi uvicorn streamlit httpx openai google-generativeai redis playwright
+pip install fastapi uvicorn streamlit httpx openai google-genai redis playwright
 pip install -e .
 ```
 

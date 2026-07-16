@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from backend.checkpoint import CheckpointStore, create_checkpoint_store
+from backend.discovery_llm import wire_discover_llm
 from backend.events import InMemoryEventBus
 from backend.model_router import create_model_router
 from backend.pipeline import SpecsFirstPipeline, TaskResult
@@ -43,6 +44,7 @@ class TaskManager:
         router = create_model_router(resolved_router_mode)
         if mode == "real":
             collector: Collector = RealCollector(source_urls=source_urls or [], router=router)
+            wire_discover_llm(collector)
         else:
             collector = MockCollector()
         return SpecsFirstPipeline(

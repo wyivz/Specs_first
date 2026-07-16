@@ -777,27 +777,6 @@ def run_mock_demo() -> TaskResult:
     return SpecsFirstPipeline().run("Zeiss 50mm 镜头", "Lens")
 
 
-def create_pipeline(
-    mode: str = "mock",
-    source_urls: list[str] | None = None,
-    vault_path: str | Path = "vault_output",
-    model_mode: str | None = None,
-    event_bus: InMemoryEventBus | None = None,
-    checkpoint_store: CheckpointStore | None = None,
-) -> SpecsFirstPipeline:
-    from collectors import MockCollector, RealCollector
-
-    collector = RealCollector(source_urls=source_urls or []) if mode == "real" else MockCollector()
-    resolved_router_mode = model_mode or ("keyword" if mode == "mock" else None)
-    return SpecsFirstPipeline(
-        collector=collector,
-        router=create_model_router(resolved_router_mode),
-        event_bus=event_bus or InMemoryEventBus(),
-        vault_path=Path(vault_path),
-        checkpoint_store=checkpoint_store or create_checkpoint_store(),
-    )
-
-
 if __name__ == "__main__":
     result = run_mock_demo()
     print(

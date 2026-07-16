@@ -7,6 +7,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Install optional dependencies before running the UI: streamlit") from exc
 
+from frontend.api_client import get_api_client
 from frontend.event_listener import start_listener
 from frontend.state import reset_task_state
 from frontend.ui.health_panel import get_cached_health, real_mode_ready
@@ -40,9 +41,7 @@ def start_background_task(
     vault_path: str,
     use_browser: bool = False,
 ) -> None:
-    from backend.task_runner import task_manager
-
-    task_id = task_manager.start_task(
+    task_id = get_api_client().start_task(
         query=query,
         category=category,
         selected_skus=selected_skus,
@@ -58,9 +57,7 @@ def start_background_task(
 
 
 def resume_background_task(task_id: str) -> None:
-    from backend.task_runner import task_manager
-
-    task_manager.resume_task(task_id, use_browser=True)
+    get_api_client().resume_auth(task_id, use_browser=True)
     st.session_state["active_task_id"] = task_id
     st.session_state["seen_event_count"] = 0
     st.session_state.setdefault("matrix_rows", [])
@@ -225,7 +222,7 @@ def _render_candidate_cards(candidates: list[dict]) -> list[str]:
                 source_bit = f' · <a href="{url}" target="_blank" rel="noreferrer">来源</a>'
             st.markdown(
                 f'<div class="sf-candidate"><strong>{brand}</strong> · <code>{short_sku}</code>'
-                f'<br><span style="color:#94a3b8;font-size:0.82rem">置信度 {confidence:.0%}'
+                f'<br><span class="sf-muted">置信度 {confidence:.0%}'
                 f"{source_bit}</span></div>",
                 unsafe_allow_html=True,
             )
@@ -320,12 +317,10 @@ def render_input_panel(settings: RunSettings) -> InputContext:
         progress = st.empty()
         with st.spinner(spinner_label):
             try:
-                from backend.task_runner import task_manager
-
                 def _on_progress(message: str) -> None:
                     progress.caption(message)
 
-                discovered = task_manager.discover(
+                discovered = get_api_client().discover(
                     query=query,
                     category=category,
                     mode=settings.mode,

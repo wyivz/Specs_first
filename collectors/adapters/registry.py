@@ -81,6 +81,3 @@ def create_default_registry(
         )
     )
     return registry
-
-
-DEFAULT_ADAPTER_REGISTRY = create_default_registry()
