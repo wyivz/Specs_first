@@ -78,6 +78,8 @@ class AsrTranscribeTest(unittest.TestCase):
         self.assertIn("pip install", result.error)
 
     def test_transcribe_url_happy_path(self) -> None:
+        from collectors.asr import AsrResult
+
         with patch("collectors.asr.check_readiness") as readiness:
             readiness.return_value = AsrReadiness(
                 ready=True,
@@ -85,11 +87,42 @@ class AsrTranscribeTest(unittest.TestCase):
                 yt_dlp="module",
             )
             with patch("collectors.asr.download_audio", return_value="/tmp/a.m4a"):
-                with patch("collectors.asr.transcribe_faster_whisper", return_value="hello world"):
+                with patch(
+                    "collectors.asr.transcribe_file",
+                    return_value=AsrResult(text="hello world", backend="faster-whisper", audio_path="/tmp/a.m4a"),
+                ):
                     result = transcribe_url("https://example.com/v", language="en")
         self.assertTrue(result.ok)
         self.assertEqual(result.text, "hello world")
         self.assertEqual(result.backend, "faster-whisper")
+
+    def test_transcribe_url_surfaces_ytdlp_error(self) -> None:
+        with patch("collectors.asr.check_readiness") as readiness:
+            readiness.return_value = AsrReadiness(ready=True, backend="sensevoice", yt_dlp="cli")
+            with patch("collectors.asr.download_audio", return_value=""):
+                with patch("collectors.asr.last_download_error", return_value="Sign in to confirm"):
+                    result = transcribe_url("https://www.youtube.com/watch?v=abc")
+        self.assertFalse(result.ok)
+        self.assertIn("Sign in to confirm", result.error)
+        self.assertIn("YOUTUBE_COOKIE", result.error)
+
+    def test_strip_sensevoice_tags(self) -> None:
+        from collectors.asr import _strip_sensevoice_tags
+
+        raw = "<|en|><|EMO_UNKNOWN|><|Speech|><|withitn|>Yeah."
+        self.assertEqual(_strip_sensevoice_tags(raw), "Yeah.")
+
+    def test_write_netscape_cookies(self) -> None:
+        from collectors.asr import _write_netscape_cookies
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.txt"
+            written = _write_netscape_cookies("a=1; b=2", ".youtube.com", path)
+            self.assertIsNotNone(written)
+            text = path.read_text(encoding="utf-8")
+            self.assertIn(".youtube.com", text)
+            self.assertIn("\ta\t1", text)
+            self.assertIn("\tb\t2", text)
 
 
 class AsrPlatformHealthTest(unittest.TestCase):

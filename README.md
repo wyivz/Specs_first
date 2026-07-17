@@ -90,7 +90,7 @@ Streamlit UI（frontend/app.py）
 - [x] Obsidian + Dataview + CSV
 - [x] 健康检查：`GET /health`、`scripts/smoke_platforms.py`
 - [x] **侧边栏环境配置**：按 `.env.example` 分组浏览/编辑 API Key、Cookie、采集调优，保存后热重载
-- [x] **单元测试 211 项** + GitHub Actions CI
+- [x] **单元测试 214 项** + GitHub Actions CI
 
 ### 需本机实调
 
@@ -118,6 +118,7 @@ pip install fastapi uvicorn streamlit httpx openai google-genai redis playwright
 pip install -e .
 # 可选：本地音频转写 / B 站无字幕兜底
 pip install -e ".[asr-zh]"   # 中文 SenseVoice；多语言可用 ".[asr]"
+winget install --id Gyan.FFmpeg -e   # SenseVoice 解码 m4a/webm 需要
 ```
 
 ### Mock 演示（无需 API Key）
@@ -172,10 +173,11 @@ uvicorn backend.api:app --reload
 python -m unittest discover -s tests
 ```
 
-当前 **211** 项单元测试通过（不含 live smoke）。
+当前 **214** 项单元测试通过（不含 live smoke）。
 
 ```powershell
 python scripts/smoke_platforms.py --health-only
+python scripts/smoke_asr.py --self-test
 ```
 
 ---
@@ -233,7 +235,7 @@ Specs-first/
 ├── frontend/          # Streamlit + api_client + env_settings_panel
 ├── schemas/           # 模型 + DynamicCategoryProfile + matrix
 ├── obsidian/          # Vault 写入 + CSV
-├── scripts/           # smoke_platforms.py
+├── scripts/           # smoke_platforms.py · smoke_asr.py
 ├── tests/             # 203 项测试
 ├── plan.md            # 架构计划
 └── .github/workflows/ # CI

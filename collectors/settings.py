@@ -124,6 +124,7 @@ def _build_settings() -> Settings:
         bilibili_max_videos_per_sku=_int_env("BILIBILI_MAX_VIDEOS_PER_SKU", 2),
         bilibili_max_comments_per_video=_int_env("BILIBILI_MAX_COMMENTS_PER_VIDEO", 50),
         bilibili_asr_fallback=os.getenv("BILIBILI_ASR_FALLBACK", "true").strip().lower() not in {"0", "false", "no"},
+        asr_max_audio_seconds=_int_env("ASR_MAX_AUDIO_SECONDS", 600),
         bilibili_sessdata=os.getenv("BILIBILI_SESSDATA", ""),
         bilibili_bili_jct=os.getenv("BILIBILI_BILI_JCT", ""),
         bilibili_dedeuserid=os.getenv("BILIBILI_DEDEUSERID", ""),
@@ -192,6 +193,8 @@ class Settings:
         "false",
         "no",
     }
+    # Cap local ASR audio length (seconds). Long review videos otherwise hang CPU for ages.
+    asr_max_audio_seconds: int = _int_env("ASR_MAX_AUDIO_SECONDS", 600)
 
     bilibili_sessdata: str = os.getenv("BILIBILI_SESSDATA", "")
     bilibili_bili_jct: str = os.getenv("BILIBILI_BILI_JCT", "")

@@ -42,6 +42,7 @@ INT_KEYS = frozenset(
         "YOUTUBE_COMMENT_MAX_PER_VIDEO",
         "BILIBILI_MAX_VIDEOS_PER_SKU",
         "BILIBILI_MAX_COMMENTS_PER_VIDEO",
+        "ASR_MAX_AUDIO_SECONDS",
     }
 )
 
@@ -103,6 +104,7 @@ KEY_LABELS: dict[str, str] = {
     "BILIBILI_DEDEUSERID": "B 站 DedeUserID",
     "BILIBILI_BUVID3": "B 站 buvid3",
     "BILIBILI_ASR_FALLBACK": "B 站 ASR 兜底",
+    "ASR_MAX_AUDIO_SECONDS": "ASR 最长秒数",
     "TAOBAO_COOKIE": "淘宝 Cookie",
     "TAOBAO_M_H5_TK": "淘宝 _m_h5_tk",
     "JD_COOKIE": "京东 Cookie",
@@ -148,6 +150,7 @@ KEY_GROUPS: dict[str, str] = {
     "BILIBILI_DEDEUSERID": "cookies",
     "BILIBILI_BUVID3": "cookies",
     "BILIBILI_ASR_FALLBACK": "collection",
+    "ASR_MAX_AUDIO_SECONDS": "collection",
     "TAOBAO_COOKIE": "cookies",
     "TAOBAO_M_H5_TK": "cookies",
     "JD_COOKIE": "cookies",

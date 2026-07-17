@@ -1,6 +1,6 @@
 # 基础设施现状：Redis 与本地 ASR
 
-> 更新：2026-07-17
+> 更新：2026-07-17（SenseVoice + ffmpeg 已本机验证）
 
 本文梳理 Specs-First 当前 **Redis checkpoint** 与 **本地音频转写（ASR）** 的配置、验证方式与后续步骤。
 
@@ -53,14 +53,18 @@ Key 前缀：`specs-first:checkpoint:{task_id}`
 
 ```powershell
 pip install -e ".[asr]"      # yt-dlp + faster-whisper（多语言）
-pip install -e ".[asr-zh]"   # 上面 + funasr / SenseVoice（中文推荐，含 torch）
+pip install -e ".[asr-zh]"   # 上面 + funasr / SenseVoice（中文推荐，含 torch + torchaudio）
+
+# SenseVoice 解码 m4a/webm 需要 ffmpeg（本机已验证 winget 安装）
+winget install --id Gyan.FFmpeg -e
 ```
 
 | 组件 | 作用 |
 |------|------|
-| **yt-dlp** | 下载音轨（CLI 或 Python 模块，优先 m4a/webm，无需 ffmpeg 转码） |
-| **SenseVoice**（funasr + torch） | 中文/混合内容，CPU 友好，采集兜底默认语言 `zh` |
-| **faster-whisper** | 多语言兜底，SenseVoice 不可用时自动选用 |
+| **yt-dlp** | 下载音轨（CLI 或 Python 模块；自动写入平台 Cookie 到 Netscape jar） |
+| **SenseVoice**（funasr + torch + torchaudio） | 中文/混合；缺 torchaudio 时自动降级 faster-whisper |
+| **faster-whisper** | 多语言兜底；SenseVoice 解码失败时二次回退 |
+| **ffmpeg** | 将 m4a/webm 转为 16k mono wav，并按 `ASR_MAX_AUDIO_SECONDS` 截断 |
 
 ### 健康检查
 
@@ -68,37 +72,46 @@ pip install -e ".[asr-zh]"   # 上面 + funasr / SenseVoice（中文推荐，含
   - `ok`：后端 + yt-dlp 均就绪
   - `warn`：开启了 B 站/YouTube ASR 兜底但依赖缺失
   - `skip`：未开兜底且 ASR 为可选能力
+- `/asr/status` 额外返回 `ffmpeg: true/false`
 
 ### 一键自检
 
 ```powershell
-python -c "from collectors.asr import check_readiness; import json; print(json.dumps(check_readiness().to_dict(), indent=2, ensure_ascii=False))"
+# 仅 readiness
+python scripts/smoke_asr.py
+
+# 无网络：加载 SenseVoice 并对合成 wav 跑一次 forward
+python scripts/smoke_asr.py --self-test
+
+# 端到端（B 站通常比 YouTube 更易过 bot 校验）
+python scripts/smoke_asr.py --url https://www.bilibili.com/video/BVxxxx --language zh
+
+# 已有本地音频
+python scripts/smoke_asr.py --file path\to\audio.wav --language zh
 ```
 
-期望输出（就绪时）：
+期望 readiness：
 
 ```json
 {
   "ready": true,
   "backend": "sensevoice",
   "yt_dlp": "cli",
-  "missing": [],
+  "ffmpeg": true,
   "pipeline_fallback_enabled": true
 }
 ```
 
-### 手动转写 smoke
-
-```powershell
-uvicorn backend.api:app --reload
-# 另开终端
-curl http://127.0.0.1:8000/asr/status
-# POST /asr/transcribe  body: {"url":"https://www.bilibili.com/video/BV...", "language":"zh"}
-```
-
-或在 Streamlit「高级选项」填 URL → **本地转写**。
-
 转写缓存目录：`vault_output/asr_cache/`
+
+### 配置项
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `BILIBILI_ASR_FALLBACK` | `true` | 无 CC 时走本地 ASR |
+| `YOUTUBE_ASR_FALLBACK` | `false` | YouTube 字幕全失败后的最后手段 |
+| `ASR_MAX_AUDIO_SECONDS` | `600` | ffmpeg 截断上限，避免长评测卡死 CPU |
+| `YOUTUBE_COOKIE` / B 站 Cookie | — | yt-dlp 下载时自动注入 |
 
 ---
 
@@ -106,51 +119,30 @@ curl http://127.0.0.1:8000/asr/status
 
 | 检查项 | 结果 |
 |--------|------|
-| 单元测试 | `python -m unittest discover -s tests` → **211 passed** |
+| 单元测试 | 见本次提交后 `python -m unittest discover -s tests` |
 | `REDIS_URL` | 未配置 → 内存 checkpoint |
-| ASR `ready` | **true** |
-| 实际后端 | **faster-whisper**（yt-dlp CLI 可用） |
-| SenseVoice | funasr 已装，但 **torch 未装** → 自动降级 faster-whisper |
+| ASR `ready` | **true**，`backend=sensevoice` |
+| torch / torchaudio | 已装（CPU 轮） |
+| ffmpeg | **已装**（`winget install Gyan.FFmpeg`） |
+| `--self-test` | SenseVoice 模型首次下载约 936MB 后 **ok** |
+| B 站 m4a → wav → 转写 | **ok**（20s 片段） |
+| YouTube yt-dlp | 仍可能被 bot 校验拦截；需从浏览器导出**完整** Cookie（仅 header 片段常不够） |
 | B 站 ASR 兜底 | `BILIBILI_ASR_FALLBACK=true` |
 | YouTube ASR 兜底 | `YOUTUBE_ASR_FALLBACK=false` |
 
 ---
 
-## 4. 安装 asr-zh 后的下一步
+## 4. 下一步（Real 联调）
 
-### 路径 A：立刻可用（当前状态）
-
-已具备 **faster-whisper + yt-dlp**，可直接：
-
-1. 刷新 Streamlit Health → `asr_stack` 应为 **ok**
-2. 侧边栏填一条 **B 站或 YouTube 短视频 URL** → 点「本地转写」
-3. Real 模式跑含无字幕 B 站视频的 SKU，观察采集 trace 是否出现 `falling back to local ASR`
-
-中文内容用 faster-whisper 可用，质量通常略逊于 SenseVoice。
-
-### 路径 B：启用 SenseVoice（中文推荐）
-
-若 `check_readiness()` 显示 `backend: faster-whisper` 且终端有 `No module named 'torch'`：
-
-```powershell
-pip install torch
-# 或 CPU 版（体积较小）：
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-```
-
-然后重新自检，应变为 `"backend": "sensevoice"`。  
-**首次转写**会下载 SenseVoice 模型（数百 MB），属正常现象。
-
-### 路径 C：Real 管线联调
-
-1. 侧边栏配置 B 站 Cookie（CC 字幕 + 评论）
-2. 选一条**无 CC 字幕**的 B 站评测 URL 加入 Source URLs
-3. Real + Playwright 跑对比，在 `vault_output/collection_trace_*.log` 搜 `local ASR`
+1. Streamlit Health → 确认 `asr_stack` 为 ok
+2. 侧边栏「本地 ASR 转写」填 **B 站短视频** 试跑
+3. Real 模式：Source URLs 加一条**无 CC** 的 B 站评测，在 `vault_output/collection_trace_*.log` 搜 `local ASR`
+4. YouTube 若需 ASR 下载：用浏览器扩展导出 Netscape cookies，或刷新 `YOUTUBE_COOKIE` 后再试
 
 ### 不建议现在做
 
 - 为本机单机部署 Redis
-- 打开 `YOUTUBE_ASR_FALLBACK`（除非浏览器字幕 + transcript-api 均失败且确需兜底）
+- 默认打开 `YOUTUBE_ASR_FALLBACK`（浏览器字幕路径优先）
 
 ---
 
@@ -158,9 +150,10 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 | 文件 | 说明 |
 |------|------|
-| `collectors/asr.py` | 下载、转写、readiness |
+| `collectors/asr.py` | 下载、Cookie、ffmpeg 截断、转写、readiness |
+| `scripts/smoke_asr.py` | readiness / self-test / URL / file smoke |
 | `backend/platform_health.py` | `check_asr_stack()` |
 | `backend/checkpoint.py` | Redis / 内存 checkpoint |
-| `.env.example` | `REDIS_URL`、`BILIBILI_ASR_FALLBACK`、`YOUTUBE_ASR_FALLBACK` |
-| `pyproject.toml` | `[project.optional-dependencies]` → `asr` / `asr-zh` |
+| `.env.example` | Redis、ASR、时长上限 |
+| `pyproject.toml` | `asr` / `asr-zh` extras（含 torchaudio） |
 | `tests/test_asr.py` | ASR 单元测试 |
