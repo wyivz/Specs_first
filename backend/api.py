@@ -208,19 +208,14 @@ def browser_command(task_id: str, payload: BrowserCommandRequest) -> dict:
 
 @app.get("/asr/status")
 def asr_status() -> dict:
-    from collectors.asr import available_backend
+    from collectors.asr import check_readiness
 
-    backend = available_backend()
-    return {
-        "available": backend is not None,
-        "backend": backend or "none",
-        "note": (
-            "Install 'funasr' for SenseVoice (recommended for Chinese) or "
-            "'faster-whisper' for multilingual Whisper support."
-            if backend is None
-            else ""
-        ),
-    }
+    readiness = check_readiness()
+    payload = readiness.to_dict()
+    payload["available"] = readiness.ready
+    if not readiness.ready and readiness.install_hint:
+        payload["note"] = readiness.install_hint
+    return payload
 
 
 @app.post("/asr/transcribe")

@@ -20,6 +20,7 @@ CHECK_HINTS: dict[str, str] = {
     "youtube_credentials": "YouTube 可选；部分视频需 Cookie",
     "reddit_credentials": "Reddit 可选；启用自动搜帖需 Cookie",
     "playwright": "运行 playwright install chromium",
+    "asr_stack": 'pip install -e ".[asr]" 或 ".[asr-zh]"（中文 SenseVoice）',
 }
 
 

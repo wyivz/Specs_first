@@ -146,13 +146,13 @@ def render_sidebar_settings() -> RunSettings:
         st.markdown("---")
         st.markdown("**本地 ASR 转写**")
         try:
-            from collectors.asr import available_backend as _asr_backend
+            from collectors.asr import check_readiness as _asr_readiness
 
-            _backend = _asr_backend()
+            _asr = _asr_readiness()
         except Exception:
-            _backend = None
-        if _backend:
-            st.caption(f"后端: {_backend}")
+            _asr = None
+        if _asr and _asr.ready:
+            st.caption(f"后端: {_asr.backend} · yt-dlp: {_asr.yt_dlp}")
             asr_url = st.text_input("视频 URL", key="asr_url", placeholder="https://...")
             asr_lang = st.selectbox("语言", ["auto", "zh", "en"], key="asr_lang")
             if st.button("本地转写", use_container_width=True, key="asr_run"):
@@ -168,8 +168,14 @@ def render_sidebar_settings() -> RunSettings:
                             st.text_area("转写结果", _result.text, height=160)
                         else:
                             st.error(_result.error)
+        elif _asr:
+            missing = "、".join(_asr.missing) or "依赖"
+            st.caption(f"未就绪（缺 {missing}）")
+            if _asr.install_hint:
+                st.code(_asr.install_hint, language="powershell")
+            st.caption("中文推荐 `.[asr-zh]`（SenseVoice）；多语言用 `.[asr]`（faster-whisper）")
         else:
-            st.caption("安装 `funasr` 或 `faster-whisper` 后可本地转写")
+            st.caption("安装 `pip install -e \".[asr]\"` 后可本地转写")
 
     paused_task_id = st.session_state.get("paused_task_id")
     if paused_task_id:

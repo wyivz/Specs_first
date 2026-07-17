@@ -228,6 +228,37 @@ def check_collector_mode() -> CheckResult:
     )
 
 
+def check_asr_stack() -> CheckResult:
+    from collectors.asr import check_readiness
+
+    readiness = check_readiness()
+    details = readiness.to_dict()
+    fallback_on = readiness.pipeline_fallback_enabled
+
+    if readiness.ready:
+        msg = f"Local ASR ready ({readiness.backend}, yt-dlp via {readiness.yt_dlp})"
+        if fallback_on:
+            msg += "; pipeline subtitle fallback enabled"
+        return CheckResult(name="asr_stack", status="ok", message=msg, details=details)
+
+    if not fallback_on:
+        return CheckResult(
+            name="asr_stack",
+            status="skip",
+            message="Local ASR optional; install with pip install -e \".[asr]\" for manual transcribe",
+            details=details,
+        )
+
+    missing = ", ".join(readiness.missing) or "dependencies"
+    hint = readiness.install_hint or 'pip install -e ".[asr]"'
+    return CheckResult(
+        name="asr_stack",
+        status="warn",
+        message=f"Pipeline ASR fallback enabled but not ready ({missing}). Try: {hint}",
+        details=details,
+    )
+
+
 def _overall_status(checks: list[CheckResult]) -> str:
     if any(item.status == "error" for item in checks):
         return "error"
@@ -246,6 +277,7 @@ def build_platform_health(*, probe_gemini: bool = False) -> PlatformHealthReport
         check_youtube_credentials(),
         check_reddit_credentials(),
         check_collector_mode(),
+        check_asr_stack(),
     ]
     return PlatformHealthReport(
         checked_at=datetime.now(UTC).isoformat(),

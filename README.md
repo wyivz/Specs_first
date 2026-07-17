@@ -90,7 +90,7 @@ Streamlit UI（frontend/app.py）
 - [x] Obsidian + Dataview + CSV
 - [x] 健康检查：`GET /health`、`scripts/smoke_platforms.py`
 - [x] **侧边栏环境配置**：按 `.env.example` 分组浏览/编辑 API Key、Cookie、采集调优，保存后热重载
-- [x] **单元测试 203 项** + GitHub Actions CI
+- [x] **单元测试 211 项** + GitHub Actions CI
 
 ### 需本机实调
 
@@ -116,6 +116,8 @@ Streamlit UI（frontend/app.py）
 cd Specs-first
 pip install fastapi uvicorn streamlit httpx openai google-genai redis playwright
 pip install -e .
+# 可选：本地音频转写 / B 站无字幕兜底
+pip install -e ".[asr-zh]"   # 中文 SenseVoice；多语言可用 ".[asr]"
 ```
 
 ### Mock 演示（无需 API Key）
@@ -170,7 +172,7 @@ uvicorn backend.api:app --reload
 python -m unittest discover -s tests
 ```
 
-当前 **203** 项单元测试通过（不含 live smoke）。
+当前 **211** 项单元测试通过（不含 live smoke）。
 
 ```powershell
 python scripts/smoke_platforms.py --health-only
@@ -273,3 +275,4 @@ vault_output/
 
 - [English README](README_EN.md)
 - [架构计划书](plan.md)
+- [Redis 与本地 ASR 现状](docs/ops-redis-asr.md)
