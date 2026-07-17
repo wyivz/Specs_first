@@ -27,35 +27,43 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DOTENV_PATH = _PROJECT_ROOT / ".env"
 
 
-def _load_dotenv(*, overwrite_credentials: bool = False) -> None:
-    env_path = _DOTENV_PATH
+def dotenv_path() -> Path:
+    if _DOTENV_PATH.exists():
+        return _DOTENV_PATH
+    return Path.cwd() / ".env"
+
+
+def _read_dotenv_values(*, path: Path | None = None) -> dict[str, str]:
+    env_path = path or dotenv_path()
     if not env_path.exists():
-        # Fallback for unusual layouts / tests.
-        env_path = Path.cwd() / ".env"
-    if not env_path.exists():
-        return
+        return {}
+    values: dict[str, str] = {}
     for line in env_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _load_dotenv(*, overwrite_credentials: bool = False, overwrite_all: bool = False) -> None:
+    values = _read_dotenv_values()
+    if not values:
+        return
+    for key, value in values.items():
+        if overwrite_all:
+            os.environ[key] = value
+            continue
         if not value:
             continue
         existing = os.environ.get(key)
         if overwrite_credentials and key in _CREDENTIAL_ENV_KEYS:
             os.environ[key] = value
         elif existing is None or (key in _CREDENTIAL_ENV_KEYS and not existing.strip()):
-            # setdefault alone keeps an empty shell JD_COOKIE forever; treat blank as unset.
             os.environ[key] = value
         else:
             os.environ.setdefault(key, value)
-
-
-def reload_credential_env() -> None:
-    """Re-read cookie/API keys from .env so health/UI pick up updates without restart."""
-    _load_dotenv(overwrite_credentials=True)
 
 
 def _float_env(name: str, default: float) -> float:
@@ -84,6 +92,56 @@ def _int_env(name: str, default: int) -> int:
 
 
 _load_dotenv()
+
+
+def _build_settings() -> Settings:
+    """Construct Settings from the current process environment."""
+    return Settings(
+        openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+        gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
+        openai_model=os.getenv("DEFAULT_OPENAI_MODEL", "gpt-4o-mini"),
+        gemini_model=os.getenv("DEFAULT_GEMINI_MODEL", "gemini-3.5-flash"),
+        gemini_context_cache_enabled=os.getenv("GEMINI_CONTEXT_CACHE_ENABLED", "true").strip().lower()
+        not in {"0", "false", "no"},
+        gemini_context_cache_min_chars=_int_env("GEMINI_CONTEXT_CACHE_MIN_CHARS", 6000),
+        gemini_context_cache_ttl_seconds=_int_env("GEMINI_CONTEXT_CACHE_TTL_SECONDS", 300),
+        gemini_call_timeout_seconds=_float_env("GEMINI_CALL_TIMEOUT_SECONDS", 45.0),
+        gemini_thinking_level=os.getenv("GEMINI_THINKING_LEVEL", "").strip(),
+        redis_url=os.getenv("REDIS_URL", "").strip(),
+        vault_path=Path(os.getenv("OBSIDIAN_VAULT_PATH", "vault_output")),
+        default_mode=os.getenv("SPECS_FIRST_MODE", "mock"),
+        collection_min_interval_seconds=_float_env("COLLECTION_MIN_INTERVAL_SECONDS", 1.0),
+        ecommerce_min_interval_seconds=_float_env("ECOMMERCE_MIN_INTERVAL_SECONDS", 3.0),
+        ecommerce_max_urls_per_platform=_int_env("ECOMMERCE_MAX_URLS_PER_PLATFORM", 2),
+        ecommerce_collect_timeout_seconds=_float_env("ECOMMERCE_COLLECT_TIMEOUT_SECONDS", 300.0),
+        collection_parallel_platforms=os.getenv("COLLECTION_PARALLEL_PLATFORMS", "true").strip().lower()
+        not in {"0", "false", "no"},
+        bilibili_comment_page_delay_seconds=_float_env("BILIBILI_COMMENT_PAGE_DELAY_SECONDS", 3.0),
+        youtube_comment_delay_min=_float_env("YOUTUBE_COMMENT_DELAY_MIN", 1.0),
+        youtube_comment_delay_max=_float_env("YOUTUBE_COMMENT_DELAY_MAX", 3.0),
+        youtube_comment_max_per_video=_int_env("YOUTUBE_COMMENT_MAX_PER_VIDEO", 20),
+        youtube_asr_fallback=os.getenv("YOUTUBE_ASR_FALLBACK", "false").strip().lower() not in {"0", "false", "no"},
+        bilibili_max_videos_per_sku=_int_env("BILIBILI_MAX_VIDEOS_PER_SKU", 2),
+        bilibili_max_comments_per_video=_int_env("BILIBILI_MAX_COMMENTS_PER_VIDEO", 50),
+        bilibili_asr_fallback=os.getenv("BILIBILI_ASR_FALLBACK", "true").strip().lower() not in {"0", "false", "no"},
+        bilibili_sessdata=os.getenv("BILIBILI_SESSDATA", ""),
+        bilibili_bili_jct=os.getenv("BILIBILI_BILI_JCT", ""),
+        bilibili_dedeuserid=os.getenv("BILIBILI_DEDEUSERID", ""),
+        bilibili_buvid3=os.getenv("BILIBILI_BUVID3", ""),
+        taobao_cookie=os.getenv("TAOBAO_COOKIE", ""),
+        taobao_m_h5_tk=os.getenv("TAOBAO_M_H5_TK", ""),
+        jd_cookie=os.getenv("JD_COOKIE", ""),
+        youtube_cookie=os.getenv("YOUTUBE_COOKIE", ""),
+        youtube_browser_transcript=os.getenv("YOUTUBE_BROWSER_TRANSCRIPT", "true").strip().lower()
+        not in {"0", "false", "no"},
+        reddit_cookie=os.getenv("REDDIT_COOKIE", ""),
+        smoke_jd_url=_str_env("SMOKE_JD_URL", "https://item.jd.com/100012043978.html"),
+        smoke_taobao_item_id=_str_env("SMOKE_TAOBAO_ITEM_ID", "520813140663"),
+        smoke_bilibili_bvid=os.getenv("SMOKE_BILIBILI_BVID", "").strip(),
+        smoke_youtube_url=_str_env("SMOKE_YOUTUBE_URL", "https://www.youtube.com/watch?v=jNQXAC9IVRw"),
+        collection_trace_enabled=os.getenv("COLLECTION_TRACE", "true").strip().lower() not in {"0", "false", "no"},
+        collection_trace_dir=Path(os.getenv("COLLECTION_TRACE_DIR", "vault_output")),
+    )
 
 
 @dataclass(frozen=True)
@@ -189,4 +247,17 @@ class Settings:
         return "keyword"
 
 
-settings = Settings()
+def reload_settings(*, overwrite_all: bool = True) -> Settings:
+    """Re-read .env, refresh os.environ, and rebuild the module-level settings singleton."""
+    global settings
+    _load_dotenv(overwrite_all=overwrite_all)
+    settings = _build_settings()
+    return settings
+
+
+def reload_credential_env() -> None:
+    """Re-read cookie/API keys from .env so health/UI pick up updates without restart."""
+    reload_settings(overwrite_all=True)
+
+
+settings = _build_settings()

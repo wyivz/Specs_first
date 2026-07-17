@@ -10,6 +10,12 @@ except ImportError as exc:  # pragma: no cover
 from frontend.api_client import get_api_client
 from frontend.event_listener import start_listener
 from frontend.state import reset_task_state
+from frontend.ui.env_settings_panel import (
+    default_mode_from_draft,
+    ensure_env_draft,
+    render_env_settings_panel,
+    sync_mode_to_env_draft,
+)
 from frontend.ui.health_panel import get_cached_health, real_mode_ready
 
 
@@ -91,15 +97,10 @@ def render_sidebar_settings() -> RunSettings:
     advanced = st.toggle("高级选项", value=st.session_state.get("advanced_mode", False), key="advanced_mode")
 
     st.header("运行配置")
-    try:
-        from collectors.settings import settings as collector_settings
+    ensure_env_draft()
+    task_running = bool(st.session_state.get("active_task_id"))
 
-        default_mode = collector_settings.default_mode.strip().lower()
-        if default_mode not in {"mock", "real"}:
-            default_mode = "mock"
-    except Exception:
-        default_mode = "mock"
-
+    default_mode = default_mode_from_draft()
     mode_options = ["mock", "real"]
     mode_labels = {"mock": "Mock · 离线演示", "real": "Real · 联网采集"}
     mode = st.selectbox(
@@ -107,8 +108,11 @@ def render_sidebar_settings() -> RunSettings:
         mode_options,
         index=mode_options.index(default_mode),
         format_func=lambda x: mode_labels[x],
-        help="Mock 按查询生成演示数据；Real 需要 .env 凭证与 Cookie。",
+        help="与 .env 中 SPECS_FIRST_MODE 同步；在环境配置中保存后持久化。",
     )
+    sync_mode_to_env_draft(mode)
+
+    render_env_settings_panel(task_running=task_running)
 
     if mode == "real":
         ready, reason = real_mode_ready(get_cached_health())
@@ -134,7 +138,7 @@ def render_sidebar_settings() -> RunSettings:
         with st.expander("Real 跑通清单", expanded=False):
             st.markdown(
                 """
-1. `.env`：Gemini + OpenAI；`JD_COOKIE`；淘宝 Cookie；B 站 Cookie
+1. 侧边栏「环境配置」：Gemini + OpenAI；`JD_COOKIE`；淘宝 Cookie；B 站 Cookie
 2. `python scripts/smoke_platforms.py --probe-gemini`
 3. 填写商品/评测直链 → Real + Playwright → 开始对比
                 """.strip()

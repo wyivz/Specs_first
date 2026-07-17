@@ -55,6 +55,7 @@ Without API keys, a **keyword rules engine** runs (slots fall back to `parameter
 
 ```
 Streamlit UI
+    ├── frontend/ui/env_settings_panel.py  # sidebar .env editor + hot reload
     └── frontend/api_client.py
             └── backend/task_runner.py
                     └── pipeline.py (JIT schema bootstrap)
@@ -83,7 +84,8 @@ Streamlit UI
 - [x] AdapterRegistry wiring; collector dependency inversion
 - [x] Obsidian + Dataview + CSV
 - [x] Health checks: `GET /health`, `scripts/smoke_platforms.py`
-- [x] **138 unit tests** + GitHub Actions CI
+- [x] **Sidebar env editor**: grouped `.env` form (API keys, cookies, tuning) with save + hot reload
+- [x] **203 unit tests** + GitHub Actions CI
 
 ### Needs live setup
 
@@ -127,6 +129,8 @@ streamlit run frontend/app.py
 
 Choose `mock` or `real` in the sidebar; enable Playwright for Real.
 
+**Env config:** expand **环境配置 (.env)** in the sidebar to edit keys/cookies by group. Password fields use Streamlit's built-in eye icon to reveal values. Click **保存到 .env** to persist and refresh Health.
+
 ### API (optional)
 
 ```powershell
@@ -150,7 +154,7 @@ uvicorn backend.api:app --reload
 python -m unittest discover -s tests
 ```
 
-**138** unit tests passing (excluding live smoke).
+**203** unit tests passing (excluding live smoke).
 
 ```powershell
 python scripts/smoke_platforms.py --health-only
@@ -160,7 +164,9 @@ python scripts/smoke_platforms.py --health-only
 
 ## Real-mode configuration
 
-Copy `.env.example` → `.env`:
+**Option A (recommended):** Streamlit sidebar → **环境配置 (.env)** → edit groups → **保存到 .env**.
+
+**Option B:** Copy `.env.example` → `.env`:
 
 ```env
 GEMINI_API_KEY=...
@@ -196,12 +202,12 @@ Pass criteria: **non-empty JIT slots + at least one of price/specs/evidence** (n
 ```
 Specs-first/
 ├── backend/           # pipeline (JIT bootstrap), API, routers, task_runner
-├── collectors/        # settings, real/mock, sources/, adapters/
-├── frontend/          # Streamlit + api_client
+├── collectors/        # settings, env_schema/env_store, real/mock, sources/, adapters/
+├── frontend/          # Streamlit + api_client + env_settings_panel
 ├── schemas/           # models + DynamicCategoryProfile + matrix
 ├── obsidian/          # vault writer + CSV
 ├── scripts/           # smoke_platforms.py
-├── tests/             # 138 tests
+├── tests/             # 203 tests
 ├── plan.md            # architecture plan
 └── .github/workflows/ # CI
 ```

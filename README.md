@@ -55,7 +55,8 @@ Phase 1 官方规格 ──► Phase 2 民间脱水 ──► Phase 3 到手价/
 
 ```
 Streamlit UI（frontend/app.py）
-    ├── frontend/ui/input_panel.py       # 输入、候选卡片、新手/高级
+    ├── frontend/ui/input_panel.py       # 输入、候选卡片、侧边栏运行配置
+    ├── frontend/ui/env_settings_panel.py  # 侧边栏 .env 分组编辑与热重载
     ├── frontend/ui/live_workspace.py    # 运行中左右分栏 + 实时矩阵
     ├── frontend/ui/health_panel.py      # Health 缓存与 Real 阻断
     ├── frontend/ui/output_panel.py      # 完成态矩阵与 CSV 导出
@@ -88,7 +89,8 @@ Streamlit UI（frontend/app.py）
 - [x] AdapterRegistry 运行时接线；采集层依赖倒置
 - [x] Obsidian + Dataview + CSV
 - [x] 健康检查：`GET /health`、`scripts/smoke_platforms.py`
-- [x] **单元测试 197 项** + GitHub Actions CI
+- [x] **侧边栏环境配置**：按 `.env.example` 分组浏览/编辑 API Key、Cookie、采集调优，保存后热重载
+- [x] **单元测试 203 项** + GitHub Actions CI
 
 ### 需本机实调
 
@@ -135,10 +137,12 @@ streamlit run frontend/app.py
 | 区域 | 内容 |
 |------|------|
 | **输入** | 对比查询、搜索候选 SKU（卡片勾选）、Mock/Real 模式 |
-| **运行状态** | Health 就绪检查、左右分栏（进度 + 实时矩阵）、可折叠事件日志 |
+| **侧边栏** | **环境配置 (.env)** 分组表单、Health、高级选项（Playwright / Source URLs） |
+| **运行状态** | 左右分栏（进度 + 实时矩阵）、可折叠事件日志 |
 | **输出** | 最终对比矩阵、证据链、CSV 下载 |
 
 - 默认 **Mock 模式** 无需 API Key；Real 模式 Health 未通过时会阻断启动
+- **环境配置**：侧边栏展开「环境配置 (.env)」，可逐条修改 Key/Cookie（密码框旁小眼睛可查看明文），点「保存到 .env」写盘并刷新 Health
 - 任务进行中矩阵在右侧**逐行实时刷新**；完成后可下载 CSV
 - 侧边栏「高级选项」展开 Playwright、Source URLs、ASR 等配置
 - 遇验证码挂起时，侧边栏点击「续传任务」
@@ -166,7 +170,7 @@ uvicorn backend.api:app --reload
 python -m unittest discover -s tests
 ```
 
-当前 **197** 项单元测试通过（不含 live smoke）。
+当前 **203** 项单元测试通过（不含 live smoke）。
 
 ```powershell
 python scripts/smoke_platforms.py --health-only
@@ -176,7 +180,9 @@ python scripts/smoke_platforms.py --health-only
 
 ## Real 模式配置
 
-复制 `.env.example` → `.env`：
+**方式一（推荐）**：Streamlit 侧边栏 → **环境配置 (.env)**，按分组填写后点「保存到 .env」。
+
+**方式二**：复制 `.env.example` → `.env` 手动编辑：
 
 ```env
 GEMINI_API_KEY=...
@@ -199,7 +205,7 @@ OBSIDIAN_VAULT_PATH=./vault_output
 
 目标不是「全平台全满」，而是：**矩阵有槽 + 至少一侧价或规格 + 若干条证据**。
 
-1. **配齐 P0 凭证**（写入 `.env`，勿提交）：
+1. **配齐 P0 凭证**（侧边栏环境配置或写入 `.env`，勿提交）：
    - `GEMINI_API_KEY` + `OPENAI_API_KEY` + `SPECS_FIRST_MODE=real`
    - `JD_COOKIE`；`TAOBAO_COOKIE` + `TAOBAO_M_H5_TK`；B 站 `SESSDATA` / `BILI_JCT` / `DEDEUSERID`
    - 可选：`YOUTUBE_COOKIE`、`REDDIT_COOKIE`
@@ -221,12 +227,12 @@ OBSIDIAN_VAULT_PATH=./vault_output
 ```
 Specs-first/
 ├── backend/           # pipeline（含 JIT bootstrap）、API、router、task_runner
-├── collectors/        # settings、real/mock、sources/、adapters/
-├── frontend/          # Streamlit + api_client
+├── collectors/        # settings、env_schema/env_store、real/mock、sources/、adapters/
+├── frontend/          # Streamlit + api_client + env_settings_panel
 ├── schemas/           # 模型 + DynamicCategoryProfile + matrix
 ├── obsidian/          # Vault 写入 + CSV
 ├── scripts/           # smoke_platforms.py
-├── tests/             # 197 项测试
+├── tests/             # 203 项测试
 ├── plan.md            # 架构计划
 └── .github/workflows/ # CI
 ```
