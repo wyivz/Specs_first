@@ -25,6 +25,8 @@ init_session_state()
 with st.sidebar:
     settings = render_sidebar_settings()
 
+# Defer health until after the main input so Real-mode readiness
+# cannot block the first paint of the query / SKU panel.
 input_ctx = render_input_panel(settings)
 handle_run_action(input_ctx)
 

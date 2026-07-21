@@ -10,9 +10,14 @@ Supported backends (checked in order):
 Install:
   pip install -e ".[asr]"       # yt-dlp + faster-whisper (multilingual)
   pip install -e ".[asr-zh]"    # above + funasr / SenseVoice (Chinese)
+
+Performance note:
+  ``check_readiness`` / health probes use ``importlib.util.find_spec`` only.
+  Never import funasr/torch during GUI cold start — that costs 10–30s on Windows.
 """
 from __future__ import annotations
 
+import importlib.util
 import re
 import shutil
 import subprocess
@@ -25,6 +30,7 @@ from urllib.parse import urlparse
 _AUDIO_EXTS = (".m4a", ".webm", ".opus", ".mp3", ".wav", ".ogg", ".aac")
 _MODEL_CACHE: dict[str, Any] = {}
 _LAST_DOWNLOAD_ERROR = ""
+_READINESS_CACHE = None
 
 
 @dataclass
@@ -61,12 +67,21 @@ class AsrReadiness:
         }
 
 
-def _check_backend() -> str | None:
-    """Return 'sensevoice', 'faster-whisper', or None.
+def _module_available(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
 
-    Probes the import path actually used at runtime (AutoModel / WhisperModel),
-    so missing transitive deps like torchaudio do not claim SenseVoice is ready.
-    """
+
+def _probe_backend() -> str | None:
+    """Fast package presence check — never imports torch/funasr."""
+    if _module_available("funasr") and _module_available("torch") and _module_available("torchaudio"):
+        return "sensevoice"
+    if _module_available("faster_whisper"):
+        return "faster-whisper"
+    return None
+
+
+def _resolve_backend() -> str | None:
+    """Import-heavy resolve used only when about to transcribe."""
     try:
         from funasr import AutoModel  # noqa: F401
 
@@ -82,29 +97,45 @@ def _check_backend() -> str | None:
     return None
 
 
+def _check_backend() -> str | None:
+    """Compatibility alias for callers/tests — prefer probe for UI, resolve for run."""
+    return _probe_backend()
+
+
 def _yt_dlp_cli_available() -> bool:
     return shutil.which("yt-dlp") is not None
 
 
 def _yt_dlp_module_available() -> bool:
-    try:
-        import yt_dlp  # noqa: F401
+    return _module_available("yt_dlp")
 
-        return True
-    except ImportError:
-        return False
+
+def _ffmpeg_available() -> bool:
+    return shutil.which("ffmpeg") is not None
 
 
 def available_backend() -> str | None:
     """Public helper so the UI can decide whether to show the ASR panel."""
-    return _check_backend()
+    return _probe_backend()
 
 
-def check_readiness() -> AsrReadiness:
-    """Report whether manual ASR and configured pipeline fallbacks can run."""
+def clear_readiness_cache() -> None:
+    global _READINESS_CACHE
+    _READINESS_CACHE = None
+
+
+def check_readiness(*, force: bool = False) -> AsrReadiness:
+    """Report whether manual ASR and configured pipeline fallbacks can run.
+
+    Uses find_spec only — safe to call from Streamlit health / sidebar.
+    """
+    global _READINESS_CACHE
+    if _READINESS_CACHE is not None and not force:
+        return _READINESS_CACHE
+
     from collectors.settings import settings
 
-    backend = _check_backend()
+    backend = _probe_backend()
     yt_dlp_cli = _yt_dlp_cli_available()
     yt_dlp_module = _yt_dlp_module_available()
     yt_dlp = "cli" if yt_dlp_cli else ("module" if yt_dlp_module else "none")
@@ -127,7 +158,7 @@ def check_readiness() -> AsrReadiness:
     else:
         install_hint = 'pip install -e ".[asr-zh]"  # Chinese, or pip install faster-whisper'
 
-    return AsrReadiness(
+    _READINESS_CACHE = AsrReadiness(
         ready=ready,
         backend=backend,
         yt_dlp=yt_dlp,
@@ -136,6 +167,8 @@ def check_readiness() -> AsrReadiness:
         pipeline_fallback_enabled=pipeline_fallback_enabled,
         ffmpeg=_ffmpeg_available(),
     )
+    return _READINESS_CACHE
+
 
 
 def _find_downloaded_audio(output_dir: Path) -> str:
@@ -293,10 +326,6 @@ def last_download_error() -> str:
     return _LAST_DOWNLOAD_ERROR
 
 
-def _ffmpeg_available() -> bool:
-    return shutil.which("ffmpeg") is not None
-
-
 def _max_audio_seconds() -> int:
     from collectors.settings import settings
 
@@ -408,7 +437,7 @@ def transcribe_file(
 ) -> AsrResult:
     """Transcribe an existing local audio file (no yt-dlp)."""
     path = Path(audio_path)
-    backend = _check_backend()
+    backend = _resolve_backend()
     if backend is None:
         readiness = check_readiness()
         return AsrResult(

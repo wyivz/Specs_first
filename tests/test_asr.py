@@ -15,20 +15,37 @@ from collectors.asr import (
 
 
 class AsrReadinessTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        import collectors.asr as asr_mod
+
+        asr_mod.clear_readiness_cache()
+
     def test_check_readiness_reports_missing_deps(self) -> None:
-        with patch("collectors.asr._check_backend", return_value=None):
+        with patch("collectors.asr._probe_backend", return_value=None):
             with patch("collectors.asr._yt_dlp_cli_available", return_value=False):
                 with patch("collectors.asr._yt_dlp_module_available", return_value=False):
-                    readiness = check_readiness()
+                    readiness = check_readiness(force=True)
         self.assertFalse(readiness.ready)
         self.assertEqual(readiness.missing, ("asr_backend", "yt_dlp"))
         self.assertIn("pip install", readiness.install_hint)
 
+    def test_check_readiness_is_fast_without_importing_funasr(self) -> None:
+        import collectors.asr as asr_mod
+
+        with patch.object(asr_mod, "_probe_backend", return_value="sensevoice"):
+            with patch.object(asr_mod, "_yt_dlp_cli_available", return_value=True):
+                with patch.object(asr_mod, "_ffmpeg_available", return_value=True):
+                    with patch.object(asr_mod, "_resolve_backend") as resolve:
+                        readiness = check_readiness(force=True)
+        self.assertTrue(readiness.ready)
+        self.assertEqual(readiness.backend, "sensevoice")
+        resolve.assert_not_called()
+
     def test_check_readiness_ok_with_module_ytdlp(self) -> None:
-        with patch("collectors.asr._check_backend", return_value="faster-whisper"):
+        with patch("collectors.asr._probe_backend", return_value="faster-whisper"):
             with patch("collectors.asr._yt_dlp_cli_available", return_value=False):
                 with patch("collectors.asr._yt_dlp_module_available", return_value=True):
-                    readiness = check_readiness()
+                    readiness = check_readiness(force=True)
         self.assertTrue(readiness.ready)
         self.assertEqual(readiness.yt_dlp, "module")
         self.assertEqual(readiness.backend, "faster-whisper")

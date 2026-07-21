@@ -1,8 +1,10 @@
 # 基础设施现状：Redis 与本地 ASR
 
-> 更新：2026-07-17（SenseVoice + ffmpeg 已本机验证）
+> 更新：2026-07-21（GUI 冷启动：ASR readiness 改为 find_spec，避免导入 funasr/torch）
 
 本文梳理 Specs-First 当前 **Redis checkpoint** 与 **本地音频转写（ASR）** 的配置、验证方式与后续步骤。
+
+**GUI 性能**：Health / 侧边栏只做包探测（毫秒级）。`funasr`/`torch` 仅在点击「本地转写」或管线 ASR 兜底时才加载。
 
 ---
 

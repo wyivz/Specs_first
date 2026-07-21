@@ -78,8 +78,8 @@ def render_health_panel(*, compact: bool = False) -> dict[str, Any]:
     if compact:
         return health
 
-    cols = st.columns(min(len(checks), 4))
-    for idx, item in enumerate(checks[:8]):
+    cols = st.columns(min(max(len(checks), 1), 4))
+    for idx, item in enumerate(checks):
         status = item.get("status", "skip")
         css = {"ok": "sf-pill-ok", "degraded": "sf-pill-warn", "warn": "sf-pill-warn", "error": "sf-pill-error"}.get(
             status, ""

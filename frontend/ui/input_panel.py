@@ -8,7 +8,6 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Install optional dependencies before running the UI: streamlit") from exc
 
 from frontend.api_client import get_api_client
-from frontend.event_listener import start_listener
 from frontend.state import reset_task_state
 from frontend.ui.env_settings_panel import (
     default_mode_from_draft,
@@ -17,6 +16,49 @@ from frontend.ui.env_settings_panel import (
     sync_mode_to_env_draft,
 )
 from frontend.ui.health_panel import get_cached_health, real_mode_ready
+
+
+def _start_listener(task_id: str) -> None:
+    from frontend.event_listener import start_listener
+
+    start_listener(task_id)
+
+
+def _render_asr_panel() -> None:
+    try:
+        from collectors.asr import check_readiness as _asr_readiness
+
+        _asr = _asr_readiness()
+    except Exception:
+        _asr = None
+    if _asr and _asr.ready:
+        bits = [f"后端: {_asr.backend}", f"yt-dlp: {_asr.yt_dlp}"]
+        if _asr.ffmpeg:
+            bits.append("ffmpeg: ok")
+        st.caption(" · ".join(bits))
+        asr_url = st.text_input("视频 URL", key="asr_url", placeholder="https://...")
+        asr_lang = st.selectbox("语言", ["auto", "zh", "en"], key="asr_lang")
+        if st.button("本地转写", use_container_width=True, key="asr_run"):
+            if asr_url:
+                with st.spinner("转写中（首次会加载模型，可能较慢）…"):
+                    from pathlib import Path as _Path
+
+                    from collectors.asr import transcribe_url as _transcribe
+
+                    _result = _transcribe(asr_url, language=asr_lang, output_dir=_Path("vault_output/asr_cache"))
+                    if _result.ok:
+                        st.success(f"完成（{len(_result.text)} 字符）")
+                        st.text_area("转写结果", _result.text, height=160)
+                    else:
+                        st.error(_result.error)
+    elif _asr:
+        missing = "、".join(_asr.missing) or "依赖"
+        st.caption(f"未就绪（缺 {missing}）")
+        if _asr.install_hint:
+            st.code(_asr.install_hint, language="powershell")
+        st.caption("中文推荐 `.[asr-zh]`（SenseVoice）；多语言用 `.[asr]`（faster-whisper）")
+    else:
+        st.caption('安装 `pip install -e ".[asr]"` 后可本地转写')
 
 
 @dataclass
@@ -59,7 +101,7 @@ def start_background_task(
     reset_task_state(category, len(selected_skus or []))
     st.session_state["active_task_id"] = task_id
     st.session_state["task_completed"] = False
-    start_listener(task_id)
+    _start_listener(task_id)
 
 
 def resume_background_task(task_id: str) -> None:
@@ -72,7 +114,7 @@ def resume_background_task(task_id: str) -> None:
     st.session_state.pop("paused_task_id", None)
     st.session_state.pop("task_error", None)
     st.session_state["task_completed"] = False
-    start_listener(task_id)
+    _start_listener(task_id)
 
 
 def render_onboarding_banner() -> None:
@@ -115,9 +157,14 @@ def render_sidebar_settings() -> RunSettings:
     render_env_settings_panel(task_running=task_running)
 
     if mode == "real":
-        ready, reason = real_mode_ready(get_cached_health())
-        if not ready:
-            st.error(reason)
+        # Prefer cached health so opening Real mode never re-imports heavy ASR stacks.
+        cached = st.session_state.get("health_cache")
+        if cached is None:
+            st.caption("Real 模式：主区下方 Health 首次检查完成后即可开跑（不会阻塞输入区）。")
+        else:
+            ready, reason = real_mode_ready(cached)
+            if not ready:
+                st.error(reason)
 
     use_browser = True
     vault_path = "vault_output"
@@ -143,39 +190,8 @@ def render_sidebar_settings() -> RunSettings:
 3. 填写商品/评测直链 → Real + Playwright → 开始对比
                 """.strip()
             )
-        st.markdown("---")
-        st.markdown("**本地 ASR 转写**")
-        try:
-            from collectors.asr import check_readiness as _asr_readiness
-
-            _asr = _asr_readiness()
-        except Exception:
-            _asr = None
-        if _asr and _asr.ready:
-            st.caption(f"后端: {_asr.backend} · yt-dlp: {_asr.yt_dlp}")
-            asr_url = st.text_input("视频 URL", key="asr_url", placeholder="https://...")
-            asr_lang = st.selectbox("语言", ["auto", "zh", "en"], key="asr_lang")
-            if st.button("本地转写", use_container_width=True, key="asr_run"):
-                if asr_url:
-                    with st.spinner("转写中…"):
-                        from pathlib import Path as _Path
-
-                        from collectors.asr import transcribe_url as _transcribe
-
-                        _result = _transcribe(asr_url, language=asr_lang, output_dir=_Path("vault_output/asr_cache"))
-                        if _result.ok:
-                            st.success(f"完成（{len(_result.text)} 字符）")
-                            st.text_area("转写结果", _result.text, height=160)
-                        else:
-                            st.error(_result.error)
-        elif _asr:
-            missing = "、".join(_asr.missing) or "依赖"
-            st.caption(f"未就绪（缺 {missing}）")
-            if _asr.install_hint:
-                st.code(_asr.install_hint, language="powershell")
-            st.caption("中文推荐 `.[asr-zh]`（SenseVoice）；多语言用 `.[asr]`（faster-whisper）")
-        else:
-            st.caption("安装 `pip install -e \".[asr]\"` 后可本地转写")
+        with st.expander("本地 ASR 转写", expanded=False):
+            _render_asr_panel()
 
     paused_task_id = st.session_state.get("paused_task_id")
     if paused_task_id:
