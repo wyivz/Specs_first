@@ -10,6 +10,7 @@ from schemas import ProductCandidate
 
 __all__ = [
     "discover_skus_from_evidence",
+    "expand_discovery_search_plans",
     "merge_discovery_candidates",
     "usable_discovered_sku",
     "sku_identity_key",
@@ -27,6 +28,16 @@ Rules:
 - Only include models supported by the evidence. Do not invent unrelated products.
 - Works for ANY product category.
 - Prefer distinct models; drop duplicates and variant spam.
+- JSON only.
+"""
+
+_EXPAND_SYSTEM = """You plan web search queries to find buyable product models for comparison.
+
+Rules:
+- Category-agnostic: work for mice, cameras, appliances, software, etc.
+- Infer language variants and marketplace-oriented phrasings from the user query itself.
+- Do NOT rely on a fixed brand glossary — only use brands/terms present or clearly implied.
+- Prefer 2-5 short, diverse queries that will hit review/shopping pages.
 - JSON only.
 """
 
@@ -69,6 +80,79 @@ def merge_discovery_candidates(
     return merged
 
 
+def _resolve_llm_json(
+    llm_json: Callable[[str, str], dict[str, Any]] | None,
+) -> Callable[[str, str], dict[str, Any]] | None:
+    if llm_json is not None:
+        return llm_json
+    if not (settings.has_gemini or settings.has_openai):
+        return None
+    try:
+        from backend.discovery_llm import create_discover_llm_json
+
+        return create_discover_llm_json()
+    except Exception:
+        return None
+
+
+def expand_discovery_search_plans(
+    query: str,
+    category: str = "Product",
+    *,
+    quick: bool = False,
+    llm_json: Callable[[str, str], dict[str, Any]] | None = None,
+    on_progress: Callable[[str], None] | None = None,
+    max_plans: int = 5,
+) -> list[str]:
+    """Build discovery search queries via structured LLM output (no brand glossaries)."""
+    seed = (query or "").strip()
+    if not seed:
+        return []
+    # Minimal template fallback when LLM is unavailable — still category-agnostic.
+    fallback = (
+        [f"{seed} 型号", f"{seed} models comparison", f"{seed} review"]
+        if quick
+        else [
+            f"{seed} 型号 推荐",
+            f"{seed} {category} models".strip(),
+            f"{seed} review specifications",
+            f"{seed} official",
+        ]
+    )
+    call_llm = _resolve_llm_json(llm_json)
+    if call_llm is None:
+        return list(dict.fromkeys(fallback))[:max_plans]
+
+    if on_progress:
+        on_progress("正在用 AI 规划发现检索词…")
+    prompt = (
+        f"User query: {seed!r}\n"
+        f"Category hint (may be generic): {category!r}\n"
+        f"Mode: {'quick' if quick else 'thorough'}\n"
+        f"Return up to {max_plans} search_queries for finding concrete buyable models.\n"
+        'JSON shape: {"search_queries":["..."]}\n'
+    )
+    try:
+        payload = call_llm(_EXPAND_SYSTEM, prompt)
+    except Exception as exc:
+        if on_progress:
+            on_progress(f"检索词规划失败，改用通用模板：{exc}")
+        return list(dict.fromkeys(fallback))[:max_plans]
+
+    raw = payload.get("search_queries") if isinstance(payload, dict) else None
+    planned: list[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            text = str(item or "").strip()
+            if text and text not in planned:
+                planned.append(text)
+    if not planned:
+        return list(dict.fromkeys(fallback))[:max_plans]
+    # Always keep the raw seed as a first-class plan.
+    merged = [seed, *planned, *fallback]
+    return list(dict.fromkeys(q for q in merged if q))[:max_plans]
+
+
 def discover_skus_from_evidence(
     query: str,
     hits: list[SearchResult],
@@ -88,20 +172,11 @@ def discover_skus_from_evidence(
             on_progress("没有可用的搜索结果，无法提炼型号")
         return []
 
-    call_llm = llm_json
+    call_llm = _resolve_llm_json(llm_json)
     if call_llm is None:
-        if not (settings.has_gemini or settings.has_openai):
-            if on_progress:
-                on_progress("未配置 Gemini/OpenAI Key，无法提炼型号")
-            return []
-        try:
-            from backend.discovery_llm import create_discover_llm_json
-
-            call_llm = create_discover_llm_json()
-        except Exception:
-            if on_progress:
-                on_progress("发现 LLM 初始化失败")
-            return []
+        if on_progress:
+            on_progress("未配置 Gemini/OpenAI Key，无法提炼型号")
+        return []
 
     bodies: dict[int, str] = {}
     if fetch_bodies and page_fetcher is not None:

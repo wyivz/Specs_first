@@ -128,69 +128,26 @@ def now_iso() -> str:
 
 
 def infer_brand(title_or_query: str) -> str:
-    compact = re.sub(r"[^a-z0-9]", "", (title_or_query or "").lower())
-    # Legacy marketplace codes that already encode a brand prefix (not category-specific heuristics).
-    if compact.startswith("sel") and re.match(r"^sel\d+", compact):
-        return "Sony"
-    # Chinese aliases first so "罗技 G304" → Logitech, not "罗技".
-    # Keep this as a bilingual brand dictionary across categories — do NOT add
-    # model-shape heuristics (e.g. Z5II→Nikon) that only fit one vertical.
-    brand_aliases: list[tuple[str, str]] = [
-        ("罗技", "Logitech"),
-        ("logitech", "Logitech"),
-        ("雷蛇", "Razer"),
-        ("razer", "Razer"),
-        ("雷柏", "Rapoo"),
-        ("rapoo", "Rapoo"),
-        ("赛睿", "SteelSeries"),
-        ("steelseries", "SteelSeries"),
-        ("漫步者", "Edifier"),
-        ("edifier", "Edifier"),
-        ("樱桃", "Cherry"),
-        ("cherry", "Cherry"),
-        ("keychron", "Keychron"),
-        ("苹果", "Apple"),
-        ("apple", "Apple"),
-        ("三星", "Samsung"),
-        ("samsung", "Samsung"),
-        ("小米", "Xiaomi"),
-        ("xiaomi", "Xiaomi"),
-        ("华为", "Huawei"),
-        ("huawei", "Huawei"),
-        ("索尼", "Sony"),
-        ("sony", "Sony"),
-        ("微软", "Microsoft"),
-        ("microsoft", "Microsoft"),
-        ("佳能", "Canon"),
-        ("canon", "Canon"),
-        ("尼康", "Nikon"),
-        ("nikon", "Nikon"),
-        ("大疆", "DJI"),
-        ("dji", "DJI"),
-        ("蔡司", "Zeiss"),
-        ("zeiss", "Zeiss"),
-        ("适马", "Sigma"),
-        ("sigma", "Sigma"),
-        ("腾龙", "Tamron"),
-        ("tamron", "Tamron"),
-        ("徕卡", "Leica"),
-        ("leica", "Leica"),
-        ("富士", "Fujifilm"),
-        ("fujifilm", "Fujifilm"),
-        ("松下", "Panasonic"),
-        ("panasonic", "Panasonic"),
-    ]
-    lower = (title_or_query or "").lower()
-    for needle, brand in brand_aliases:
-        if needle in lower:
-            return brand
+    """Lightweight brand guess without vertical glossaries.
+
+    Prefer brand fields from structured LLM discovery/JIT outputs when available.
+    This helper only keeps structural fallbacks for display/dedupe.
+    """
+    text = (title_or_query or "").strip()
+    if not text:
+        return "Unknown"
     # Never treat a Chinese headline / whole sentence as a "brand".
-    token = (title_or_query or "").split()[0] if (title_or_query or "").split() else ""
-    if not token or len(token) > 24 or re.search(r"[？?！!，,。：:]", token):
+    if re.search(r"[？?！!，,。：:]", text):
+        return "Unknown"
+    token = text.split()[0]
+    if not token or len(token) > 24:
         return "Unknown"
     if len(re.findall(r"[\u4e00-\u9fff]", token)) >= 6 and not primary_model_code(token):
         return "Unknown"
-    return token or "Unknown"
+    # Pure CJK short tokens without Latin model codes are usually category words.
+    if re.fullmatch(r"[\u4e00-\u9fff]+", token) and not primary_model_code(text):
+        return "Unknown"
+    return token
 
 
 def sku_identity_key(sku: str) -> str:

@@ -109,15 +109,26 @@ class RealCollector(Collector):
         on_progress=None,
         llm_json=None,
     ) -> list[ProductCandidate]:
-        """Search → fetch page bodies → AI shortlist of buyable models."""
+        """LLM search-plan expansion → web search → AI shortlist of buyable models."""
+        from collectors.discovery import discover_skus_from_evidence, expand_discovery_search_plans
+
+        resolved_llm = llm_json if llm_json is not None else getattr(self, "_discover_llm_json", None)
+        search_plans = expand_discovery_search_plans(
+            query,
+            category,
+            quick=quick,
+            llm_json=resolved_llm,
+            on_progress=on_progress,
+            max_plans=4 if quick else 6,
+        )
         hits = self.official.collect_discovery_hits(
             query,
             category,
             max_results,
             quick=quick,
             on_progress=on_progress,
+            search_plans=search_plans,
         )
-        from collectors.discovery import discover_skus_from_evidence
 
         def _fetch_page(url: str) -> str:
             try:
@@ -134,7 +145,7 @@ class RealCollector(Collector):
             category=category,
             max_results=max_results,
             on_progress=on_progress,
-            llm_json=llm_json if llm_json is not None else getattr(self, "_discover_llm_json", None),
+            llm_json=resolved_llm,
             page_fetcher=_fetch_page,
             fetch_bodies=True,
             max_pages=4 if quick else 6,

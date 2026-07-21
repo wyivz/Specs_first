@@ -292,23 +292,18 @@ def forum_search_queries(
 ) -> list[tuple[str, str]]:
     """Build Chiphell/Reddit review queries — category-agnostic.
 
-    Brand is only used when the SKU/query text already names it (via bilingual
-    aliases). Do not pin camera subreddits or vertical-specific exclude lists.
+    Brand hints come from the SKU text itself or DynamicCategoryProfile modifiers,
+    not from hardcoded brand/subreddit tables.
     """
-    from collectors.extractors import infer_brand, sku_search_phrase
+    from collectors.extractors import sku_search_phrase
 
     phrase = sku_search_phrase(sku)
-    brand = infer_brand(sku)
-    brand_hint = brand if brand and brand != "Unknown" else ""
-    chiphell_query = f"{phrase} {brand_hint} site:chiphell.com 缺点 品控 翻车 问题 体验".strip()
+    chiphell_query = f"{phrase} site:chiphell.com 缺点 品控 翻车 问题 体验".strip()
     queries: list[tuple[str, str]] = [
         ("Chiphell", _append_modifiers(chiphell_query, modifiers)),
     ]
     if include_reddit:
-        # Broad Reddit scope keeps the collector usable for any product category.
-        reddit_query = (
-            f"{phrase} {brand_hint} site:reddit.com defect issue quality problem review"
-        ).strip()
+        reddit_query = f"{phrase} site:reddit.com defect issue quality problem review".strip()
         queries.append(
             (
                 "Reddit",

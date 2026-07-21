@@ -4,9 +4,9 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
-from collectors.discovery import discover_skus_from_evidence
+from collectors.discovery import discover_skus_from_evidence, expand_discovery_search_plans
 from collectors.http import HttpClient, SearchResult
-from collectors.sources.official import OfficialSourceCollector, _english_discovery_alias
+from collectors.sources.official import OfficialSourceCollector
 
 
 class DiscoverySearchFallbackTest(unittest.TestCase):
@@ -20,36 +20,55 @@ class DiscoverySearchFallbackTest(unittest.TestCase):
             return []
 
         def fake_ddgs(query, max_results):  # noqa: ANN001
-            return [SearchResult("Sony A7 IV", "https://example.com/a7iv", "full-frame")]
+            return [SearchResult("Logitech G304", "https://example.com/g304", "wireless")]
 
         with (
             patch.object(HttpClient, "_search_duckduckgo_html", empty_html),
             patch.object(HttpClient, "_search_duckduckgo_lite", empty_lite),
             patch.object(HttpClient, "_search_duckduckgo_ddgs", staticmethod(fake_ddgs)),
         ):
-            hits = client.search("索尼全画幅相机", max_results=5, quick=True)
+            hits = client.search("无线鼠标", max_results=5, quick=True)
         self.assertEqual(len(hits), 1)
-        self.assertIn("A7", hits[0].title)
+        self.assertIn("G304", hits[0].title)
 
-    def test_english_alias_is_category_agnostic(self) -> None:
-        alias = _english_discovery_alias("罗技无线鼠标")
-        self.assertIn("Logitech", alias)
-        self.assertIn("mouse", alias)
-        self.assertNotRegex(alias, r"[\u4e00-\u9fff]")
+    def test_expand_search_plans_uses_structured_llm(self) -> None:
+        def fake_llm(_system: str, _prompt: str) -> dict[str, Any]:
+            return {
+                "search_queries": [
+                    "Logitech wireless mouse models",
+                    "罗技 无线鼠标 型号 对比",
+                ]
+            }
 
-    def test_discovery_hits_include_english_plan(self) -> None:
+        plans = expand_discovery_search_plans(
+            "无线鼠标",
+            "Product",
+            quick=True,
+            llm_json=fake_llm,
+            max_plans=5,
+        )
+        self.assertIn("无线鼠标", plans)
+        self.assertTrue(any("Logitech" in p for p in plans))
+        self.assertTrue(any("罗技" in p for p in plans))
+
+    def test_collect_hits_honors_llm_search_plans(self) -> None:
         seen: list[str] = []
 
         class _Http:
             def search(self, query, max_results=8, *, quick=False):
                 seen.append(query)
-                if "Logitech" in query and "mouse" in query:
+                if "Logitech wireless mouse models" in query:
                     return [SearchResult("Logitech G304 review", "https://ex/a", "wireless")]
                 return []
 
         collector = OfficialSourceCollector(_Http())  # type: ignore[arg-type]
-        hits = collector.collect_discovery_hits("罗技无线鼠标", "Product", quick=True)
-        self.assertTrue(any("Logitech" in q for q in seen))
+        hits = collector.collect_discovery_hits(
+            "无线鼠标",
+            "Product",
+            quick=True,
+            search_plans=["无线鼠标", "Logitech wireless mouse models"],
+        )
+        self.assertEqual(seen, ["无线鼠标", "Logitech wireless mouse models"])
         self.assertEqual(len(hits), 1)
 
     def test_auto_wires_llm_when_callback_missing(self) -> None:

@@ -55,29 +55,30 @@ class OfficialSourceCollector:
         *,
         quick: bool = False,
         on_progress: Callable[[str], None] | None = None,
+        search_plans: list[str] | None = None,
     ) -> list[SearchResult]:
-        """Search the open web for discovery evidence (no SKU parsing here)."""
+        """Search the open web for discovery evidence (no SKU parsing here).
+
+        Prefer caller-supplied ``search_plans`` from structured LLM expansion.
+        Template fallbacks stay language-agnostic and do not use brand glossaries.
+        """
         seed = (query or "").strip()
-        english = _english_discovery_alias(seed)
-        if quick:
-            search_plans = [
+        if search_plans:
+            plans = [str(item).strip() for item in search_plans if str(item).strip()]
+        elif quick:
+            plans = [
                 f"{seed} 型号".strip(),
                 f"{seed} models comparison".strip(),
+                f"{seed} review".strip(),
             ]
-            if english and english.casefold() != seed.casefold():
-                search_plans.append(f"{english} models")
-                search_plans.append(f"{english} comparison buy")
         else:
-            search_plans = [
+            plans = [
                 f"{seed} 型号 推荐".strip(),
                 f"{seed} {category} models".strip(),
                 f"{seed} review specifications".strip(),
                 f"{seed} official".strip(),
             ]
-            if english and english.casefold() != seed.casefold():
-                search_plans.insert(1, f"{english} models comparison")
-        # De-dupe while preserving order.
-        search_plans = list(dict.fromkeys(p for p in search_plans if p))
+        search_plans = list(dict.fromkeys(p for p in plans if p))
         per_plan = max(max_results, 6) if quick else max(max_results * 2, 8)
 
         results: list[SearchResult] = []
@@ -257,57 +258,3 @@ class OfficialSourceCollector:
             if tokens and sum(1 for token in tokens if token in combined) < max(1, min(2, len(tokens) // 2)):
                 return False
         return True
-
-
-# Bilingual brand + common category nouns for discovery search expansion.
-# Brands are lookups (any vertical); nouns are generic shopping vocabulary —
-# not a camera-only ontology. Prefer DynamicCategoryProfile modifiers when present.
-_ZH_EN_DISCOVERY_TERMS: tuple[tuple[str, str], ...] = (
-    ("罗技", "Logitech"),
-    ("雷蛇", "Razer"),
-    ("雷柏", "Rapoo"),
-    ("赛睿", "SteelSeries"),
-    ("漫步者", "Edifier"),
-    ("樱桃", "Cherry"),
-    ("苹果", "Apple"),
-    ("三星", "Samsung"),
-    ("小米", "Xiaomi"),
-    ("华为", "Huawei"),
-    ("索尼", "Sony"),
-    ("微软", "Microsoft"),
-    ("佳能", "Canon"),
-    ("尼康", "Nikon"),
-    ("大疆", "DJI"),
-    ("蔡司", "Zeiss"),
-    ("适马", "Sigma"),
-    ("腾龙", "Tamron"),
-    ("徕卡", "Leica"),
-    ("富士", "Fujifilm"),
-    ("松下", "Panasonic"),
-    ("鼠标", "mouse"),
-    ("键盘", "keyboard"),
-    ("耳机", "headphones"),
-    ("音箱", "speaker"),
-    ("显示器", "monitor"),
-    ("笔记本", "laptop"),
-    ("手机", "phone"),
-    ("相机", "camera"),
-    ("镜头", "lens"),
-    ("无人机", "drone"),
-)
-
-
-def _english_discovery_alias(query: str) -> str:
-    """Map common Chinese shopping phrases to English search aliases for DDG/ddgs."""
-    text = (query or "").strip()
-    if not text or not re.search(r"[\u4e00-\u9fff]", text):
-        return ""
-    alias = text
-    for zh, en in _ZH_EN_DISCOVERY_TERMS:
-        if zh in alias:
-            alias = alias.replace(zh, f" {en} ")
-    alias = re.sub(r"\s+", " ", alias).strip()
-    # Drop leftover CJK so the English plan stays searchable abroad.
-    alias = re.sub(r"[\u4e00-\u9fff]+", " ", alias)
-    alias = re.sub(r"\s+", " ", alias).strip()
-    return alias
