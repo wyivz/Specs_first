@@ -31,11 +31,10 @@ class DiscoverySearchFallbackTest(unittest.TestCase):
         self.assertEqual(len(hits), 1)
         self.assertIn("A7", hits[0].title)
 
-    def test_english_alias_for_sony_ff(self) -> None:
-        alias = _english_discovery_alias("索尼全画幅相机")
-        self.assertIn("Sony", alias)
-        self.assertIn("full-frame", alias)
-        self.assertIn("camera", alias)
+    def test_english_alias_is_category_agnostic(self) -> None:
+        alias = _english_discovery_alias("罗技无线鼠标")
+        self.assertIn("Logitech", alias)
+        self.assertIn("mouse", alias)
         self.assertNotRegex(alias, r"[\u4e00-\u9fff]")
 
     def test_discovery_hits_include_english_plan(self) -> None:
@@ -44,32 +43,32 @@ class DiscoverySearchFallbackTest(unittest.TestCase):
         class _Http:
             def search(self, query, max_results=8, *, quick=False):
                 seen.append(query)
-                if "Sony" in query and "full-frame" in query:
-                    return [SearchResult("Sony A7 IV review", "https://ex/a", "mirrorless")]
+                if "Logitech" in query and "mouse" in query:
+                    return [SearchResult("Logitech G304 review", "https://ex/a", "wireless")]
                 return []
 
         collector = OfficialSourceCollector(_Http())  # type: ignore[arg-type]
-        hits = collector.collect_discovery_hits("索尼全画幅相机", "Product", quick=True)
-        self.assertTrue(any("Sony" in q for q in seen))
+        hits = collector.collect_discovery_hits("罗技无线鼠标", "Product", quick=True)
+        self.assertTrue(any("Logitech" in q for q in seen))
         self.assertEqual(len(hits), 1)
 
     def test_auto_wires_llm_when_callback_missing(self) -> None:
-        hits = [SearchResult("2024 best full-frame cameras roundup", "https://ex/a", "includes A7 IV")]
+        hits = [SearchResult("2024 best wireless mice roundup", "https://ex/a", "includes G304")]
 
         def fake_llm(_system: str, _prompt: str) -> dict[str, Any]:
-            return {"products": [{"sku": "Sony A7 IV", "brand": "Sony", "evidence_index": 1}]}
+            return {"products": [{"sku": "Logitech G304", "brand": "Logitech", "evidence_index": 1}]}
 
         with patch("backend.discovery_llm.create_discover_llm_json", return_value=fake_llm):
             with patch("collectors.discovery.settings") as fake_settings:
                 fake_settings.has_gemini = True
                 fake_settings.has_openai = False
                 candidates = discover_skus_from_evidence(
-                    "索尼全画幅相机",
+                    "无线鼠标",
                     hits,
                     llm_json=None,
                     fetch_bodies=False,
                 )
-        self.assertEqual([c.sku for c in candidates], ["Sony A7 IV"])
+        self.assertEqual([c.sku for c in candidates], ["Logitech G304"])
 
 
 if __name__ == "__main__":

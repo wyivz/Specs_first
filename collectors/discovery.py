@@ -131,8 +131,8 @@ def discover_skus_from_evidence(
         f"Category hint (may be generic): {category!r}\n"
         f"Return up to {max_results} distinct buyable product models relevant to the query.\n"
         "Read page body text when present; do not treat titles as products.\n"
-        "For category queries (e.g. '索尼全画幅相机'), list current mainstream buyable models "
-        "that the evidence supports (e.g. Sony A7 IV, A7R V, A7C II) — not the category phrase itself.\n"
+        "For category queries (e.g. '无线鼠标' / '蓝牙耳机'), list current mainstream buyable models "
+        "that the evidence supports — not the category phrase itself.\n"
         "Each item: sku (model name as sold), brand, evidence_index (1-based hit that supports it).\n"
         'JSON shape: {"products":[{"sku":"...","brand":"...","evidence_index":1}]}\n\n'
         "Evidence:\n"

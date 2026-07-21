@@ -129,16 +129,12 @@ def now_iso() -> str:
 
 def infer_brand(title_or_query: str) -> str:
     compact = re.sub(r"[^a-z0-9]", "", (title_or_query or "").lower())
+    # Legacy marketplace codes that already encode a brand prefix (not category-specific heuristics).
     if compact.startswith("sel") and re.match(r"^sel\d+", compact):
         return "Sony"
-    # Nikon Z / Df / Dxxx bodies when the query is only a model code.
-    if re.match(r"^z(?:f|[0-9]{1,2}(?:ii|iii|iv)?)$", compact) or re.match(
-        r"^d[0-9]{3,4}(?:[a-z])?$", compact
-    ):
-        return "Nikon"
-    if re.match(r"^eos[r0-9]", compact) or re.match(r"^rf[0-9]", compact):
-        return "Canon"
     # Chinese aliases first so "罗技 G304" → Logitech, not "罗技".
+    # Keep this as a bilingual brand dictionary across categories — do NOT add
+    # model-shape heuristics (e.g. Z5II→Nikon) that only fit one vertical.
     brand_aliases: list[tuple[str, str]] = [
         ("罗技", "Logitech"),
         ("logitech", "Logitech"),

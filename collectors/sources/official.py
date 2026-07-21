@@ -259,23 +259,41 @@ class OfficialSourceCollector:
         return True
 
 
+# Bilingual brand + common category nouns for discovery search expansion.
+# Brands are lookups (any vertical); nouns are generic shopping vocabulary —
+# not a camera-only ontology. Prefer DynamicCategoryProfile modifiers when present.
 _ZH_EN_DISCOVERY_TERMS: tuple[tuple[str, str], ...] = (
+    ("罗技", "Logitech"),
+    ("雷蛇", "Razer"),
+    ("雷柏", "Rapoo"),
+    ("赛睿", "SteelSeries"),
+    ("漫步者", "Edifier"),
+    ("樱桃", "Cherry"),
+    ("苹果", "Apple"),
+    ("三星", "Samsung"),
+    ("小米", "Xiaomi"),
+    ("华为", "Huawei"),
     ("索尼", "Sony"),
-    ("尼康", "Nikon"),
+    ("微软", "Microsoft"),
     ("佳能", "Canon"),
-    ("富士", "Fujifilm"),
-    ("松下", "Panasonic"),
-    ("徕卡", "Leica"),
+    ("尼康", "Nikon"),
+    ("大疆", "DJI"),
+    ("蔡司", "Zeiss"),
     ("适马", "Sigma"),
     ("腾龙", "Tamron"),
-    ("全画幅", "full-frame"),
-    ("微单", "mirrorless"),
-    ("单反", "DSLR"),
-    ("相机", "camera"),
-    ("镜头", "lens"),
+    ("徕卡", "Leica"),
+    ("富士", "Fujifilm"),
+    ("松下", "Panasonic"),
     ("鼠标", "mouse"),
     ("键盘", "keyboard"),
     ("耳机", "headphones"),
+    ("音箱", "speaker"),
+    ("显示器", "monitor"),
+    ("笔记本", "laptop"),
+    ("手机", "phone"),
+    ("相机", "camera"),
+    ("镜头", "lens"),
+    ("无人机", "drone"),
 )
 
 

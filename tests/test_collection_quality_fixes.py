@@ -74,11 +74,12 @@ class PriceExtractionGuardTest(unittest.TestCase):
 
 
 class ForumRelevanceTest(unittest.TestCase):
-    def test_nikon_uses_nikon_reddit(self) -> None:
-        queries = dict(forum_search_queries("Z5II", include_reddit=True))
+    def test_reddit_stays_category_agnostic(self) -> None:
+        queries = dict(forum_search_queries("Logitech G304", include_reddit=True))
         self.assertIn("Reddit", queries)
-        self.assertIn("Nikon", queries["Reddit"])
+        self.assertIn("site:reddit.com", queries["Reddit"])
         self.assertNotIn("SonyAlpha", queries["Reddit"])
+        self.assertNotIn("/r/Nikon", queries["Reddit"])
 
     def test_noisy_chiphell_index(self) -> None:
         self.assertTrue(is_noisy_forum_url("https://www.chiphell.com/"))
