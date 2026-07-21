@@ -341,9 +341,12 @@ def render_input_panel(settings: RunSettings) -> InputContext:
         )
         discovered: list[dict] = []
         progress = st.empty()
+        last_progress = ""
         with st.spinner(spinner_label):
             try:
                 def _on_progress(message: str) -> None:
+                    nonlocal last_progress
+                    last_progress = message
                     progress.caption(message)
 
                 discovered = get_api_client().discover(
@@ -371,9 +374,11 @@ def render_input_panel(settings: RunSettings) -> InputContext:
                         "请勾选后开始对比（不是文章标题）。"
                     )
                 else:
+                    detail = f" 最近进度：{last_progress}" if last_progress else ""
                     st.session_state["discover_message"] = (
-                        "未提炼出可购型号。请确认已配置 Gemini/OpenAI Key；"
-                        "也可换更具体关键词，或在下方手动添加型号。"
+                        "未提炼出可购型号。可能原因：搜索无结果、页面抓取失败，或 AI 未从证据中认出具体型号。"
+                        "请换更具体关键词（如「索尼 A7IV A7C2」），确认 Gemini/OpenAI Key，或在下方手动添加型号。"
+                        f"{detail}"
                     )
         progress.empty()
 

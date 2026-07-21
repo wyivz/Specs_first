@@ -290,22 +290,36 @@ def forum_search_queries(
     include_reddit: bool = False,
     modifiers: list[str] | None = None,
 ) -> list[tuple[str, str]]:
-    from collectors.extractors import sku_search_phrase
+    from collectors.extractors import infer_brand, sku_search_phrase
 
     phrase = sku_search_phrase(sku)
     compact = re.sub(r"[^a-z0-9]", "", (sku or "").lower())
+    brand = infer_brand(sku)
     brand_hint = ""
     exclude_hint = ""
-    if re.match(r"^sel\d+", compact):
-        brand_hint = "Sony FE"
+    reddit_scope = "site:reddit.com"
+    if re.match(r"^sel\d+", compact) or brand == "Sony":
+        brand_hint = "Sony FE" if re.match(r"^sel\d+", compact) else "Sony"
         exclude_hint = "-Canon -RF -Nikon -Sigma"
+        reddit_scope = "site:reddit.com/r/SonyAlpha"
+    elif brand == "Nikon":
+        brand_hint = "Nikon"
+        exclude_hint = "-Sony -Canon -RF"
+        reddit_scope = "site:reddit.com/r/Nikon OR site:reddit.com/r/NikonZ"
+    elif brand == "Canon":
+        brand_hint = "Canon"
+        exclude_hint = "-Sony -Nikon"
+        reddit_scope = "site:reddit.com/r/Canon"
+    elif brand == "Fujifilm":
+        brand_hint = "Fujifilm"
+        reddit_scope = "site:reddit.com/r/fujifilm"
     chiphell_query = f"{phrase} {brand_hint} site:chiphell.com 缺点 品控 翻车 问题 体验 {exclude_hint}".strip()
     queries: list[tuple[str, str]] = [
         ("Chiphell", _append_modifiers(chiphell_query, modifiers)),
     ]
     if include_reddit:
         reddit_query = (
-            f"{phrase} {brand_hint} site:reddit.com/r/SonyAlpha defect issue quality problem review {exclude_hint}"
+            f"{phrase} {brand_hint} {reddit_scope} defect issue quality problem review {exclude_hint}"
         ).strip()
         queries.append(
             (

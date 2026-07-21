@@ -414,17 +414,25 @@ class TmallTaobaoAdapter:
         if mtop_price is not None:
             script_prices.append(mtop_price)
         if script_prices and parsed:
-            final = min(script_prices + [parsed.final_price])
+            candidates = sorted({p for p in script_prices if p >= 50} or script_prices)
+            # Prefer explicit text final when it sits in a sane product range.
+            if parsed.final_price >= 300 or (
+                parsed.final_price >= 100 and parsed.final_price <= max(candidates) * 1.2
+            ):
+                final = parsed.final_price
+            else:
+                final = candidates[len(candidates) // 2]
             return ParsedPrice(
-                list_price=max(parsed.list_price, final),
+                list_price=max(parsed.list_price, final, max(candidates)),
                 coupon_discount=parsed.coupon_discount,
                 subsidy_discount=parsed.subsidy_discount,
                 cross_store_discount=parsed.cross_store_discount,
                 final_price=final,
             )
         if script_prices:
-            final = min(script_prices)
-            return ParsedPrice(final, 0, 0, 0, final)
+            ranked = sorted({p for p in script_prices if p >= 50} or script_prices)
+            final = ranked[len(ranked) // 2]
+            return ParsedPrice(max(ranked), 0, 0, 0, final)
         return parsed
 
     def build_price_finding(self, url: str, markup: str, platform: str = "Taobao/Tmall") -> PriceFinding | None:
@@ -472,7 +480,10 @@ class TmallTaobaoAdapter:
             return None
         prices: list[float] = []
         prices.extend(self._walk_json_prices(payload))
-        return min(prices) if prices else None
+        if not prices:
+            return None
+        ranked = sorted(p for p in prices if p >= 100) or sorted(prices)
+        return ranked[len(ranked) // 2]
 
     def _extract_script_prices(self, markup: str) -> list[float]:
         prices: list[float] = []
@@ -482,7 +493,7 @@ class TmallTaobaoAdapter:
                     value = float(match.group(1))
                 except ValueError:
                     continue
-                if 10 <= value <= 1_000_000:
+                if 100 <= value <= 1_000_000:
                     prices.append(value)
         for blob in re.findall(r"<script[^>]*>(.*?)</script>", markup, re.I | re.S):
             if "price" not in blob.lower():
@@ -505,7 +516,7 @@ class TmallTaobaoAdapter:
                         number = float(value)
                     except (TypeError, ValueError):
                         number = 0
-                    if 10 <= number <= 1_000_000:
+                    if 100 <= number <= 1_000_000:
                         values.append(number)
                 values.extend(self._walk_json_prices(value))
         elif isinstance(node, list):

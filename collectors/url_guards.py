@@ -70,6 +70,28 @@ def is_noisy_ecommerce_url(url: str) -> bool:
     return False
 
 
+def is_noisy_forum_url(url: str) -> bool:
+    """Skip forum indexes/homepages that look like search hits but have no thread body."""
+    if not url or not url.startswith("http"):
+        return True
+    lower = url.lower()
+    parsed = urlparse(url)
+    path = (parsed.path or "/").rstrip("/") or "/"
+    if "chiphell.com" in lower:
+        if "forumdisplay" in lower or "mod=forumdisplay" in lower:
+            return True
+        if path in {"", "/"} or path.endswith("/index.php"):
+            return True
+        # Prefer real threads; list/search pages are low value.
+        if "thread-" not in lower and "tid=" not in lower and "/thread/" not in lower:
+            return True
+    if "reddit.com" in lower:
+        # Subreddit indexes / search pages without a post id.
+        if "/comments/" not in lower:
+            return True
+    return False
+
+
 def _is_marketplace_non_product(url: str) -> bool:
     lower = url.lower()
     if "jd.com" in lower or "jd.hk" in lower:

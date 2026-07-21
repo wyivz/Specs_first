@@ -58,11 +58,15 @@ class OfficialSourceCollector:
     ) -> list[SearchResult]:
         """Search the open web for discovery evidence (no SKU parsing here)."""
         seed = (query or "").strip()
+        english = _english_discovery_alias(seed)
         if quick:
             search_plans = [
                 f"{seed} 型号".strip(),
                 f"{seed} models comparison".strip(),
             ]
+            if english and english.casefold() != seed.casefold():
+                search_plans.append(f"{english} models")
+                search_plans.append(f"{english} comparison buy")
         else:
             search_plans = [
                 f"{seed} 型号 推荐".strip(),
@@ -70,6 +74,10 @@ class OfficialSourceCollector:
                 f"{seed} review specifications".strip(),
                 f"{seed} official".strip(),
             ]
+            if english and english.casefold() != seed.casefold():
+                search_plans.insert(1, f"{english} models comparison")
+        # De-dupe while preserving order.
+        search_plans = list(dict.fromkeys(p for p in search_plans if p))
         per_plan = max(max_results, 6) if quick else max(max_results * 2, 8)
 
         results: list[SearchResult] = []
@@ -98,6 +106,8 @@ class OfficialSourceCollector:
                 f"search empty for discovery query: {seed or category}",
                 level="warning",
             )
+            if on_progress:
+                on_progress("搜索引擎未返回结果，请换更具体关键词或检查网络")
         return results
 
     def discover_candidates(
@@ -247,3 +257,39 @@ class OfficialSourceCollector:
             if tokens and sum(1 for token in tokens if token in combined) < max(1, min(2, len(tokens) // 2)):
                 return False
         return True
+
+
+_ZH_EN_DISCOVERY_TERMS: tuple[tuple[str, str], ...] = (
+    ("索尼", "Sony"),
+    ("尼康", "Nikon"),
+    ("佳能", "Canon"),
+    ("富士", "Fujifilm"),
+    ("松下", "Panasonic"),
+    ("徕卡", "Leica"),
+    ("适马", "Sigma"),
+    ("腾龙", "Tamron"),
+    ("全画幅", "full-frame"),
+    ("微单", "mirrorless"),
+    ("单反", "DSLR"),
+    ("相机", "camera"),
+    ("镜头", "lens"),
+    ("鼠标", "mouse"),
+    ("键盘", "keyboard"),
+    ("耳机", "headphones"),
+)
+
+
+def _english_discovery_alias(query: str) -> str:
+    """Map common Chinese shopping phrases to English search aliases for DDG/ddgs."""
+    text = (query or "").strip()
+    if not text or not re.search(r"[\u4e00-\u9fff]", text):
+        return ""
+    alias = text
+    for zh, en in _ZH_EN_DISCOVERY_TERMS:
+        if zh in alias:
+            alias = alias.replace(zh, f" {en} ")
+    alias = re.sub(r"\s+", " ", alias).strip()
+    # Drop leftover CJK so the English plan stays searchable abroad.
+    alias = re.sub(r"[\u4e00-\u9fff]+", " ", alias)
+    alias = re.sub(r"\s+", " ", alias).strip()
+    return alias

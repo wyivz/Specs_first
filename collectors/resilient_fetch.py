@@ -75,6 +75,26 @@ class ResilientFetcher:
                 error="invalid url",
             )
 
+        from collectors.rate_limit import get_host_backoff
+
+        if get_host_backoff().should_skip_host(url):
+            remaining = get_host_backoff().remaining_seconds(url)
+            self.diagnostics.record(
+                "fetch",
+                f"skip host after repeated failures ({remaining:.0f}s left): {url}",
+                level="warning",
+                sku=sku,
+            )
+            skipped = PageSnapshot(
+                url=url,
+                markup="",
+                page=sanitize_html(url, ""),
+                method="skipped",
+                error=f"host backoff ({remaining:.0f}s)",
+            )
+            self._log_snapshot(skipped, sku=sku)
+            return skipped
+
         strategy = strategy_for_url(url)
         if force_browser and use_browser and self.browser is not None:
             try:
@@ -217,6 +237,23 @@ class ResilientFetcher:
             return http_snapshot
 
     def _log_snapshot(self, snapshot: PageSnapshot, *, sku: str = "") -> None:
+        from collectors.rate_limit import get_host_backoff
+
+        soft_kinds = {"auth_or_captcha", "undecoded_content", "low_signal", "http_blocked"}
+        if snapshot.ok:
+            get_host_backoff().note_success(snapshot.url)
+        else:
+            for blocker in snapshot.blockers:
+                if blocker.kind in soft_kinds:
+                    cooldown = get_host_backoff().note_soft_failure(snapshot.url, blocker.kind)
+                    if cooldown and self.diagnostics is not None:
+                        self.diagnostics.record(
+                            "fetch",
+                            f"host soft-fail cooldown {cooldown:.0f}s after {blocker.kind}: {snapshot.url}",
+                            level="info",
+                            sku=sku,
+                        )
+                    break
         if not self.trace:
             return
         preview = clip(snapshot.text, 180)
@@ -247,6 +284,9 @@ class ResilientFetcher:
         if not result.ok:
             # Keep body when present so rate_limited / captcha markers still detect.
             page = sanitize_html(final_url, result.text or "")
+            if result.error and "undecoded" in result.error.lower():
+                if not any(blocker.kind == "undecoded_content" for blocker in page.blockers):
+                    page.blockers.append(PageBlocker("undecoded_content", result.error))
             if not any(blocker.kind == "http_error" for blocker in page.blockers):
                 page.blockers.append(PageBlocker("http_error", result.error or f"HTTP {result.status}"))
             return PageSnapshot(

@@ -40,13 +40,16 @@ class PlatformRateLimiter:
 
 @dataclass
 class HostBackoffTracker:
-    """Exponential cooldown after rate-limit / frequency-control hits (per site family)."""
+    """Exponential cooldown after rate-limit / repeated soft failures (per site family)."""
 
     base_seconds: float = 30.0
     max_seconds: float = 120.0
+    soft_fail_limit: int = 3
+    soft_fail_cooldown_seconds: float = 90.0
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _until: dict[str, float] = field(default_factory=dict, init=False, repr=False)
     _strikes: dict[str, int] = field(default_factory=dict, init=False, repr=False)
+    _soft_strikes: dict[str, int] = field(default_factory=dict, init=False, repr=False)
 
     @staticmethod
     def family_key(url: str) -> str:
@@ -55,6 +58,14 @@ class HostBackoffTracker:
             return "jd.com"
         if any(token in host for token in ("taobao.com", "tmall.com", "alicdn.com")):
             return "taobao.com"
+        if "bilibili.com" in host:
+            return "bilibili.com"
+        if "youtube.com" in host or host.endswith("youtu.be"):
+            return "youtube.com"
+        if "reddit.com" in host:
+            return "reddit.com"
+        if "chiphell.com" in host:
+            return "chiphell.com"
         return host or "unknown"
 
     def note_rate_limited(self, url: str) -> float:
@@ -66,6 +77,24 @@ class HostBackoffTracker:
             cooldown = min(self.max_seconds, self.base_seconds * (2 ** max(0, strikes - 1)))
             self._until[key] = time.monotonic() + cooldown
             return cooldown
+
+    def note_soft_failure(self, url: str, kind: str = "") -> float:
+        """After N captcha/undecoded/low_signal hits, skip the host family briefly."""
+        del kind
+        key = self.family_key(url)
+        with self._lock:
+            strikes = self._soft_strikes.get(key, 0) + 1
+            self._soft_strikes[key] = strikes
+            if strikes < self.soft_fail_limit:
+                return 0.0
+            cooldown = self.soft_fail_cooldown_seconds
+            self._until[key] = max(self._until.get(key, 0.0), time.monotonic() + cooldown)
+            return cooldown
+
+    def note_success(self, url: str) -> None:
+        key = self.family_key(url)
+        with self._lock:
+            self._soft_strikes.pop(key, None)
 
     def remaining_seconds(self, url: str) -> float:
         key = self.family_key(url)
@@ -86,6 +115,8 @@ class HostBackoffTracker:
     def in_backoff(self, url: str) -> bool:
         return self.remaining_seconds(url) > 0
 
+    def should_skip_host(self, url: str) -> bool:
+        return self.in_backoff(url)
 
 @dataclass
 class CollectionGuard:

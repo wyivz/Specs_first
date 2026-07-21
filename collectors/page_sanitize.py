@@ -226,6 +226,8 @@ def detect_page_blockers(url: str, markup: str, text: str, title: str = "") -> l
             break
     if re.search(r"(recaptcha|hcaptcha|geetest|cf-challenge)", markup, re.I):
         blockers.append(PageBlocker("auth_or_captcha", "captcha widget detected"))
+    if _looks_like_undecoded_content(text, markup):
+        blockers.append(PageBlocker("undecoded_content", "body looks compressed or binary"))
     if _is_low_signal_text(text):
         blockers.append(PageBlocker("low_signal", "extracted text too short or noisy"))
     if re.search(r"\b403\b|\b429\b|access denied|forbidden|频控|访问频繁|请求过于频繁", combined):
@@ -234,7 +236,10 @@ def detect_page_blockers(url: str, markup: str, text: str, title: str = "") -> l
 
 
 def is_usable_page(page: SanitizedPage, min_chars: int = 80) -> bool:
-    if any(blocker.kind in {"auth_or_captcha", "rate_limited", "http_blocked"} for blocker in page.blockers):
+    if any(
+        blocker.kind in {"auth_or_captcha", "rate_limited", "http_blocked", "undecoded_content"}
+        for blocker in page.blockers
+    ):
         return False
     rich = page.rich_text
     return len(rich) >= min_chars and not _looks_like_css_dump(rich)
@@ -265,6 +270,23 @@ def _is_low_signal_text(text: str, min_chars: int = 80) -> bool:
     if len(cleaned) < min_chars:
         return True
     return _looks_like_css_dump(cleaned)
+
+
+def _looks_like_undecoded_content(text: str, markup: str = "") -> bool:
+    sample = (text or markup or "")[:2000]
+    if not sample:
+        return False
+    if sample.count("\ufffd") > max(12, len(sample) // 25):
+        return True
+    control = sum(1 for ch in sample if ord(ch) < 9 or (13 < ord(ch) < 32))
+    if control / max(len(sample), 1) > 0.06:
+        return True
+    # Compressed brotli/gzip often surfaces as short non-HTML blobs with few tags.
+    if "<" not in sample and len(sample) > 200:
+        printable = sum(1 for ch in sample if ch.isprintable() or ch.isspace())
+        if printable / len(sample) < 0.7:
+            return True
+    return False
 
 
 def _looks_like_css_dump(text: str) -> bool:

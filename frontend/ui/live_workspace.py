@@ -16,8 +16,8 @@ from frontend.ui.matrix import render_evidence_cards, render_matrix_header, rend
 from frontend.ui.labels import build_column_labels
 
 _TERMINAL_STATES = frozenset({"DONE", "FAILED", "PAUSED_NEED_AUTH"})
-# Fragment polls: keep sub-2s so "已运行 Xs" ticks while long fetches run.
-_LIVE_POLL_SECONDS = 1.5
+# Fragment polls every 1s so "已运行 Xs" ticks in real time while long fetches run.
+_LIVE_POLL_SECONDS = 1.0
 
 
 def _elapsed_seconds(started_at: str) -> int:
@@ -79,13 +79,14 @@ def _resolve_status(api_status: dict[str, Any], new_events: list[dict[str, Any]]
     return api_status
 
 
-def _live_fingerprint(
+def _live_content_fingerprint(
     task_id: str,
     status: dict[str, Any],
     progress_info: dict[str, Any],
     matrix_rows: list[dict[str, Any]],
     new_event_count: int,
 ) -> tuple[Any, ...]:
+    """Fingerprint for heavy panels (logs/diagnostics). Excludes elapsed seconds."""
     bridge = get_bridge(task_id)
     shot_seq = bridge.screenshot_seq if bridge else 0
     return (
@@ -101,14 +102,26 @@ def _live_fingerprint(
         progress_info.get("sku"),
         progress_info.get("action"),
         progress_info.get("url"),
-        progress_info.get("started_at"),
+        progress_info.get("detail"),
         tuple(progress_info.get("highlights") or []),
-        _elapsed_seconds(str(progress_info.get("started_at") or "")),
         shot_seq,
     )
 
 
+def _ensure_started_at(progress_info: dict[str, Any]) -> dict[str, Any]:
+    """Guarantee a clock start so the live timer always ticks while RUNNING."""
+    if progress_info.get("started_at"):
+        return progress_info
+    from datetime import UTC, datetime
+
+    started = datetime.now(UTC).isoformat()
+    progress_info["started_at"] = started
+    st.session_state["progress_info"] = progress_info
+    return progress_info
+
+
 def _render_progress(status: dict[str, Any], progress_info: dict[str, Any], new_events: list[dict[str, Any]]) -> None:
+    progress_info = _ensure_started_at(dict(progress_info))
     total_steps = st.session_state.get("total_steps", 1)
     progress_value = compute_progress_value(status["state"], progress_info, total_steps)
     live_line = _format_live_action(progress_info)
@@ -189,6 +202,7 @@ def _handle_terminal_state(task_id: str, status: dict[str, Any]) -> None:
 
     st.session_state.pop("active_task_id", None)
     st.session_state.pop("_live_fingerprint", None)
+    st.session_state.pop("_live_content_fingerprint", None)
     st.rerun(scope="app")
 
 
@@ -214,12 +228,17 @@ def _render_live_panels(
     col_status, col_matrix = st.columns([2, 3], gap="large")
 
     with col_status:
+        # Progress + timer always redraw every poll so "已运行 Xs" ticks.
         _render_progress(status, progress_info, new_events)
         if show_details:
             _render_event_log(new_events)
             _render_diagnostics()
         else:
-            st.caption("状态未变 · 跳过日志重绘")
+            detail = str(progress_info.get("detail") or "").strip()
+            if detail:
+                st.caption(f"当前细节：{detail[:160]}")
+            else:
+                st.caption("步骤进行中 · 计时每秒刷新；有新事件时展开日志")
         if _should_show_browser(task_id, status):
             render_embedded_browser_panel(task_id)
 
@@ -248,19 +267,19 @@ def _live_workspace_body() -> None:
     if status["state"] in _TERMINAL_STATES:
         stop_listener(task_id)
 
-    progress_info = st.session_state.get("progress_info", {})
+    progress_info = _ensure_started_at(dict(st.session_state.get("progress_info", {})))
     matrix_rows = st.session_state.get("matrix_rows", [])
-    fingerprint = _live_fingerprint(task_id, status, progress_info, matrix_rows, len(new_events))
-    previous = st.session_state.get("_live_fingerprint")
-    changed = fingerprint != previous or status["state"] in _TERMINAL_STATES
-    st.session_state["_live_fingerprint"] = fingerprint
+    content_fp = _live_content_fingerprint(task_id, status, progress_info, matrix_rows, len(new_events))
+    previous = st.session_state.get("_live_content_fingerprint")
+    content_changed = content_fp != previous or status["state"] in _TERMINAL_STATES
+    st.session_state["_live_content_fingerprint"] = content_fp
 
     _render_live_panels(
         task_id,
         status,
         progress_info,
         new_events,
-        show_details=changed,
+        show_details=content_changed,
     )
 
     if status["state"] in _TERMINAL_STATES:

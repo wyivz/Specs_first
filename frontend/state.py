@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 def init_session_state() -> None:
@@ -43,6 +48,7 @@ def init_session_state() -> None:
 def reset_task_state(category: str, selected_count: int) -> None:
     import streamlit as st
 
+    started = _utc_now_iso()
     st.session_state["seen_event_count"] = 0
     st.session_state["matrix_rows"] = []
     st.session_state["events_log"] = []
@@ -60,7 +66,7 @@ def reset_task_state(category: str, selected_count: int) -> None:
         "action": "发现候选",
         "url": "",
         "url_label": "",
-        "started_at": "",
+        "started_at": started,
         "detail": "",
         "highlights": [],
     }
@@ -69,6 +75,7 @@ def reset_task_state(category: str, selected_count: int) -> None:
     st.session_state.pop("paused_task_id", None)
     st.session_state.pop("task_error", None)
     st.session_state.pop("_live_fingerprint", None)
+    st.session_state.pop("_live_content_fingerprint", None)
 
 
 def apply_event(event: dict[str, Any]) -> None:
@@ -107,6 +114,7 @@ def apply_event(event: dict[str, Any]) -> None:
         "matrix_row_updated",
         "step_status",
     }:
+        previous_action = str(progress_info.get("action") or "")
         for key in (
             "sku",
             "sku_index",
@@ -118,22 +126,32 @@ def apply_event(event: dict[str, Any]) -> None:
             "action",
             "url",
             "url_label",
-            "started_at",
             "detail",
         ):
             if key in payload and payload[key] is not None:
                 progress_info[key] = payload[key]
         if event_type == "candidate_found" and "total_skus" in payload:
             st.session_state["total_steps"] = max(int(payload.get("total_skus") or 1), 1)
-        if event_type == "phase_started" and not payload.get("action"):
-            progress_info["action"] = payload.get("phase_label") or event.get("message") or ""
-            progress_info["started_at"] = payload.get("started_at") or progress_info.get("started_at") or ""
+        if event_type == "phase_started":
+            if not progress_info.get("action"):
+                progress_info["action"] = payload.get("phase_label") or event.get("message") or "运行中"
+            # Always (re)start the phase clock so "已运行 Xs" ticks from this phase.
+            progress_info["started_at"] = payload.get("started_at") or _utc_now_iso()
+            progress_info["url"] = payload.get("url") or ""
+            progress_info["url_label"] = payload.get("url_label") or ""
+            progress_info["detail"] = payload.get("detail") or ""
+            progress_info["highlights"] = []
         if event_type == "step_status":
-            progress_info["action"] = payload.get("action") or event.get("message") or progress_info.get("action")
-            if not payload.get("started_at"):
-                from datetime import UTC, datetime
-
-                progress_info["started_at"] = datetime.now(UTC).isoformat()
+            progress_info["action"] = (
+                payload.get("action") or event.get("message") or progress_info.get("action")
+            )
+            new_action = str(progress_info.get("action") or "")
+            incoming_started = str(payload.get("started_at") or "")
+            # Keep a stable timer for the same action; only reset when the step changes.
+            if new_action != previous_action or not progress_info.get("started_at"):
+                progress_info["started_at"] = incoming_started or _utc_now_iso()
+        if not progress_info.get("started_at"):
+            progress_info["started_at"] = _utc_now_iso()
         highlights = payload.get("highlights")
         if isinstance(highlights, list) and highlights:
             progress_info["highlights"] = [str(item) for item in highlights[:8]]

@@ -46,6 +46,43 @@ class YouTubeAdapter:
         query = parse_qs(parsed.query).get("v", [])
         return query[0] if query else ""
 
+    def collect_api_evidence(self, url: str, *, confidence: float = 0.66, sku: str = "") -> list[EvidenceItem]:
+        """Transcript (+ optional ASR) without relying on a usable HTML snapshot."""
+        if not self.supports(url):
+            return []
+        video_id = self.extract_video_id(url)
+        if not video_id:
+            return []
+        watch_url = f"https://www.youtube.com/watch?v={video_id}"
+        evidence: list[EvidenceItem] = []
+        transcript = self.fetch_transcript(
+            watch_url,
+            markup="",
+            video_id=video_id,
+            allow_browser=False,
+        )
+        if not transcript:
+            transcript = self._maybe_asr_fallback(watch_url, video_id)
+        for index, snippet in enumerate(self._review_snippets(transcript)[:8]):
+            evidence.append(
+                build_evidence(
+                    platform="YouTube",
+                    url=watch_url,
+                    author="youtube_transcript",
+                    locator=f"api-transcript-{index + 1}",
+                    excerpt=snippet,
+                    confidence=max(0.55, confidence),
+                )
+            )
+        if evidence and self.diagnostics:
+            self.diagnostics.record(
+                "youtube",
+                f"API transcript evidence for {video_id}: {len(evidence)} snippets",
+                level="info",
+                sku=sku,
+            )
+        return evidence
+
     def extract_evidence(
         self,
         url: str,

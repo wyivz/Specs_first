@@ -419,6 +419,14 @@ class EcommerceSourceCollector:
                     sku=candidate.sku,
                 )
             parsed = extract_price(combined_text)
+            if parsed and platform == "JD":
+                sku_id = self.jd._extract_sku_id(target_url, snapshot.markup or "")
+                parsed = self.jd._sanitize_parsed_price(parsed, sku_id)
+            if parsed and platform == "Taobao/Tmall":
+                if parsed.final_price < 50 or (
+                    parsed.list_price > parsed.final_price * 5 and parsed.final_price < 300
+                ):
+                    parsed = None
             if not parsed:
                 if active_trace:
                     active_trace.log_price(

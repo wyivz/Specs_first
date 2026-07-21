@@ -98,6 +98,16 @@ class ForumSourceCollector:
                 sku=candidate.sku,
             )
             for index, result in enumerate(ranked):
+                from collectors.url_guards import is_noisy_forum_url
+
+                if is_noisy_forum_url(result.url):
+                    self.diagnostics.record(
+                        platform,
+                        f"skip noisy forum url: {result.url}",
+                        level="info",
+                        sku=candidate.sku,
+                    )
+                    continue
                 sku_ok = evidence_mentions_sku(candidate.sku, result.title, result.snippet, result.url)
                 if not sku_ok and index >= self._PROVISIONAL_FETCH_LIMIT:
                     self.diagnostics.record(

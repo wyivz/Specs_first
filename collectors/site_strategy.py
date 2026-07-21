@@ -19,9 +19,9 @@ SITE_STRATEGIES: tuple[SiteStrategy, ...] = (
     SiteStrategy("tmall.com", "api_first", min_chars=140, prefer_api=True),
     SiteStrategy("taobao.com", "api_first", min_chars=140, prefer_api=True),
     SiteStrategy("amazon.", "http_first", min_chars=120),
-    SiteStrategy("bilibili.com", "browser_first", min_chars=80),
-    SiteStrategy("youtube.com", "browser_first", min_chars=80),
-    SiteStrategy("youtu.be", "browser_first", min_chars=80),
+    SiteStrategy("bilibili.com", "browser_first", min_chars=80, prefer_api=True),
+    SiteStrategy("youtube.com", "browser_first", min_chars=80, prefer_api=True),
+    SiteStrategy("youtu.be", "browser_first", min_chars=80, prefer_api=True),
     SiteStrategy("chiphell.com", "http_first", min_chars=80),
     # Reddit: prefer Cookie HTTP; escalate to browser only when HTTP is weak/blocked.
     SiteStrategy("reddit.com", "http_first", min_chars=80),

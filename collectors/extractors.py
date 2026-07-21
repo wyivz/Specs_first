@@ -131,6 +131,13 @@ def infer_brand(title_or_query: str) -> str:
     compact = re.sub(r"[^a-z0-9]", "", (title_or_query or "").lower())
     if compact.startswith("sel") and re.match(r"^sel\d+", compact):
         return "Sony"
+    # Nikon Z / Df / Dxxx bodies when the query is only a model code.
+    if re.match(r"^z(?:f|[0-9]{1,2}(?:ii|iii|iv)?)$", compact) or re.match(
+        r"^d[0-9]{3,4}(?:[a-z])?$", compact
+    ):
+        return "Nikon"
+    if re.match(r"^eos[r0-9]", compact) or re.match(r"^rf[0-9]", compact):
+        return "Canon"
     # Chinese aliases first so "罗技 G304" → Logitech, not "罗技".
     brand_aliases: list[tuple[str, str]] = [
         ("罗技", "Logitech"),
@@ -820,16 +827,64 @@ def _measurement_fits_slot(slot: str, measurement: str) -> bool:
     return bool(pattern.search(measurement))
 
 
+CURRENCY_PRICE_PATTERN = re.compile(
+    r"(?:¥|￥|RMB|CNY|\$)\s*([1-9][0-9]{2,6}(?:\.[0-9]{1,2})?)"
+    r"|(?:^|[^\d])([1-9][0-9]{2,6}(?:\.[0-9]{1,2})?)\s*(?:元)",
+    re.I | re.M,
+)
+
+
+def _currency_adjacent_prices(text: str) -> list[float]:
+    values: list[float] = []
+    for match in CURRENCY_PRICE_PATTERN.finditer(text or ""):
+        raw = match.group(1) or match.group(2)
+        if not raw:
+            continue
+        number = float(raw)
+        if is_plausible_product_price(number):
+            values.append(number)
+    return values
+
+
 def extract_price(text: str) -> ParsedPrice | None:
+    """Parse list/final prices from product page text.
+
+    Never falls back to ``min(all numbers)`` — that picked coupon floors like
+    ``满100`` and SKU-id fragments as ``final=100``. Prefer explicit 到手价 /
+    currency-adjacent amounts only.
+    """
     final_matches = first_pattern_numbers(FINAL_PRICE_PATTERNS, text)
     list_matches = first_pattern_numbers(LIST_PRICE_PATTERNS, text)
     discount_matches = [first_pattern_numbers([pattern], text) for pattern in DISCOUNT_PATTERNS]
-    numbers = [float(match.group(1)) for match in PRICE_PATTERN.finditer(text)]
-    numbers = [number for number in numbers if is_plausible_price(number)]
-    if not numbers:
+    currency_numbers = _currency_adjacent_prices(text)
+    if not final_matches and not list_matches and not currency_numbers:
         return None
-    final_price = final_matches[0] if final_matches else min(numbers)
-    list_price = list_matches[0] if list_matches else max(numbers + [final_price])
+
+    if final_matches:
+        final_price = final_matches[0]
+    else:
+        # Among currency-marked amounts, prefer a mid/high product price over
+        # tiny coupon thresholds that still cleared the old 100 floor.
+        ranked = sorted({n for n in currency_numbers if is_plausible_product_price(n)})
+        if not ranked:
+            return None
+        final_price = ranked[len(ranked) // 2] if len(ranked) >= 3 else ranked[-1]
+
+    if list_matches:
+        list_price = max(list_matches[0], final_price)
+    elif currency_numbers:
+        list_price = max(max(currency_numbers), final_price)
+    else:
+        list_price = final_price
+
+    if not is_plausible_product_price(final_price):
+        return None
+    # Reject absurd discounts (e.g. list from SKU digits, final=coupon floor).
+    if list_price > final_price * 5 and final_price < 300:
+        return None
+    if final_price < list_price * 0.2:
+        return None
+
     discount = max(0.0, list_price - final_price)
     explicit_discounts = [matches[0] for matches in discount_matches if matches]
     if explicit_discounts:
@@ -837,9 +892,9 @@ def extract_price(text: str) -> ParsedPrice | None:
         subsidy = explicit_discounts[1] if len(explicit_discounts) > 1 else 0
         cross_store = explicit_discounts[2] if len(explicit_discounts) > 2 else max(0.0, discount - coupon - subsidy)
     else:
-        coupon = round(discount * 0.35, 2)
-        subsidy = round(discount * 0.45, 2)
-        cross_store = round(discount - coupon - subsidy, 2)
+        coupon = round(discount * 0.35, 2) if discount else 0.0
+        subsidy = round(discount * 0.45, 2) if discount else 0.0
+        cross_store = round(discount - coupon - subsidy, 2) if discount else 0.0
     return ParsedPrice(list_price, coupon, subsidy, cross_store, final_price)
 
 
@@ -857,6 +912,16 @@ def first_pattern_numbers(patterns: list[re.Pattern[str]], text: str) -> list[fl
 
 def is_plausible_price(number: float) -> bool:
     return 100 <= number <= 1_000_000 and not (1900 <= number <= 2099)
+
+
+def is_plausible_product_price(number: float) -> bool:
+    """Stricter gate for guessed product prices (rejects coupon-floor 100 noise)."""
+    if not is_plausible_price(number):
+        return False
+    # Bare 100 / 200 are almost always 满减门槛 or placeholder, not camera/lens prices.
+    if number in {100.0, 200.0}:
+        return False
+    return True
 
 
 def domain_author(url: str) -> str:

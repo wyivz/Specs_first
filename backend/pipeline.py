@@ -89,6 +89,7 @@ class SpecsFirstPipeline:
 
         task_id = task_id or str(uuid4())
         resolved_category = infer_category(query, category)
+        discover_started = now_iso()
         self._emit(
             task_id,
             "phase_started",
@@ -97,14 +98,41 @@ class SpecsFirstPipeline:
             {
                 "phase": 0,
                 "phase_label": "发现候选",
+                "action": "发现候选",
                 "category": resolved_category,
                 "category_key": resolve_category_key(resolved_category),
                 "query": query,
                 "progress": 0.0,
+                "started_at": discover_started,
             },
             on_event,
         )
-        candidates = self.collector.discover_candidates(query, resolved_category)[:10]
+
+        def _discover_progress(message: str) -> None:
+            self._emit(
+                task_id,
+                "step_status",
+                message,
+                TaskState.RUNNING,
+                {
+                    "phase": 0,
+                    "phase_label": "发现候选",
+                    "action": message,
+                    "category": resolved_category,
+                    "detail": message,
+                    "progress": 0.02,
+                },
+                on_event,
+            )
+
+        try:
+            candidates = self.collector.discover_candidates(
+                query,
+                resolved_category,
+                on_progress=_discover_progress,
+            )[:10]
+        except TypeError:
+            candidates = self.collector.discover_candidates(query, resolved_category)[:10]
         candidates = [replace(candidate, category=resolved_category) for candidate in candidates]
         selected = self._select_candidates(candidates, selected_skus)
         self._emit(
@@ -675,7 +703,6 @@ class SpecsFirstPipeline:
                     "action": action,
                     "url": url,
                     "url_label": short_url_label(url) if url else "",
-                    "started_at": now_iso(),
                     "detail": message if message != action else "",
                 },
                 on_event,

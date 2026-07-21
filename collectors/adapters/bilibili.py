@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from collectors.adapters.bilibili_api_client import BilibiliApiClient
-from collectors.adapters.bilibili_guard import is_blocked_bvid, is_rickroll_title
+from collectors.adapters.bilibili_guard import is_blocked_bvid
 from collectors.credentials import BilibiliCredentials, load_bilibili_credentials
 from collectors.diagnostics import CollectorDiagnostics
 from collectors.extractors import build_evidence, evidence_from_page, evidence_mentions_sku
@@ -50,6 +50,45 @@ class BilibiliAdapter:
         self._api_video_budget = self.max_videos_per_sku
         self._logged_missing_credentials = False
 
+    def collect_api_evidence(self, url: str, *, confidence: float = 0.68, sku: str = "") -> list[EvidenceItem]:
+        """Subtitle/comment evidence via API (and ASR fallback) without HTML."""
+        if not self.supports(url) or self._api_client is None or self._api_video_budget <= 0:
+            if self._api_client is None and self.diagnostics and not self._logged_missing_credentials:
+                self._logged_missing_credentials = True
+                self.diagnostics.record(
+                    "bilibili",
+                    "Bilibili cookies not configured; API subtitle/comment path unavailable",
+                    level="info",
+                    sku=sku,
+                )
+            return []
+        bvid = BilibiliApiClient.extract_bvid(url)
+        if not bvid or is_blocked_bvid(bvid):
+            return []
+        try:
+            evidence = self._api_client.collect_api_evidence(url, confidence=confidence, sku=sku)
+            if evidence:
+                self._api_video_budget -= 1
+                if self.diagnostics:
+                    self.diagnostics.record(
+                        "bilibili",
+                        f"API evidence ok for {bvid}: {len(evidence)} items",
+                        level="info",
+                        sku=sku,
+                    )
+            return evidence
+        except PlatformAuthRequired:
+            raise
+        except Exception as exc:
+            if self.diagnostics:
+                self.diagnostics.record(
+                    "bilibili",
+                    f"API evidence failed for {url}: {exc}",
+                    level="warning",
+                    sku=sku,
+                )
+            return []
+
     def extract_evidence(
         self,
         url: str,
@@ -93,43 +132,9 @@ class BilibiliAdapter:
             )
 
         # API enrichment is cookie/rate-limit gated — independent of Playwright.
-        # use_browser only affects page capture escalation upstream.
         del use_browser
-        if (
-            self._api_client
-            and self._api_video_budget > 0
-            and BilibiliApiClient.extract_bvid(url)
-        ):
-            bvid = BilibiliApiClient.extract_bvid(url)
-            if is_blocked_bvid(bvid):
-                if self.diagnostics:
-                    self.diagnostics.record(
-                        "bilibili",
-                        f"Skipped blocked/honeypot BVID {bvid} (e.g. 镇站之宝 Rick Roll placeholder — paste a real review URL)",
-                        level="warning",
-                    )
-                return evidence
-            self._api_video_budget -= 1
-            try:
-                evidence.extend(
-                    self._api_client.collect_api_evidence(url, confidence=confidence + 0.04, sku=sku)
-                )
-            except PlatformAuthRequired:
-                raise
-            except Exception as exc:
-                if self.diagnostics:
-                    self.diagnostics.record(
-                        "bilibili",
-                        f"API enrichment failed for {url}: {exc}; using HTML-only evidence",
-                        level="warning",
-                    )
-        elif self._api_client is None and self.diagnostics and not self._logged_missing_credentials:
-            self._logged_missing_credentials = True
-            self.diagnostics.record(
-                "bilibili",
-                "Bilibili cookies not configured; using HTML-only extraction for subtitles/comments",
-                level="info",
-            )
+        api_items = self.collect_api_evidence(url, confidence=confidence + 0.04, sku=sku)
+        evidence.extend(api_items)
         return evidence
 
     def _extract_comment_snippets(self, text: str) -> list[str]:

@@ -148,48 +148,62 @@ class RealCollector(Collector):
         use_browser: bool = False,
         storage_state_path: str = "",
     ) -> tuple[list[OfficialSpec], list[str]]:
-        self.diagnostics.record(
-            "official",
-            f"开始采集官方/电商规格 · {candidate.sku}",
-            level="info",
-            sku=candidate.sku,
-        )
+        with get_collection_guard():
+            trace, previous = self._trace_context(task_id)
+            try:
+                if trace:
+                    trace.log_phase("official", f"start sku={candidate.sku}", sku=candidate.sku)
+                self.diagnostics.record(
+                    "official",
+                    f"开始采集官方/电商规格 · {candidate.sku}",
+                    level="info",
+                    sku=candidate.sku,
+                )
 
-        def _official() -> tuple[list[OfficialSpec], list[str]]:
-            return self.official.collect_specs(
-                candidate,
-                task_id=task_id,
-                use_browser=use_browser,
-                storage_state_path=storage_state_path,
-                extra_urls=self.source_urls,
-            )
+                def _official() -> tuple[list[OfficialSpec], list[str]]:
+                    return self.official.collect_specs(
+                        candidate,
+                        task_id=task_id,
+                        use_browser=use_browser,
+                        storage_state_path=storage_state_path,
+                        extra_urls=self.source_urls,
+                    )
 
-        def _ecommerce() -> tuple[list[OfficialSpec], list[str]]:
-            return self.ecommerce.collect_official_specs(
-                candidate,
-                task_id=task_id,
-                use_browser=use_browser,
-                storage_state_path=storage_state_path,
-            )
+                def _ecommerce() -> tuple[list[OfficialSpec], list[str]]:
+                    return self.ecommerce.collect_official_specs(
+                        candidate,
+                        task_id=task_id,
+                        use_browser=use_browser,
+                        storage_state_path=storage_state_path,
+                    )
 
-        batches = run_platform_tasks(
-            [("official", _official), ("ecommerce", _ecommerce)],
-            enabled=settings.collection_parallel_platforms,
-        )
-        official_specs, official_highlights = batches[0]
-        ecommerce_specs, ecommerce_highlights = batches[1]
-        merged: dict[str, OfficialSpec] = {spec.name: spec for spec in official_specs}
-        for spec in ecommerce_specs:
-            merged.setdefault(spec.name, spec)
-        # Prefer official/manufacturer highlights over empty ecommerce metadata.
-        highlights = [*official_highlights, *ecommerce_highlights]
-        self.diagnostics.record(
-            "official",
-            f"规格采集完成 · {len(merged)} 项",
-            level="info",
-            sku=candidate.sku,
-        )
-        return list(merged.values()), highlights[:5]
+                batches = run_platform_tasks(
+                    [("official", _official), ("ecommerce", _ecommerce)],
+                    enabled=settings.collection_parallel_platforms,
+                )
+                official_specs, official_highlights = batches[0]
+                ecommerce_specs, ecommerce_highlights = batches[1]
+                merged: dict[str, OfficialSpec] = {spec.name: spec for spec in official_specs}
+                for spec in ecommerce_specs:
+                    merged.setdefault(spec.name, spec)
+                # Prefer official/manufacturer highlights over empty ecommerce metadata.
+                highlights = [*official_highlights, *ecommerce_highlights]
+                if trace:
+                    preview = ", ".join(f"{name}={spec.value}" for name, spec in list(merged.items())[:6])
+                    trace.log_spec(
+                        "official",
+                        f"done count={len(merged)}" + (f" | {preview}" if preview else ""),
+                        sku=candidate.sku,
+                    )
+                self.diagnostics.record(
+                    "official",
+                    f"规格采集完成 · {len(merged)} 项",
+                    level="info",
+                    sku=candidate.sku,
+                )
+                return list(merged.values()), highlights[:5]
+            finally:
+                self._restore_trace(previous)
 
     def collect_real_world_corpus(
         self,

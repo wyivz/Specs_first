@@ -1,10 +1,26 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 from collectors.diagnostics import CollectorDiagnostics
+
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def sanitize_log_text(value: str, *, limit: int = 240) -> str:
+    """Keep collection logs UTF-8 text-safe and readable."""
+    if not value:
+        return ""
+    text = value.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    text = _CONTROL_RE.sub("", text)
+    text = text.replace("\ufffd", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
 
 
 @dataclass
@@ -17,12 +33,13 @@ class CollectionTrace:
     _lines: list[str] = field(default_factory=list, init=False, repr=False)
 
     def log(self, source: str, message: str, *, sku: str = "", level: str = "trace") -> None:
-        stamp = datetime.now(UTC).strftime("%H:%M:%S")
+        stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S%z")
         task = f" task={self.task_id}" if self.task_id else ""
         sku_part = f" sku={sku}" if sku else ""
-        line = f"{stamp}{task}{sku_part} [{source}] {message}"
+        safe_message = sanitize_log_text(message, limit=2000)
+        line = f"{stamp}{task}{sku_part} [{source}] {safe_message}"
         self._lines.append(line)
-        self.diagnostics.record(source, message, level=level, sku=sku)
+        self.diagnostics.record(source, safe_message, level=level, sku=sku)
         if self.log_path:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("a", encoding="utf-8") as handle:
@@ -44,9 +61,10 @@ class CollectionTrace:
         if status:
             parts.append(f"status={status}")
         if error:
-            parts.append(f"error={error}")
-        if preview:
-            parts.append(f"preview={preview[:240]}")
+            parts.append(f"error={sanitize_log_text(error, limit=160)}")
+        safe_preview = sanitize_log_text(preview, limit=160)
+        if safe_preview:
+            parts.append(f"preview={safe_preview}")
         self.log("fetch", " | ".join(parts), sku=sku)
 
     def log_price(
@@ -66,20 +84,32 @@ class CollectionTrace:
         if final_price is not None:
             parts.append(f"final={final_price}")
         if detail:
-            parts.append(detail)
+            parts.append(sanitize_log_text(detail, limit=200))
         self.log("price", " | ".join(parts), sku=sku, level="info")
 
     def log_spec(self, source: str, message: str, *, sku: str = "") -> None:
         self.log("spec", message, sku=sku, level="info")
 
-    def log_bilibili(self, bvid: str, *, title: str = "", subtitle_len: int = 0, comments: int = 0, note: str = "", sku: str = "") -> None:
+    def log_phase(self, phase: str, message: str, *, sku: str = "") -> None:
+        self.log("phase", f"{phase}: {message}", sku=sku, level="info")
+
+    def log_bilibili(
+        self,
+        bvid: str,
+        *,
+        title: str = "",
+        subtitle_len: int = 0,
+        comments: int = 0,
+        note: str = "",
+        sku: str = "",
+    ) -> None:
         parts = [f"bvid={bvid}"]
         if title:
-            parts.append(f"title={title[:120]}")
+            parts.append(f"title={sanitize_log_text(title, limit=100)}")
         parts.append(f"subtitle_len={subtitle_len}")
         parts.append(f"comments={comments}")
         if note:
-            parts.append(note)
+            parts.append(sanitize_log_text(note, limit=160))
         self.log("bilibili", " | ".join(parts), sku=sku, level="info")
 
     def lines(self) -> list[str]:

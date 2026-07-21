@@ -4,7 +4,7 @@ import json
 import re
 from urllib.parse import parse_qs, urlparse
 
-from collectors.extractors import ParsedPrice, build_evidence, extract_price, is_plausible_price
+from collectors.extractors import ParsedPrice, build_evidence, extract_price, is_plausible_price, is_plausible_product_price
 from collectors.http import HttpClient, clip, html_to_text
 from schemas import EvidenceItem, PriceFinding
 
@@ -295,11 +295,15 @@ class JdAdapter:
         list_price = parsed.list_price
         if not is_plausible_price(final):
             return None
+        if not is_plausible_product_price(final) and final < 300:
+            return None
         if self._price_looks_like_sku_fragment(final, sku_id):
             return None
         if self._price_looks_like_sku_fragment(list_price, sku_id):
             list_price = final
         if final < list_price * 0.2:
+            return None
+        if list_price > final * 5 and final < 500:
             return None
         if list_price < final:
             list_price = final

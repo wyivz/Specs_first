@@ -84,13 +84,24 @@ def discover_skus_from_evidence(
 ) -> list[ProductCandidate]:
     """Use Gemini/OpenAI over search hits + fetched page bodies → buyable models."""
     if not hits:
+        if on_progress:
+            on_progress("没有可用的搜索结果，无法提炼型号")
         return []
 
     call_llm = llm_json
     if call_llm is None:
         if not (settings.has_gemini or settings.has_openai):
+            if on_progress:
+                on_progress("未配置 Gemini/OpenAI Key，无法提炼型号")
             return []
-        return []
+        try:
+            from backend.discovery_llm import create_discover_llm_json
+
+            call_llm = create_discover_llm_json()
+        except Exception:
+            if on_progress:
+                on_progress("发现 LLM 初始化失败")
+            return []
 
     bodies: dict[int, str] = {}
     if fetch_bodies and page_fetcher is not None:
@@ -120,6 +131,8 @@ def discover_skus_from_evidence(
         f"Category hint (may be generic): {category!r}\n"
         f"Return up to {max_results} distinct buyable product models relevant to the query.\n"
         "Read page body text when present; do not treat titles as products.\n"
+        "For category queries (e.g. '索尼全画幅相机'), list current mainstream buyable models "
+        "that the evidence supports (e.g. Sony A7 IV, A7R V, A7C II) — not the category phrase itself.\n"
         "Each item: sku (model name as sold), brand, evidence_index (1-based hit that supports it).\n"
         'JSON shape: {"products":[{"sku":"...","brand":"...","evidence_index":1}]}\n\n'
         "Evidence:\n"
@@ -128,7 +141,9 @@ def discover_skus_from_evidence(
 
     try:
         payload = call_llm(_DISCOVER_SYSTEM, prompt)
-    except Exception:
+    except Exception as exc:
+        if on_progress:
+            on_progress(f"AI 提炼失败：{exc}")
         return []
 
     products = payload.get("products") if isinstance(payload, dict) else None

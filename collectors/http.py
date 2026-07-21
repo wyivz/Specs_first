@@ -18,6 +18,8 @@ DEFAULT_HEADERS = {
         "Chrome/126.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    # Prefer gzip/deflate only — avoid brotli unless brotli/brotlicffi is installed.
+    "Accept-Encoding": "gzip, deflate",
     "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
@@ -82,11 +84,22 @@ class HttpClient:
                     content_type = response.headers.get("content-type", "")
                     charset = response.headers.get_content_charset() or "utf-8"
                     response_headers = {key.lower(): value for key, value in response.headers.items()}
+                    from collectors.http_decompress import decode_http_text
+
+                    text, decode_note = decode_http_text(
+                        raw,
+                        charset=charset,
+                        content_encoding=response_headers.get("content-encoding", ""),
+                    )
+                    error = ""
+                    if not text and raw:
+                        error = f"undecoded body ({decode_note or 'binary'})"
                     return FetchResult(
                         url=response.geturl(),
                         status=response.status,
-                        text=raw.decode(charset, errors="replace"),
+                        text=text,
                         content_type=content_type,
+                        error=error,
                         response_headers=response_headers,
                     )
             except HTTPError as exc:
@@ -131,9 +144,9 @@ class HttpClient:
             results = self._search_duckduckgo_lite(query, max_results)
             if results:
                 return results[:max_results]
-            if quick:
-                # Skip ddgs third hop in quick mode — it often adds latency without new hits.
-                return []
+            # Always try ddgs when HTML/Lite are empty — DDG web often CAPTCHA-blocks,
+            # while the ddgs package still returns hits. Skipping it in "quick" mode
+            # made Real discovery return zero candidates for common Chinese queries.
             results = self._search_duckduckgo_ddgs(query, max_results)
             return results[:max_results]
         finally:

@@ -113,6 +113,35 @@ class VideoSourceCollector:
                 )
                 if search_evidence:
                     evidence.append(search_evidence)
+
+                # Prefer API/transcript path before HTML (B站 cookies / YouTube captions).
+                try:
+                    adapter = self.registry.for_url(result.url)
+                    if adapter is not None and hasattr(adapter, "collect_api_evidence"):
+                        api_evidence = adapter.collect_api_evidence(  # type: ignore[call-arg]
+                            result.url,
+                            sku=candidate.sku,
+                        )
+                        if api_evidence:
+                            evidence.extend(api_evidence)
+                            self.diagnostics.record(
+                                platform,
+                                f"API-first evidence for {result.url}: {len(api_evidence)} items",
+                                level="info",
+                                sku=candidate.sku,
+                            )
+                            continue
+                except PlatformAuthRequired as exc:
+                    self.diagnostics.record(
+                        platform,
+                        f"soft-skip platform auth for API {result.url}: {exc}",
+                        level="warning",
+                        sku=candidate.sku,
+                    )
+                    continue
+                except TypeError:
+                    pass
+
                 page = self.resilient.fetch(
                     result.url,
                     task_id=task_id,
@@ -130,7 +159,9 @@ class VideoSourceCollector:
                     try:
                         adapter = self.registry.for_url(result.url)
                         if adapter is not None and hasattr(adapter, "collect_api_evidence"):
-                            evidence.extend(adapter.collect_api_evidence(result.url, sku=candidate.sku))  # type: ignore[call-arg]
+                            evidence.extend(
+                                adapter.collect_api_evidence(result.url, sku=candidate.sku)  # type: ignore[call-arg]
+                            )
                     except (PlatformAuthRequired, TypeError):
                         pass
                     continue
