@@ -81,6 +81,20 @@ class ForumRelevanceTest(unittest.TestCase):
         self.assertNotIn("SonyAlpha", queries["Reddit"])
         self.assertNotIn("/r/Nikon", queries["Reddit"])
 
+    def test_captcha_marker_in_js_alone_is_not_blocker(self) -> None:
+        markup = "<html><body><script>window.grecaptcha=1; cf-challenge=0</script>" + ("real forum post about A7C2 overheating " * 20) + "</body></html>"
+        text = "尝鲜——索尼α7C2使用体验 过热问题讨论 " * 10
+        blockers = detect_page_blockers("https://www.chiphell.com/thread-1.html", markup, text, title="α7C2体验")
+        self.assertFalse(any(b.kind == "auth_or_captcha" for b in blockers))
+
+    def test_jd_login_price_wall_detection(self) -> None:
+        adapter = JdAdapter()
+        self.assertTrue(adapter.looks_like_login_price_wall("¥2??98 登录查看价格 立即登录"))
+        self.assertEqual(
+            adapter.browser_fetch_url("https://item.jd.com/100076000063.html"),
+            "https://item.m.jd.com/product/100076000063.html",
+        )
+
     def test_noisy_chiphell_index(self) -> None:
         self.assertTrue(is_noisy_forum_url("https://www.chiphell.com/"))
         self.assertTrue(

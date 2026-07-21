@@ -145,15 +145,6 @@ class KeywordModelRouter:
                     severity=ConflictLevel.MINOR,
                     evidence=[evidence],
                 )
-            elif any(term in text for term in ["purple fringing", "chromatic aberration", "aberration", "紫边", "色散"]):
-                finding = RealWorldFinding(
-                    title="Reported performance tradeoff",
-                    detail=evidence.excerpt,
-                    condition="specific usage scenario",
-                    frequency="reported by field users",
-                    severity=ConflictLevel.MINOR,
-                    evidence=[evidence],
-                )
                 
             if finding and finding.title not in seen_titles:
                 seen_titles.add(finding.title)
@@ -174,17 +165,33 @@ class KeywordModelRouter:
         named = [spec.name for spec in (official_specs or [])]
         preferred = canonical_slots(category, profile=self.category_profile)
         junk_tokens = ("举报", "维权", "许可", "京东", "违法", "经营")
+        specs_missing = not named
         related_default = next((name for name in preferred if name in named), None)
         if related_default is None:
             related_default = next(
                 (name for name in named if not any(tok in name for tok in junk_tokens)),
-                named[0] if named else "general_spec",
+                named[0] if named else "field_only",
             )
         
         for finding in findings:
             related_field = related_default
-
             title_lower = finding.title.lower()
+            if specs_missing:
+                warnings.append(
+                    ConflictWarning(
+                        field=related_field,
+                        official_claim="No manufacturer/official specifications were collected for this run.",
+                        real_world_claim=finding.detail,
+                        level=finding.severity,
+                        arbitration_summary=(
+                            "Field-only evidence: verify against a manufacturer product page before purchase; "
+                            "official specs were empty so arbitration cannot confirm or falsify claims."
+                        ),
+                        evidence=finding.evidence,
+                    )
+                )
+                continue
+
             if any(term in title_lower for term in ["defect", "quality", "performance", "control", "thermal", "battery"]):
                 warnings.append(
                     ConflictWarning(
@@ -196,7 +203,7 @@ class KeywordModelRouter:
                         evidence=finding.evidence,
                     )
                 )
-            elif any(term in title_lower for term in ["weight", "ergonomics", "noise", "dissatisfaction", "tradeoff"]):
+            elif any(term in title_lower for term in ["weight", "ergonomics", "noise", "dissatisfaction", "tradeoff", "price"]):
                 warnings.append(
                     ConflictWarning(
                         field=related_field,
@@ -221,6 +228,8 @@ class KeywordModelRouter:
         return warnings
 
     def summarize(self, warnings: list[ConflictWarning], findings: list[RealWorldFinding]) -> str:
+        if any(warning.field == "field_only" for warning in warnings):
+            return "Official specifications were not collected; only field reports are available and should be verified manually."
         if any(warning.level == ConflictLevel.MAJOR for warning in warnings):
             return "Official specifications are usable, but field evidence shows a major handling or QC risk that should be considered before purchase."
         if findings:

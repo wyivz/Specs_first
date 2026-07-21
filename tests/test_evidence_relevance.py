@@ -106,6 +106,32 @@ class EvidenceRelevanceAndSpecQualityTest(unittest.TestCase):
             )
         )
 
+    def test_marketing_name_requires_generation_discriminator(self) -> None:
+        self.assertTrue(
+            evidence_mentions_sku(
+                "Alpha 7C II",
+                "索尼 A7C2 全画幅微单评测 过热",
+            )
+        )
+        self.assertTrue(
+            evidence_mentions_sku(
+                "Alpha 7C II",
+                "Sony Alpha 7C II overheating issues",
+            )
+        )
+        self.assertFalse(
+            evidence_mentions_sku(
+                "Alpha 7C II",
+                "Sony Alpha 7 IV review overheating",
+            )
+        )
+        self.assertFalse(
+            evidence_mentions_sku(
+                "Alpha 7C II",
+                "Sony Alpha 7C first generation review",
+            )
+        )
+
     def test_search_phrase_quotes_model_codes(self) -> None:
         self.assertEqual(sku_search_phrase("SEL50F12GM"), '"SEL50F12GM"')
         self.assertIn('"SEL50F12GM"', dict(ecommerce_search_queries("SEL50F12GM"))["JD"])
@@ -161,12 +187,12 @@ class EvidenceRelevanceAndSpecQualityTest(unittest.TestCase):
     def test_evidence_from_page_accepts_defect_without_review_word(self) -> None:
         markup = (
             "<html><body><h1>SEL50F12GM 开箱</h1>"
-            "<p>这支镜头偶发色散和紫边，整体画质还不错。</p>"
+            "<p>这支镜头偶发品控问题，整体画质还不错。</p>"
             "</body></html>"
         )
         items = evidence_from_page("Chiphell", "https://www.chiphell.com/t1", markup, sku="SEL50F12GM")
         self.assertTrue(items)
-        self.assertTrue(any("色散" in item.excerpt or "紫边" in item.excerpt for item in items))
+        self.assertTrue(any("品控" in item.excerpt for item in items))
 
     def test_evidence_from_search_accepts_review_wording(self) -> None:
         result = SearchResult(

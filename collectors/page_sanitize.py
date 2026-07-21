@@ -45,14 +45,16 @@ NOISE_CLASS_HINTS = re.compile(
     re.I,
 )
 
+# Visible-text auth/captcha chrome. Do NOT match bare "captcha" against raw markup —
+# product/forum JS often embeds captcha SDK strings and caused false host backoffs.
+# JD/Taobao "登录查看价格" is handled by ecommerce adapters (not host captcha backoff).
 AUTH_MARKERS = [
-    "captcha",
-    "recaptcha",
-    "hcaptcha",
     "verify you are human",
     "are you a robot",
     "access denied",
     "security check",
+    "just a moment",
+    "attention required",
     "验证码",
     "滑块验证",
     "滑动验证",
@@ -206,7 +208,8 @@ def extract_json_ld_objects(markup: str) -> list[dict]:
 
 def detect_page_blockers(url: str, markup: str, text: str, title: str = "") -> list[PageBlocker]:
     blockers: list[PageBlocker] = []
-    combined = f"{title} {text} {markup[:8000]}".lower()
+    visible = f"{title} {text}".lower()
+    markup_head = (markup or "")[:8000].lower()
     url_lower = (url or "").lower()
     # JD PC frequency-control interstitial — not a solvable slider captcha.
     try:
@@ -221,16 +224,30 @@ def detect_page_blockers(url: str, markup: str, text: str, title: str = "") -> l
         blockers.append(PageBlocker("rate_limited", "jd pc frequency control page"))
         return blockers
     for marker in AUTH_MARKERS:
-        if marker.lower() in combined:
+        if marker.lower() in visible:
             blockers.append(PageBlocker("auth_or_captcha", marker))
             break
-    if re.search(r"(recaptcha|hcaptcha|geetest|cf-challenge)", markup, re.I):
-        blockers.append(PageBlocker("auth_or_captcha", "captcha widget detected"))
+    # Markup widget ids only count when the visible page also looks challenged / empty.
+    if re.search(r"(recaptcha|hcaptcha|geetest|cf-challenge)", markup_head, re.I):
+        challenge_chrome = any(
+            token in visible
+            for token in (
+                "verify",
+                "captcha",
+                "验证",
+                "机器人",
+                "just a moment",
+                "attention required",
+                "security check",
+            )
+        )
+        if challenge_chrome or _is_low_signal_text(text):
+            blockers.append(PageBlocker("auth_or_captcha", "captcha widget detected"))
     if _looks_like_undecoded_content(text, markup):
         blockers.append(PageBlocker("undecoded_content", "body looks compressed or binary"))
     if _is_low_signal_text(text):
         blockers.append(PageBlocker("low_signal", "extracted text too short or noisy"))
-    if re.search(r"\b403\b|\b429\b|access denied|forbidden|频控|访问频繁|请求过于频繁", combined):
+    if re.search(r"\b403\b|\b429\b|access denied|forbidden|频控|访问频繁|请求过于频繁", visible):
         blockers.append(PageBlocker("http_blocked", "access denied or rate limited"))
     return blockers
 

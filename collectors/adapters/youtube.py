@@ -63,7 +63,18 @@ class YouTubeAdapter:
         )
         if not transcript:
             transcript = self._maybe_asr_fallback(watch_url, video_id)
+        if sku and transcript and not evidence_mentions_sku(sku, transcript[:2500], watch_url):
+            if self.diagnostics:
+                self.diagnostics.record(
+                    "youtube",
+                    f"skip API transcript that does not mention sku for {video_id}",
+                    level="info",
+                    sku=sku,
+                )
+            return []
         for index, snippet in enumerate(self._review_snippets(transcript)[:8]):
+            if sku and not evidence_mentions_sku(sku, snippet, watch_url):
+                continue
             evidence.append(
                 build_evidence(
                     platform="YouTube",

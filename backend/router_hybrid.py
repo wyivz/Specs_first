@@ -451,14 +451,17 @@ class HybridModelRouter(KeywordModelRouter):
         )
         system_instruction = (
             "You are a harsh product QA reviewer. Discard marketing fluff and subjective praise; "
-            "extract only evidence-backed real-world flaws from the provided corpus. "
+            "extract evidence-backed real-world flaws AND purchase-relevant tradeoffs "
+            "(overheating, QC, ergonomics, value complaints, user-reported purchase prices). "
+            "Include concrete field prices when users state what they paid. "
             "Ignore forum UI metadata such as 积分, 回复, 举报, 当前离线, 只看该作者."
         )
         instruction = (
             f"Review the cached corpus for {sku}. "
             "Return JSON only with shape "
             '{"findings":[{"title":"","detail":"","condition":"","frequency":"","severity":"minor|major","evidence_index":0}]}. '
-            "Each finding must reference one evidence_index from the corpus."
+            "Each finding must reference one evidence_index from the corpus. "
+            "Prefer actionable field reports over empty summaries."
         )
 
         with self._gemini_cached_content(corpus_text, system_instruction) as cached_content:

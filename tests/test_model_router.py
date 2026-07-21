@@ -10,7 +10,7 @@ from schemas import ConflictLevel, EvidenceItem, OfficialSpec, RealWorldFinding
 
 
 class ModelRouterTest(unittest.TestCase):
-    def test_keyword_router_extracts_chromatic_aberration(self) -> None:
+    def test_keyword_router_extracts_field_defect(self) -> None:
         router = KeywordModelRouter()
         corpus = [
             EvidenceItem(
@@ -19,15 +19,15 @@ class ModelRouterTest(unittest.TestCase):
                 author="tester",
                 locator="comment-1",
                 captured_at="2026-07-07T00:00:00+00:00",
-                excerpt="Wide open purple fringing is obvious at the frame edge.",
+                excerpt="Device overheating is obvious after thirty minutes of continuous use.",
                 confidence=0.8,
             )
         ]
-        findings = router.extract_real_world_findings("Test Lens", corpus)
+        findings = router.extract_real_world_findings("Test Product", corpus)
         self.assertEqual(len(findings), 1)
-        # Title has been generalized to be category-agnostic
-        self.assertIn("tradeoff", findings[0].title.lower())
-
+        self.assertTrue(
+            any(token in findings[0].title.lower() for token in ("thermal", "overheat", "heat", "defect", "quality"))
+        )
     def test_create_model_router_keyword_never_uses_hybrid(self) -> None:
         # Even when Gemini/OpenAI keys exist, keyword mode must stay deterministic.
         router = create_model_router("keyword")

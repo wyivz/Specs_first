@@ -67,7 +67,7 @@ class EcommerceProductUrlGuardTest(unittest.TestCase):
 
         candidate = type("C", (), {"sku": "SEL50F12GM", "category": "Lens"})()
         collector.collect(candidate)  # type: ignore[arg-type]
-        self.assertEqual(fetched, ["https://item.jd.com/100010708487.html"])
+        self.assertEqual(fetched, ["https://item.m.jd.com/product/100010708487.html"])
 
     def test_jd_mgets_first_skips_page_fetch(self) -> None:
         from schemas import EvidenceItem, PriceFinding

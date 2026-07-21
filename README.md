@@ -82,20 +82,23 @@ Streamlit UI（frontend/app.py）
 
 - [x] 端到端 Mock / Real 流水线，单 SKU 故障隔离
 - [x] 四阶段 Pipeline + **JIT 品类 Schema**（无预设镜头/手机等模板）
+- [x] Discovery：**LLM structured search plans** 扩查询（无品牌别名/通用词词典）
+- [x] 采集层品类中立：官方源按「品牌站 + 规格密度」排序；SKU 代际结构匹配；问题词仅保留跨品类缺陷
 - [x] 双脑 ModelRouter（`router_keyword` / `router_hybrid` / `router_schemas`）
-- [x] FastAPI + Streamlit（`api_client`）+ 事件流式刷新
-- [x] 验证码 HITL：`PAUSED_NEED_AUTH` + 嵌入式浏览器 + 续传
-- [x] 平台 Adapter：京东、B 站、YouTube、淘宝/天猫（mtop + Cookie）
+- [x] FastAPI + Streamlit（`api_client`）+ 事件流式刷新（含步骤耗时）
+- [x] 验证码 HITL：`PAUSED_NEED_AUTH` + 嵌入式浏览器 + 续传；电商登录价墙软跳过
+- [x] 平台 Adapter：京东（mgets + 移动端商品页）、B 站、YouTube、淘宝/天猫（mtop + Cookie）
 - [x] AdapterRegistry 运行时接线；采集层依赖倒置
 - [x] Obsidian + Dataview + CSV
 - [x] 健康检查：`GET /health`、`scripts/smoke_platforms.py`
 - [x] **侧边栏环境配置**：按 `.env.example` 分组浏览/编辑 API Key、Cookie、采集调优，保存后热重载
-- [x] **单元测试 214 项** + GitHub Actions CI
+- [x] **单元测试 240 项** + GitHub Actions CI
 
 ### 需本机实调
 
 - [~] Gemini / OpenAI：配置 `.env` 后 Real 模式实测 JIT 建表与仲裁
-- [~] 淘宝/京东 Cookie：会过期，需从浏览器重新复制
+- [~] **京东 / 淘宝 Cookie 会过期**：登录墙（`¥??` / 登录查看价格）或 mgets/mtop 空价时，从浏览器重新复制 `JD_COOKIE`、`TAOBAO_COOKIE`（含 `_m_h5_tk`）
+- [~] B 站 / Reddit / YouTube Cookie：提升字幕、评论与论坛自动搜索成功率
 
 ### 暂缓
 
@@ -173,7 +176,7 @@ uvicorn backend.api:app --reload
 python -m unittest discover -s tests
 ```
 
-当前 **214** 项单元测试通过（不含 live smoke）。
+当前 **240** 项单元测试通过（不含 live smoke）。
 
 ```powershell
 python scripts/smoke_platforms.py --health-only
@@ -236,7 +239,7 @@ Specs-first/
 ├── schemas/           # 模型 + DynamicCategoryProfile + matrix
 ├── obsidian/          # Vault 写入 + CSV
 ├── scripts/           # smoke_platforms.py · smoke_asr.py
-├── tests/             # 203 项测试
+├── tests/             # 240 项测试
 ├── plan.md            # 架构计划
 └── .github/workflows/ # CI
 ```

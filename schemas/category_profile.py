@@ -9,22 +9,13 @@ from typing import Any
 GENERIC_PARAMETER_SLOTS = tuple(f"parameter_{chr(ord('a') + index)}" for index in range(8))
 
 # Cross-profile synonyms so extracted labels align with JIT slots.
+# Keep this map category-neutral; optics/audio/phone synonyms come from JIT aliases.
 BUILTIN_SPEC_SLOT_MAP: dict[str, str] = {
-    "maximum_aperture": "max_aperture",
-    "maximum_aperture_f": "max_aperture",
-    "max_aperture_f": "max_aperture",
-    "aperture": "max_aperture",
-    "lens_mount": "mount",
-    "mount_type": "mount",
-    "minimum_focus_distance": "min_focus_distance",
-    "min_focus": "min_focus_distance",
-    "closest_focus": "min_focus_distance",
-    "focal_length_mm": "focal_length",
-    "filter_size": "filter_diameter",
-    "lens_weight": "weight",
     "product_weight": "weight",
-    "image_stabilisation": "image_stabilization",
-    "stabilization": "image_stabilization",
+    "net_weight": "weight",
+    "item_weight": "weight",
+    "battery_life": "battery",
+    "battery_capacity": "battery",
 }
 
 
@@ -187,6 +178,11 @@ def normalize_spec_name(
     if profile and slug in profile.slots:
         return slug
     mapped = BUILTIN_SPEC_SLOT_MAP.get(slug, slug)
+    # Structural English synonym collapse (maximum_x → max_x), not a vertical glossary.
+    if mapped.startswith("maximum_") and len(mapped) > 9:
+        mapped = "max_" + mapped[len("maximum_") :]
+    elif mapped.startswith("minimum_") and len(mapped) > 9:
+        mapped = "min_" + mapped[len("minimum_") :]
     if profile and mapped in profile.slots:
         return mapped
     return mapped
@@ -323,20 +319,27 @@ def ecommerce_search_queries(
     # Intentionally ignore review ``search_modifiers``: product listing queries
     # must stay SKU + host only (评测/色散 etc. starve DDG of item.jd.com hits).
     del modifiers
-    from collectors.extractors import sku_search_phrase
+    from collectors.extractors import sku_ecommerce_aliases, sku_search_phrase
 
-    phrase = sku_search_phrase(sku)
-    return [
-        ("JD", f"{phrase} site:item.jd.com"),
-        (
-            "Taobao/Tmall",
-            f"{phrase} (site:detail.tmall.com OR site:item.taobao.com)",
-        ),
-    ]
+    phrases = [sku_search_phrase(sku), *sku_ecommerce_aliases(sku)[:2]]
+    queries: list[tuple[str, str]] = []
+    for phrase in dict.fromkeys(p for p in phrases if p):
+        queries.append(("JD", f"{phrase} site:item.jd.com"))
+        queries.append(
+            (
+                "Taobao/Tmall",
+                f"{phrase} (site:detail.tmall.com OR site:item.taobao.com)",
+            )
+        )
+    return queries
 
 
 def real_world_issue_patterns() -> list[str]:
-    """Category-agnostic defect / complaint hints for evidence extraction."""
+    """Category-agnostic defect / complaint hints for evidence extraction.
+
+    Vertical-specific issues (e.g. optical fringing) belong in JIT
+    ``search_modifiers`` / profile aliases, not this global list.
+    """
     return [
         r"缺陷|故障|损坏|broken|defect|fail(?:ure|ed)?",
         r"品控|质量问题|quality control|sample variation|unit variation",
@@ -347,7 +350,6 @@ def real_world_issue_patterns() -> list[str]:
         r"虚标|夸大|misleading|overpromise",
         r"劝退|翻车|regret|disappoint|avoid",
         r"售后|warranty|support|repair",
-        r"紫边|色散|fringing|chromatic|aberration|flare|鬼影",
     ]
 
 
@@ -357,6 +359,7 @@ def review_content_patterns() -> list[str]:
         r"缺点|问题|不足|issue|problem|defect|complaint|concern",
         r"评测|review|体验|experience|hands-on|长期|after\s+\d+\s+(?:days|weeks|months)",
         r"翻车|劝退|regret|disappoint|not recommend",
+        r"到手价|百亿补贴|入手|购买|买了|用了|用过|paid|bought|price\s+paid",
     ]
 
 

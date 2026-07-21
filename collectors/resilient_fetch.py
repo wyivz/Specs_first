@@ -239,7 +239,9 @@ class ResilientFetcher:
     def _log_snapshot(self, snapshot: PageSnapshot, *, sku: str = "") -> None:
         from collectors.rate_limit import get_host_backoff
 
-        soft_kinds = {"auth_or_captcha", "undecoded_content", "low_signal", "http_blocked"}
+        # low_signal alone should not burn the whole host family — soft articles /
+        # short pages are common; captcha/http_blocked still trigger cooldown.
+        soft_kinds = {"auth_or_captcha", "undecoded_content", "http_blocked"}
         if snapshot.ok:
             get_host_backoff().note_success(snapshot.url)
         else:

@@ -253,9 +253,12 @@ class EcommerceSourceCollector:
             if platform == "Taobao/Tmall" and not (self.tmall_taobao.credentials.cookie or "").strip():
                 # Without Cookie, headed captcha windows are useless noise — stay HTTP-only.
                 fetch_browser = False
+            fetch_url = target_url
+            if platform == "JD" and hasattr(self.jd, "browser_fetch_url"):
+                fetch_url = self.jd.browser_fetch_url(target_url)
             try:
                 snapshot = self.resilient.fetch(
-                    target_url,
+                    fetch_url,
                     task_id=task_id,
                     use_browser=fetch_browser,
                     storage_state_path=storage_state_path,
@@ -327,6 +330,33 @@ class EcommerceSourceCollector:
                 continue
             screenshot_paths = list(snapshot.screenshot_paths)
             combined_text = f"{combined_text} {snapshot.text}"
+            if platform == "JD" and self.jd.looks_like_login_price_wall(snapshot.text):
+                self.diagnostics.record(
+                    platform,
+                    f"JD login price wall on {snapshot.url}; set JD_COOKIE (pt_key/pt_pin) for mgets/logged-in price",
+                    level="warning",
+                    sku=candidate.sku,
+                )
+                self._record_recovery_hint(
+                    platform,
+                    sku=candidate.sku,
+                    use_browser=use_browser,
+                    reason="京东要求登录查看价格（¥? 掩码）",
+                    hinted=hinted,
+                )
+                # Still attempt mgets — public list prices sometimes work without HTML.
+                jd_finding = self.jd.build_price_finding(
+                    target_url,
+                    "",
+                    platform="JD",
+                    http=self.http,
+                    trace=active_trace,
+                    sku=candidate.sku,
+                )
+                if jd_finding:
+                    findings.append(jd_finding)
+                    platform_hits += 1
+                continue
             if platform == "JD" and snapshot.markup:
                 jd_finding = self.jd.build_price_finding(
                     target_url,

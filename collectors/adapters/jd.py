@@ -56,6 +56,23 @@ class JdAdapter:
             return f"https://item.jd.com/{match.group(1)}.html"
         return url
 
+    def browser_fetch_url(self, url: str) -> str:
+        """Prefer mobile item pages — PC item.jd.com often redirects to the homepage."""
+        if not self.supports(url):
+            return url
+        match = self.PRODUCT_URL_RE.search(url)
+        if match:
+            return f"https://item.m.jd.com/product/{match.group(1)}.html"
+        return url
+
+    def looks_like_login_price_wall(self, text: str) -> bool:
+        sample = text or ""
+        if re.search(r"登录查看|登录后可查看.*价|登录.*到手价", sample):
+            return True
+        if re.search(r"[¥￥]\s*\d*\?+\d*", sample):
+            return True
+        return False
+
     def detail_api_urls(self, product_url: str, markup: str = "") -> list[str]:
         urls: list[str] = []
         sku_id = self._extract_sku_id(product_url, markup)

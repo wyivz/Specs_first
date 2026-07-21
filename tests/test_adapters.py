@@ -19,10 +19,10 @@ from collectors.http import FetchResult
 class AdapterTest(unittest.TestCase):
     def test_bilibili_extracts_comment_like_snippets(self) -> None:
         adapter = BilibiliAdapter(credentials=BilibiliCredentials("", "", ""))
-        markup = "<html>用户评论：大光圈紫边明显，对焦环阻尼偶尔卡顿。另一个缺点是对焦慢。</html>"
+        markup = "<html>用户评论：对焦环阻尼偶尔卡顿。另一个缺点是对焦慢。</html>"
         evidence = adapter.extract_evidence("https://www.bilibili.com/video/BVtest", markup)
         self.assertTrue(evidence)
-        self.assertTrue(any("紫边" in item.excerpt or "对焦" in item.excerpt for item in evidence))
+        self.assertTrue(any("卡顿" in item.excerpt or "对焦" in item.excerpt for item in evidence))
 
     def test_bilibili_api_client_extracts_bvid(self) -> None:
         self.assertEqual(
@@ -30,15 +30,15 @@ class AdapterTest(unittest.TestCase):
             "BV1ABCD12345",
         )
 
-    @patch.object(BilibiliApiClient, "fetch_subtitle_text", return_value="Purple fringing is visible at wide open.")
-    @patch.object(BilibiliApiClient, "fetch_comment_texts", return_value=["Great lens but fringing remains an issue."])
+    @patch.object(BilibiliApiClient, "fetch_subtitle_text", return_value="Overheating is visible during long recording.")
+    @patch.object(BilibiliApiClient, "fetch_comment_texts", return_value=["Great product but lag remains an issue."])
     def test_bilibili_api_enrichment(self, _comments, _subtitle) -> None:
         client = BilibiliApiClient(
             credentials=BilibiliCredentials("s", "j", "d"),
             max_comments_per_video=10,
         )
         evidence = client.collect_api_evidence("https://www.bilibili.com/video/BV1ABCD12345")
-        self.assertTrue(any("fringing" in item.excerpt.lower() for item in evidence))
+        self.assertTrue(any("overheat" in item.excerpt.lower() or "lag" in item.excerpt.lower() for item in evidence))
         self.assertTrue(any(item.author == "bilibili_comment" for item in evidence))
 
     @patch.object(BilibiliApiClient, "collect_api_evidence")
@@ -51,7 +51,7 @@ class AdapterTest(unittest.TestCase):
                 url="https://www.bilibili.com/video/BV1ABCD12345",
                 author="bilibili_subtitle",
                 locator="api-subtitle",
-                excerpt="wide open purple fringing review",
+                excerpt="wide open overheating review",
                 confidence=0.7,
                 captured_at="2026-01-01T00:00:00Z",
             )
@@ -65,7 +65,7 @@ class AdapterTest(unittest.TestCase):
             sku="SEL50F12GM",
         )
         collect_api.assert_called_once()
-        self.assertTrue(any("fringing" in item.excerpt.lower() for item in evidence))
+        self.assertTrue(any("overheat" in item.excerpt.lower() for item in evidence))
 
     def test_bilibili_subtitle_asr_fallback_when_no_native_subtitle(self) -> None:
         client = BilibiliApiClient(credentials=BilibiliCredentials("s", "j", "d"))
@@ -99,9 +99,9 @@ class AdapterTest(unittest.TestCase):
     def test_youtube_comment_fetcher_selects_review_comments(self) -> None:
         fetcher = YouTubeCommentFetcher(max_comments_per_video=5)
         selected = fetcher.select_review_comments(
-            ["Great lens", "Visible purple fringing under backlight", "Nice build"]
+            ["Great product", "Visible overheating under load", "Nice build"]
         )
-        self.assertTrue(any("fringing" in item.lower() for item in selected))
+        self.assertTrue(any("overheat" in item.lower() for item in selected))
 
     def test_jd_rejects_sku_fragment_and_tiny_final_price(self) -> None:
         adapter = JdAdapter()
@@ -197,7 +197,7 @@ class AdapterTest(unittest.TestCase):
     def test_youtube_extracts_transcript_snippets(self) -> None:
         caption_xml = """
         <transcript>
-          <text start="0" dur="2">At wide open there is visible purple fringing in backlit scenes.</text>
+          <text start="0" dur="2">At wide open there is visible overheating in long clips.</text>
           <text start="2" dur="2">The focus ring feels inconsistent and sometimes sticks.</text>
         </transcript>
         """
@@ -228,7 +228,7 @@ class AdapterTest(unittest.TestCase):
         adapter = YouTubeAdapter(FakeHttp())  # type: ignore[arg-type]
         with patch.object(adapter.comment_fetcher, "fetch_comment_texts", return_value=[]):
             evidence = adapter.extract_evidence("https://www.youtube.com/watch?v=mock123", markup)
-        self.assertTrue(any("purple fringing" in item.excerpt.lower() for item in evidence))
+        self.assertTrue(any("overheat" in item.excerpt.lower() or "sticks" in item.excerpt.lower() for item in evidence))
         self.assertTrue(any(item.locator.startswith("transcript-snippet") for item in evidence))
 
     def test_youtube_fetch_transcript_picks_preferred_language(self) -> None:

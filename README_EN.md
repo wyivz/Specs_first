@@ -77,20 +77,23 @@ Streamlit UI
 
 - [x] End-to-end Mock / Real pipeline with per-SKU isolation
 - [x] Four-phase pipeline + **universal JIT category schema** (no preset lens/phone templates)
+- [x] Discovery via **LLM structured search plans** (no brand/alias glossaries)
+- [x] Category-agnostic collectors: manufacturer-first official ranking, structural SKU generation matching, universal defect patterns only
 - [x] Dual-brain routers (`router_keyword` / `router_hybrid` / `router_schemas`)
-- [x] FastAPI + Streamlit (`api_client`) + progressive matrix events
-- [x] Captcha HITL: `PAUSED_NEED_AUTH`, embedded browser, resume
-- [x] Adapters: JD, Bilibili, YouTube, Taobao/Tmall (mtop + Cookie)
+- [x] FastAPI + Streamlit (`api_client`) + progressive matrix events (with step timers)
+- [x] Captcha HITL: `PAUSED_NEED_AUTH`, embedded browser, resume; soft-skip ecommerce login price walls
+- [x] Adapters: JD (mgets + mobile item pages), Bilibili, YouTube, Taobao/Tmall (mtop + Cookie)
 - [x] AdapterRegistry wiring; collector dependency inversion
 - [x] Obsidian + Dataview + CSV
 - [x] Health checks: `GET /health`, `scripts/smoke_platforms.py`
 - [x] **Sidebar env editor**: grouped `.env` form (API keys, cookies, tuning) with save + hot reload
-- [x] **203 unit tests** + GitHub Actions CI
+- [x] **240 unit tests** + GitHub Actions CI
 
 ### Needs live setup
 
 - [~] Gemini / OpenAI keys in `.env` for Real-mode JIT schema and arbitration
-- [~] Taobao / JD cookies expire and must be refreshed from the browser
+- [~] **JD / Taobao cookies expire**: refresh `JD_COOKIE` and `TAOBAO_COOKIE` (include `_m_h5_tk`) when login walls or empty mgets/mtop prices appear
+- [~] Optional Bilibili / Reddit / YouTube cookies for higher subtitle/comment/forum yield
 
 ### Frozen
 
@@ -154,7 +157,7 @@ uvicorn backend.api:app --reload
 python -m unittest discover -s tests
 ```
 
-**203** unit tests passing (excluding live smoke).
+**240** unit tests passing (excluding live smoke).
 
 ```powershell
 python scripts/smoke_platforms.py --health-only
@@ -207,7 +210,7 @@ Specs-first/
 ├── schemas/           # models + DynamicCategoryProfile + matrix
 ├── obsidian/          # vault writer + CSV
 ├── scripts/           # smoke_platforms.py
-├── tests/             # 203 tests
+├── tests/             # 240 tests
 ├── plan.md            # architecture plan
 └── .github/workflows/ # CI
 ```

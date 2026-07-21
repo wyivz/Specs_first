@@ -21,26 +21,23 @@ KEY_VALUE_SPEC_PATTERN = re.compile(
     r"(?:^|[\n;|])\s*([A-Za-z0-9\u4e00-\u9fff][^:：\n|]{1,48}?)\s*[:：]\s*([^\n;|]{1,120})",
     re.M,
 )
-# Sony support / many manufacturer pages use heading + value without a colon.
+# Manufacturer pages often use heading + value without a colon.
+# Labels stay neutral; JIT aliases map them onto category slots.
 ADJACENT_SPEC_PATTERN = re.compile(
     r"\b("
-    # Lens (Sony-style heading + value without colon)
-    r"Focal Length(?:\s*\([^)]*\))?|"
-    r"Maximum aperture(?:\s*\([^)]*\))?|"
-    r"Minimum Aperture(?:\s*\([^)]*\))?|"
-    r"Filter Diameter(?:\s*\([^)]*\))?|"
-    r"Minimum Focus Distance|"
-    r"Mount|"
-    r"焦距|最大光圈|滤镜口径|最近对焦距离|卡口|"
-    # Cross-category manufacturer pages
     r"Weight|Battery(?:\s+Capacity|\s+Life)?|Screen Size|Refresh Rate|"
-    r"RAM|Storage|CPU|GPU|Impedance|Driver Size|"
-    r"重量|电池容量|续航|屏幕尺寸|刷新率|内存|存储|处理器|显卡|阻抗|单元直径"
+    r"RAM|Storage|CPU|GPU|Impedance|Driver Size|Dimensions|Capacity|Power|"
+    r"Focal Length(?:\s*\([^)]*\))?|Maximum aperture(?:\s*\([^)]*\))?|"
+    r"Minimum Aperture(?:\s*\([^)]*\))?|Filter Diameter(?:\s*\([^)]*\))?|"
+    r"Minimum Focus Distance|Mount|"
+    r"重量|电池容量|续航|屏幕尺寸|刷新率|内存|存储|处理器|显卡|阻抗|单元直径|"
+    r"尺寸|容量|功率|型号|焦距|最大光圈|滤镜口径|最近对焦距离|卡口"
     r")\s+("
-    r"Sony\s+E-mount|"
     r"[0-9]+(?:\.[0-9]+)?\s+oz\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*g\s*\)|"
     r"[0-9]+(?:\.[0-9]+)?\s+ft\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*m\s*\)|"
-    r"[0-9]+(?:\.[0-9]+)?(?:\s*(?:mm|cm|m|g|kg|oz|ft|inch|英寸|hz|mah|wh|gb|tb|ohm|Ω|小时|h)\b)?"
+    r"[0-9]+(?:\.[0-9]+)?(?:\s*(?:mm|cm|m|g|kg|oz|ft|inch|英寸|hz|mah|wh|gb|tb|ohm|Ω|小时|h)\b)?|"
+    r"f\s*/?\s*[0-9]+(?:\.[0-9]+)?|"
+    r"[A-Za-z]+\s+[A-Za-z0-9]+-mount"
     r")",
     re.I,
 )
@@ -451,7 +448,11 @@ def extract_desc_api_urls(markup: str, base_url: str = "") -> list[str]:
 
 
 def infer_specs_from_sku(candidate: ProductCandidate) -> list[OfficialSpec]:
-    """Deterministic fallback when page extraction is thin (Sony SEL codes)."""
+    """Deterministic fallback for compact OEM part numbers (e.g. SEL50F12GM).
+
+    This is grammar over the SKU string itself — not a category glossary.
+    Unknown formats return no specs; page/LLM extraction remains primary.
+    """
     compact = re.sub(r"[^a-z0-9]", "", (candidate.sku or "").lower())
     match = _SONY_SEL_RE.match(compact)
     if not match:
@@ -508,6 +509,10 @@ def forum_chrome_ratio(text: str) -> float:
 
 
 def evidence_conflicts_with_sku(sku: str, *texts: str) -> bool:
+    """True when text clearly points at a different model code than ``sku``.
+
+    No brand/category glossaries — only structural model-token disagreement.
+    """
     if not sku or not sku.strip():
         return False
     blob = " ".join(part for part in texts if part).lower()
@@ -517,27 +522,21 @@ def evidence_conflicts_with_sku(sku: str, *texts: str) -> bool:
     compact_blob = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", blob)
     if len(compact_sku) >= 5 and compact_sku in compact_blob:
         return False
-    if not _SONY_SEL_RE.match(compact_sku):
+    model = primary_model_code(sku).lower()
+    if not model or len(model) < 3:
         return False
-    has_sony = any(token in blob for token in ("sony", "索尼", "fe ", "fe-"))
-    if has_sony:
+    if model in compact_blob:
         return False
-    competitor_markers = (
-        "canon",
-        "nikon",
-        "sigma",
-        "tamron",
-        "leica",
-        "fujifilm",
-        "富士",
-        " rf ",
-        "canon rf",
-        "ef 50",
-        "ef50",
-        "z 50",
-        "z50",
-    )
-    return any(marker in blob for marker in competitor_markers)
+    # Another long model-like token in the blob, while ours is absent → conflict.
+    foreign = [
+        token.lower()
+        for token in _MODEL_CODE_RE.findall(blob)
+        if len(token) >= 4
+        and not _FOCAL_OR_APERTURE_TOKEN_RE.match(token)
+        and not _ROMAN_GENERATION_RE.match(token)
+        and token.lower() != model
+    ]
+    return bool(foreign) and all(token not in compact_sku for token in foreign[:3])
 
 
 def build_evidence(platform: str, url: str, author: str, locator: str, excerpt: str, confidence: float) -> EvidenceItem:
@@ -579,28 +578,93 @@ _SKU_STOP_WORDS = {
     "edition",
 }
 _MODEL_CODE_RE = re.compile(
-    r"[a-z]{2,}\d+[a-z0-9]*|\d+[a-z]{2,}[a-z0-9]*|[a-z]\d{2,4}[a-z]?",
+    # G304 / SEL50F12GM / a7c / 7c / 7c2 / z5ii — include short digit+letter cores.
+    r"[a-z]{2,}\d+[a-z0-9]*|\d+[a-z]{1,4}\d*[a-z]*|[a-z]\d{1,4}[a-z0-9]*",
     re.I,
 )
 _FOCAL_OR_APERTURE_TOKEN_RE = re.compile(r"^\d+(?:\.\d+)?(?:mm)?$|^f/?\d+(?:\.\d+)?$", re.I)
 # Sony E-mount lens codes: SEL50F12GM → 50mm + F1.2 + GM (common on CN marketplaces).
 _SONY_SEL_RE = re.compile(r"^sel(\d+)f(\d+)(gm|g|oss|za)?$", re.I)
+_ROMAN_GENERATION_RE = re.compile(r"^(?:mark|mk)?(ii|iii|iv|vi|vii|viii|ix|x|v)$", re.I)
+_ROMAN_TO_DIGIT = {
+    "ii": "2",
+    "iii": "3",
+    "iv": "4",
+    "v": "5",
+    "vi": "6",
+    "vii": "7",
+    "viii": "8",
+    "ix": "9",
+    "x": "10",
+}
 
 
 def primary_model_code(sku: str) -> str:
     """Best alphanumeric model token from a SKU / marketing name."""
     best = ""
     for token in _MODEL_CODE_RE.findall(sku or ""):
-        # Accept G304 / K380 (4 chars) and longer codes; skip tiny noise.
-        if len(token) < 3 or len(token) <= len(best):
+        # Accept G304 / K380 / 7C (3 chars) and longer codes; skip tiny noise.
+        if len(token) < 2 or len(token) <= len(best):
             continue
         # Focal / aperture fragments are not model codes (50mm, f1.2).
         if _FOCAL_OR_APERTURE_TOKEN_RE.match(token):
             continue
         if token.lower().endswith("mm") and token[:-2].isdigit():
             continue
+        if _ROMAN_GENERATION_RE.match(token):
+            continue
         best = token
     return best
+
+
+def sku_generation_tokens(sku: str) -> list[str]:
+    """Roman / Mark generation markers that must not be dropped for lookalike models."""
+    tokens = re.findall(r"[a-z0-9]+", (sku or "").lower())
+    found: list[str] = []
+    for token in tokens:
+        match = _ROMAN_GENERATION_RE.match(token)
+        if match:
+            found.append(match.group(1).lower())
+    return list(dict.fromkeys(found))
+
+
+def _generation_satisfied(sku: str, *, compact_blob: str, blob: str) -> bool:
+    gens = sku_generation_tokens(sku)
+    if not gens:
+        return True
+    model = primary_model_code(sku).lower()
+    for gen in gens:
+        digit = _ROMAN_TO_DIGIT.get(gen, "")
+        candidates = [gen]
+        if digit:
+            candidates.append(digit)
+        if model:
+            candidates.extend([f"{model}{gen}", f"{model}{digit}" if digit else ""])
+        for item in candidates:
+            if item and (item in compact_blob or item in blob.replace(" ", "")):
+                return True
+    return False
+
+
+def sku_ecommerce_aliases(sku: str) -> list[str]:
+    """Extra marketplace search phrases for marketing names (no brand glossary)."""
+    cleaned = (sku or "").strip()
+    if not cleaned:
+        return []
+    aliases: list[str] = []
+    model = primary_model_code(cleaned)
+    gens = sku_generation_tokens(cleaned)
+    if model and gens:
+        gen = gens[0]
+        digit = _ROMAN_TO_DIGIT.get(gen, "")
+        aliases.append(f"{model} {gen}".upper() if model.isalpha() else f"{model}{gen}")
+        aliases.append(f"{model}{gen}")
+        if digit:
+            aliases.append(f"{model}{digit}")
+    compact = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "", cleaned)
+    if len(compact) >= 5 and compact.lower() != cleaned.lower().replace(" ", ""):
+        aliases.append(compact)
+    return list(dict.fromkeys(a for a in aliases if a and a.lower() != cleaned.lower()))
 
 
 def sku_search_phrase(sku: str) -> str:
@@ -661,12 +725,16 @@ def evidence_mentions_sku(sku: str, *texts: str) -> bool:
     compact_sku = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", sku.lower())
     compact_blob = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", blob)
     if len(compact_sku) >= 5 and compact_sku in compact_blob:
-        return True
+        return _generation_satisfied(sku, compact_blob=compact_blob, blob=blob)
 
-    model_tokens = [token.lower() for token in _MODEL_CODE_RE.findall(sku) if len(token) >= 3]
+    model_tokens = [
+        token.lower()
+        for token in _MODEL_CODE_RE.findall(sku)
+        if len(token) >= 2 and not _ROMAN_GENERATION_RE.match(token) and not _FOCAL_OR_APERTURE_TOKEN_RE.match(token)
+    ]
     if model_tokens:
         if any(token in compact_blob for token in model_tokens):
-            return True
+            return _generation_satisfied(sku, compact_blob=compact_blob, blob=blob)
         # Marketplace titles often omit SEL… codes but keep focal + aperture + grade.
         aliases = [alias.lower() for alias in sku_marketplace_aliases(sku)]
         if aliases:
@@ -688,13 +756,14 @@ def evidence_mentions_sku(sku: str, *texts: str) -> bool:
         if len(word) >= 3
         and word not in _SKU_STOP_WORDS
         and not _FOCAL_OR_APERTURE_TOKEN_RE.match(word)
+        and not _ROMAN_GENERATION_RE.match(word)
     ]
     if not words:
         return False
     hits = sum(1 for word in words if word in blob or word in compact_blob)
     if len(words) >= 2:
         if hits >= 2:
-            return True
+            return _generation_satisfied(sku, compact_blob=compact_blob, blob=blob)
         # Brand + the SKU's own focal length is enough for marketplace titles.
         if hits >= 1:
             for focal in re.findall(r"\b(\d+(?:\.\d+)?)\s*mm\b", sku.lower()):
@@ -864,14 +933,15 @@ def first_pattern_numbers(patterns: list[re.Pattern[str]], text: str) -> list[fl
 
 
 def is_plausible_price(number: float) -> bool:
-    return 100 <= number <= 1_000_000 and not (1900 <= number <= 2099)
+    # Floor is low enough for mice / accessories; years still rejected.
+    return 10 <= number <= 1_000_000 and not (1900 <= number <= 2099)
 
 
 def is_plausible_product_price(number: float) -> bool:
     """Stricter gate for guessed product prices (rejects coupon-floor 100 noise)."""
     if not is_plausible_price(number):
         return False
-    # Bare 100 / 200 are almost always 满减门槛 or placeholder, not camera/lens prices.
+    # Bare 100 / 200 are almost always 满减门槛 or placeholder amounts.
     if number in {100.0, 200.0}:
         return False
     return True
