@@ -59,6 +59,13 @@ class ResilientFetcher:
     ) -> PageSnapshot:
         if self.trace:
             self.trace.log("fetch", f"start url={url} strategy={strategy_for_url(url).mode}", sku=sku)
+        if self.diagnostics is not None and url.startswith("http"):
+            self.diagnostics.record(
+                "fetch",
+                f"抓取中 {url}",
+                level="info",
+                sku=sku,
+            )
         if not url.startswith("http"):
             return PageSnapshot(
                 url=url,

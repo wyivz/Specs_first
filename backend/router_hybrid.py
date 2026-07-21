@@ -159,6 +159,9 @@ class HybridModelRouter(KeywordModelRouter):
     def enrich_prices_with_ocr(self, sku: str, prices: list[PriceFinding]) -> list[PriceFinding]:
         if not settings.has_gemini:
             return prices
+        from backend.live_progress import emit_live_step
+
+        emit_live_step(f"Gemini OCR 识价中 · {sku}", sku=sku, phase=3)
         enriched: list[PriceFinding] = []
         for price in prices:
             screenshot_paths = self._resolve_screenshot_paths(price.screenshot_path)

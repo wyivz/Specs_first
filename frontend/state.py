@@ -26,7 +26,14 @@ def init_session_state() -> None:
             "phase_label": "准备中",
             "category": "",
             "progress": 0.0,
+            "action": "",
+            "url": "",
+            "url_label": "",
+            "started_at": "",
+            "detail": "",
+            "highlights": [],
         },
+        "live_step_history": [],
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -50,7 +57,14 @@ def reset_task_state(category: str, selected_count: int) -> None:
         "phase_label": "发现候选",
         "category": category,
         "progress": 0.0,
+        "action": "发现候选",
+        "url": "",
+        "url_label": "",
+        "started_at": "",
+        "detail": "",
+        "highlights": [],
     }
+    st.session_state["live_step_history"] = []
     st.session_state.pop("result", None)
     st.session_state.pop("paused_task_id", None)
     st.session_state.pop("task_error", None)
@@ -74,6 +88,12 @@ def apply_event(event: dict[str, Any]) -> None:
             "phase_label": "准备中",
             "category": "",
             "progress": 0.0,
+            "action": "",
+            "url": "",
+            "url_label": "",
+            "started_at": "",
+            "detail": "",
+            "highlights": [],
         },
     )
 
@@ -85,12 +105,42 @@ def apply_event(event: dict[str, Any]) -> None:
         "findings_extracted",
         "collector_status",
         "matrix_row_updated",
+        "step_status",
     }:
-        for key in ("sku", "sku_index", "total_skus", "phase", "phase_label", "category", "progress"):
+        for key in (
+            "sku",
+            "sku_index",
+            "total_skus",
+            "phase",
+            "phase_label",
+            "category",
+            "progress",
+            "action",
+            "url",
+            "url_label",
+            "started_at",
+            "detail",
+        ):
             if key in payload and payload[key] is not None:
                 progress_info[key] = payload[key]
         if event_type == "candidate_found" and "total_skus" in payload:
             st.session_state["total_steps"] = max(int(payload.get("total_skus") or 1), 1)
+        if event_type == "phase_started" and not payload.get("action"):
+            progress_info["action"] = payload.get("phase_label") or event.get("message") or ""
+            progress_info["started_at"] = payload.get("started_at") or progress_info.get("started_at") or ""
+        if event_type == "step_status":
+            progress_info["action"] = payload.get("action") or event.get("message") or progress_info.get("action")
+            if not payload.get("started_at"):
+                from datetime import UTC, datetime
+
+                progress_info["started_at"] = datetime.now(UTC).isoformat()
+        highlights = payload.get("highlights")
+        if isinstance(highlights, list) and highlights:
+            progress_info["highlights"] = [str(item) for item in highlights[:8]]
+            history = st.session_state.setdefault("live_step_history", [])
+            for item in progress_info["highlights"]:
+                history.append(item)
+            st.session_state["live_step_history"] = history[-20:]
 
     if event_type == "category_profile_ready":
         st.session_state["category_profile"] = {
@@ -118,6 +168,7 @@ def apply_event(event: dict[str, Any]) -> None:
             st.session_state["category_profile"] = payload.get("category_profile")
         progress_info["progress"] = 1.0
         progress_info["phase_label"] = "完成"
+        progress_info["action"] = "完成"
 
     if event_type == "task_failed":
         st.session_state["task_error"] = payload.get("error") or event.get("message", "")

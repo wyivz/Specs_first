@@ -4,11 +4,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from backend.live_progress import emit_live_step, now_iso
 from collectors.base import Collector
 from collectors.browser import BrowserAuthRequired
 from collectors.platform_auth import PlatformAuthRequired
 from schemas import OfficialSpec, ProductAsset, ProductCandidate, TaskState, to_dict
-from schemas.category_profile import DynamicCategoryProfile, canonical_slots, map_spec_name_to_slot, normalize_spec_name
+from schemas.category_profile import DynamicCategoryProfile, canonical_slots, map_spec_name_to_slot
 from schemas.serialize import finding_from_dict, official_spec_from_dict
 
 
@@ -47,6 +48,12 @@ class CandidateProcessor:
             findings = [finding_from_dict(item) for item in progress["findings"]]
         else:
             self._emit_phase(candidate, phase=1)
+            emit_live_step(
+                f"采集官方规格中 · {candidate.sku}",
+                sku=candidate.sku,
+                phase=1,
+                url=candidate.source_url or "",
+            )
             official_specs, highlights = self.collector.collect_official_specs(
                 candidate,
                 task_id=task_id,
@@ -56,6 +63,7 @@ class CandidateProcessor:
             official_specs, highlights = self._align_specs_to_profile(
                 official_specs, highlights, candidate.category
             )
+            spec_highlights = self._spec_preview_lines(official_specs, highlights)
             self.emit(
                 "specs_collected",
                 f"已采集官方规格 {len(official_specs)} 项 · {candidate.sku}",
@@ -68,10 +76,23 @@ class CandidateProcessor:
                     "official_specs": [to_dict(spec) for spec in official_specs],
                     "spec_highlights": highlights,
                     "spec_count": len(official_specs),
+                    "highlights": spec_highlights,
                 },
+            )
+            emit_live_step(
+                f"已采集官方规格 {len(official_specs)} 项 · {candidate.sku}",
+                sku=candidate.sku,
+                phase=1,
+                highlights=spec_highlights,
+                detail=f"共 {len(official_specs)} 项参数",
             )
 
             self._emit_phase(candidate, phase=2)
+            emit_live_step(
+                f"采集真实口碑中 · {candidate.sku}",
+                sku=candidate.sku,
+                phase=2,
+            )
             try:
                 corpus = self.collector.collect_real_world_corpus(
                     candidate,
@@ -86,7 +107,18 @@ class CandidateProcessor:
                     "findings": [],
                 }
                 raise
+            emit_live_step(
+                f"口碑脱水中 · {candidate.sku}",
+                sku=candidate.sku,
+                phase=2,
+                detail=f"语料 {len(corpus)} 条",
+            )
             findings = self.router.extract_real_world_findings(candidate.sku, corpus)
+            finding_previews = [
+                f"{item.title}: {item.detail[:60]}".strip(": ")
+                for item in findings[:4]
+                if item.title or item.detail
+            ]
             self.emit(
                 "findings_extracted",
                 f"已提取真实口碑 {len(findings)} 条（语料 {len(corpus)}）· {candidate.sku}",
@@ -99,10 +131,23 @@ class CandidateProcessor:
                     "findings": [to_dict(finding) for finding in findings],
                     "corpus_size": len(corpus),
                     "finding_count": len(findings),
+                    "highlights": finding_previews,
                 },
             )
+            if finding_previews:
+                emit_live_step(
+                    f"已提取口碑 {len(findings)} 条 · {candidate.sku}",
+                    sku=candidate.sku,
+                    phase=2,
+                    highlights=finding_previews,
+                )
 
         self._emit_phase(candidate, phase=3)
+        emit_live_step(
+            f"采集到手价中 · {candidate.sku}",
+            sku=candidate.sku,
+            phase=3,
+        )
         prices = self._collect_prices(
             task_id=task_id,
             candidate=candidate,
@@ -112,8 +157,21 @@ class CandidateProcessor:
             use_browser=use_browser,
             storage_state_path=storage_state_path,
         )
+        if prices:
+            price_lines = [f"{p.platform}: ¥{p.final_price:g}" for p in prices[:4]]
+            emit_live_step(
+                f"已拿到价格 {len(prices)} 条 · {candidate.sku}",
+                sku=candidate.sku,
+                phase=3,
+                highlights=price_lines,
+            )
 
         self._emit_phase(candidate, phase=4)
+        emit_live_step(
+            f"冲突仲裁中 · {candidate.sku}",
+            sku=candidate.sku,
+            phase=4,
+        )
         warnings = self.router.arbitrate_conflicts(
             findings, official_specs, category=candidate.category
         )
@@ -130,6 +188,17 @@ class CandidateProcessor:
             conflict_warnings=warnings,
             arbitration_summary=summary,
         )
+
+    @staticmethod
+    def _spec_preview_lines(official_specs: list[OfficialSpec], highlights: list[str]) -> list[str]:
+        lines: list[str] = []
+        for spec in official_specs[:6]:
+            unit = f" {spec.unit}" if spec.unit else ""
+            lines.append(f"{spec.name}: {spec.value}{unit}".strip())
+        for tip in highlights[:3]:
+            if tip and tip not in lines:
+                lines.append(tip)
+        return lines[:8]
 
     def _align_specs_to_profile(
         self,
@@ -185,6 +254,7 @@ class CandidateProcessor:
 
     def _emit_phase(self, candidate: ProductCandidate, *, phase: int) -> None:
         label = PHASE_LABELS.get(phase, f"阶段 {phase}")
+        started = now_iso()
         self.emit(
             "phase_started",
             f"[{self.sku_index + 1}/{self.total_skus}] 步骤 {phase}/4 · {label} · {candidate.sku}",
@@ -196,6 +266,8 @@ class CandidateProcessor:
                 "phase": phase,
                 "phase_label": label,
                 "category": candidate.category,
+                "action": label,
+                "started_at": started,
                 "progress": round(
                     (self.sku_index * 4 + max(phase - 1, 0)) / max(self.total_skus * 4, 1),
                     3,
@@ -220,6 +292,11 @@ class CandidateProcessor:
                 task_id=task_id,
                 use_browser=use_browser,
                 storage_state_path=storage_state_path,
+            )
+            emit_live_step(
+                f"Gemini OCR 识价中 · {candidate.sku}",
+                sku=candidate.sku,
+                phase=3,
             )
             return self.router.enrich_prices_with_ocr(candidate.sku, prices)
         except BrowserAuthRequired as exc:

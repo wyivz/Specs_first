@@ -9,6 +9,15 @@ from uuid import uuid4
 
 from backend.checkpoint import CheckpointStore, TaskCheckpoint, create_checkpoint_store
 from backend.events import InMemoryEventBus
+from backend.live_progress import (
+    emit_live_step,
+    extract_url,
+    format_fetch_action,
+    now_iso,
+    reset_step_emitter,
+    set_step_emitter,
+    short_url_label,
+)
 from backend.model_router import create_model_router
 from collectors.base import Collector
 from collectors.browser import BrowserAuthRequired
@@ -268,7 +277,21 @@ class SpecsFirstPipeline:
 
         vision_clues: dict[str, Any] = {}
         if image_urls and hasattr(self.router, "survey_product_from_images"):
+
+            def _jit_sink(action: str, payload: dict[str, Any]) -> None:
+                body = dict(payload)
+                body.setdefault("action", action)
+                body.setdefault("started_at", now_iso())
+                self._emit(task_id, "step_status", action, TaskState.RUNNING, body, on_event)
+
+            jit_token = set_step_emitter(_jit_sink)
             try:
+                emit_live_step(
+                    f"Gemini 识图中 · {probe_sku or '品类探针'}",
+                    sku=probe_sku,
+                    phase=0,
+                    detail=f"{len(image_urls)} 张详情图",
+                )
                 referer = ""
                 for candidate in selected[:2]:
                     if getattr(candidate, "sku", "") == probe_sku and getattr(candidate, "source_url", ""):
@@ -294,14 +317,32 @@ class SpecsFirstPipeline:
                     vision_clues = {}
             except Exception:
                 vision_clues = {}
+            finally:
+                reset_step_emitter(jit_token)
 
         if hasattr(self.router, "build_category_profile"):
-            profile = self.router.build_category_profile(  # type: ignore[attr-defined]
-                query,
-                selected,
-                vision_clues,
-                category_hint,
-            )
+
+            def _schema_sink(action: str, payload: dict[str, Any]) -> None:
+                body = dict(payload)
+                body.setdefault("action", action)
+                body.setdefault("started_at", now_iso())
+                self._emit(task_id, "step_status", action, TaskState.RUNNING, body, on_event)
+
+            schema_token = set_step_emitter(_schema_sink)
+            try:
+                emit_live_step(
+                    "ChatGPT 锁定对比维度中",
+                    sku=probe_sku,
+                    phase=0,
+                )
+                profile = self.router.build_category_profile(  # type: ignore[attr-defined]
+                    query,
+                    selected,
+                    vision_clues,
+                    category_hint,
+                )
+            finally:
+                reset_step_emitter(schema_token)
         else:
             profile = generic_category_profile(category_hint)
 
@@ -329,6 +370,53 @@ class SpecsFirstPipeline:
         return profile
 
     def _process_candidates(
+        self,
+        *,
+        task_id: str,
+        query: str,
+        category: str,
+        mode: str,
+        source_urls: list[str],
+        selected_skus: list[str],
+        candidates: list[ProductCandidate],
+        selected: list[ProductCandidate],
+        assets: list[ProductAsset],
+        start_index: int,
+        in_progress_payload: dict[str, Any] | None = None,
+        on_event: Callable[[TaskEvent], None] | None = None,
+        use_browser: bool = False,
+        storage_state_path: str = "",
+        category_profile: DynamicCategoryProfile | None = None,
+    ) -> TaskResult:
+        def _step_sink(action: str, payload: dict[str, Any]) -> None:
+            body = dict(payload)
+            body.setdefault("action", action)
+            body.setdefault("started_at", now_iso())
+            self._emit(task_id, "step_status", action, TaskState.RUNNING, body, on_event)
+
+        token = set_step_emitter(_step_sink)
+        try:
+            return self._process_candidates_inner(
+                task_id=task_id,
+                query=query,
+                category=category,
+                mode=mode,
+                source_urls=source_urls,
+                selected_skus=selected_skus,
+                candidates=candidates,
+                selected=selected,
+                assets=assets,
+                start_index=start_index,
+                in_progress_payload=in_progress_payload,
+                on_event=on_event,
+                use_browser=use_browser,
+                storage_state_path=storage_state_path,
+                category_profile=category_profile,
+            )
+        finally:
+            reset_step_emitter(token)
+
+    def _process_candidates_inner(
         self,
         *,
         task_id: str,
@@ -544,7 +632,8 @@ class SpecsFirstPipeline:
         def _on_record(record: DiagnosticRecord) -> None:
             message = record.message or ""
             lower = message.lower()
-            interesting = record.level in {"warning", "error"} or any(
+            url = extract_url(message)
+            interesting = record.level in {"warning", "error", "info"} or any(
                 token in lower
                 for token in (
                     "search",
@@ -558,14 +647,24 @@ class SpecsFirstPipeline:
                     "soft-skip",
                     "captcha",
                     "auth",
+                    "subtitle",
+                    "asr",
+                    "transcript",
+                    "ocr",
+                    "gemini",
                 )
             )
             if not interesting:
                 return
+            action = message
+            if url and message.startswith("抓取中"):
+                action = format_fetch_action(url)
+            elif url and ("fetch" in lower or "抓取" in message):
+                action = format_fetch_action(url)
             self._emit(
                 task_id,
-                "collector_status",
-                f"[{record.source}] {message}",
+                "step_status",
+                action,
                 TaskState.RUNNING,
                 {
                     "sku": sku or record.sku,
@@ -573,9 +672,30 @@ class SpecsFirstPipeline:
                     "total_skus": total_skus,
                     "source": record.source,
                     "level": record.level,
+                    "action": action,
+                    "url": url,
+                    "url_label": short_url_label(url) if url else "",
+                    "started_at": now_iso(),
+                    "detail": message if message != action else "",
                 },
                 on_event,
             )
+            # Keep legacy collector_status for logs / older UI consumers.
+            if record.level in {"warning", "error"}:
+                self._emit(
+                    task_id,
+                    "collector_status",
+                    f"[{record.source}] {message}",
+                    TaskState.RUNNING,
+                    {
+                        "sku": sku or record.sku,
+                        "sku_index": sku_index,
+                        "total_skus": total_skus,
+                        "source": record.source,
+                        "level": record.level,
+                    },
+                    on_event,
+                )
 
         diagnostics.on_record = _on_record
 

@@ -16,8 +16,37 @@ from frontend.ui.matrix import render_evidence_cards, render_matrix_header, rend
 from frontend.ui.labels import build_column_labels
 
 _TERMINAL_STATES = frozenset({"DONE", "FAILED", "PAUSED_NEED_AUTH"})
-# Fragment polls: slower than 1s to cut Streamlit DOM churn; still feels live.
-_LIVE_POLL_SECONDS = 2.5
+# Fragment polls: keep sub-2s so "已运行 Xs" ticks while long fetches run.
+_LIVE_POLL_SECONDS = 1.5
+
+
+def _elapsed_seconds(started_at: str) -> int:
+    if not started_at:
+        return 0
+    try:
+        from datetime import UTC, datetime
+
+        raw = started_at.replace("Z", "+00:00")
+        started = datetime.fromisoformat(raw)
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        return max(0, int((datetime.now(UTC) - started).total_seconds()))
+    except Exception:
+        return 0
+
+
+def _format_live_action(progress_info: dict[str, Any]) -> str:
+    action = str(progress_info.get("action") or progress_info.get("phase_label") or "运行中…")
+    url = str(progress_info.get("url") or "")
+    url_label = str(progress_info.get("url_label") or url)
+    elapsed = _elapsed_seconds(str(progress_info.get("started_at") or ""))
+    link_bit = ""
+    if url:
+        safe_label = url_label.replace("]", "")
+        link_bit = f" [{safe_label}]({url})"
+    detail = str(progress_info.get("detail") or "").strip()
+    detail_bit = f" · {detail}" if detail else ""
+    return f"{action}{link_bit}{detail_bit}，已运行 **{elapsed}** 秒"
 
 
 def _sync_task_events(task_id: str) -> list[dict[str, Any]]:
@@ -70,6 +99,11 @@ def _live_fingerprint(
         progress_info.get("phase_label"),
         progress_info.get("progress"),
         progress_info.get("sku"),
+        progress_info.get("action"),
+        progress_info.get("url"),
+        progress_info.get("started_at"),
+        tuple(progress_info.get("highlights") or []),
+        _elapsed_seconds(str(progress_info.get("started_at") or "")),
         shot_seq,
     )
 
@@ -77,8 +111,11 @@ def _live_fingerprint(
 def _render_progress(status: dict[str, Any], progress_info: dict[str, Any], new_events: list[dict[str, Any]]) -> None:
     total_steps = st.session_state.get("total_steps", 1)
     progress_value = compute_progress_value(status["state"], progress_info, total_steps)
-    progress_text = new_events[-1]["message"] if new_events else progress_info.get("phase_label") or "运行中…"
-    st.progress(progress_value, text=str(progress_text)[:200])
+    live_line = _format_live_action(progress_info)
+    progress_text = live_line.replace("**", "")
+    if new_events and not progress_info.get("action"):
+        progress_text = str(new_events[-1].get("message") or progress_text)
+    st.progress(progress_value, text=str(progress_text)[:220])
 
     total_skus = max(int(progress_info.get("total_skus") or total_steps), 1)
     phase = int(progress_info.get("phase") or 0)
@@ -90,6 +127,15 @@ def _render_progress(status: dict[str, Any], progress_info: dict[str, Any], new_
         f"**SKU** `{sku}` · **{sku_index + 1}/{total_skus}** · **{phase_label}**"
         + (f" · 品类 `{category}`" if category else "")
     )
+    st.markdown(live_line)
+
+    highlights = list(progress_info.get("highlights") or [])
+    history = list(st.session_state.get("live_step_history") or [])
+    preview = highlights or history[-6:]
+    if preview:
+        st.markdown("**刚拿到的信息**")
+        for item in preview[-6:]:
+            st.markdown(f"- {item}")
 
     profile = st.session_state.get("category_profile")
     if profile:
